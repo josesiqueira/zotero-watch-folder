@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vbox id="watch-folder-preferences" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+
+  <linkset>
+    <html:link rel="localization" href="zotero-watch-folder.ftl"/>
+  </linkset>
+
+  <script src="chrome://zotero-watch-folder/content/preferences.js"/>
+
+  <!-- Watch Folder Section -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-watch"/></label>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-enabled" control="watch-folder-enabled"/>
+      <checkbox id="watch-folder-enabled"
+                preference="extensions.zotero.watchFolder.enabled"/>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-source-path" control="watch-folder-source-path"/>
+      <html:input id="watch-folder-source-path" type="text" style="flex: 1;"
+                  preference="extensions.zotero.watchFolder.sourcePath"
+                  readonly="true"/>
+      <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"/>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-poll-interval" control="watch-folder-poll-interval"/>
+      <html:input id="watch-folder-poll-interval" type="number" min="1" max="60"
+                  preference="extensions.zotero.watchFolder.pollInterval"
+                  style="width: 60px;"/>
+      <label data-l10n-id="watch-folder-pref-poll-interval-suffix"/>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-file-types" control="watch-folder-file-types"/>
+      <html:input id="watch-folder-file-types" type="text"
+                  preference="extensions.zotero.watchFolder.fileTypes"
+                  style="width: 200px;"/>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-target-collection" control="watch-folder-target-collection"/>
+      <html:input id="watch-folder-target-collection" type="text"
+                  preference="extensions.zotero.watchFolder.targetCollection"
+                  style="width: 200px;"/>
+    </hbox>
+  </groupbox>
+
+  <!-- Import Section -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-import"/></label>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-import-mode" control="watch-folder-import-mode"/>
+      <menulist id="watch-folder-import-mode"
+                preference="extensions.zotero.watchFolder.importMode">
+        <menupopup>
+          <menuitem value="stored" data-l10n-id="watch-folder-pref-import-mode-stored"/>
+          <menuitem value="linked" data-l10n-id="watch-folder-pref-import-mode-linked"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-post-import" control="watch-folder-post-import"/>
+      <menulist id="watch-folder-post-import"
+                preference="extensions.zotero.watchFolder.postImportAction">
+        <menupopup>
+          <menuitem value="leave" data-l10n-id="watch-folder-pref-post-import-leave"/>
+          <menuitem value="delete" data-l10n-id="watch-folder-pref-post-import-delete"/>
+          <menuitem value="move" data-l10n-id="watch-folder-pref-post-import-move"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+  </groupbox>
+
+  <!-- File Naming Section -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-auto-rename" control="watch-folder-auto-rename"/>
+      <checkbox id="watch-folder-auto-rename"
+                preference="extensions.zotero.watchFolder.autoRename"/>
+    </hbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-rename-pattern" control="watch-folder-rename-pattern"/>
+      <html:input id="watch-folder-rename-pattern" type="text"
+                  preference="extensions.zotero.watchFolder.renamePattern"
+                  style="flex: 1;"/>
+    </hbox>
+
+    <vbox>
+      <label data-l10n-id="watch-folder-pref-rename-pattern-help" style="font-size: 0.9em; color: gray;"/>
+    </vbox>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-max-filename" control="watch-folder-max-filename"/>
+      <html:input id="watch-folder-max-filename" type="number" min="50" max="255"
+                  preference="extensions.zotero.watchFolder.maxFilenameLength"
+                  style="width: 80px;"/>
+      <label data-l10n-id="watch-folder-pref-max-filename-suffix"/>
+    </hbox>
+  </groupbox>
+
+</vbox>

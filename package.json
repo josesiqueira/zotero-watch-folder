@@ -1,0 +1,16 @@
+{
+  "name": "zotero-watch-folder",
+  "version": "1.0.0",
+  "description": "Zotero 8 plugin for automatic PDF import from watched folders",
+  "author": "Jose",
+  "license": "GPL-3.0",
+  "scripts": {
+    "build": "node build/build.mjs",
+    "package": "node build/package.mjs",
+    "release": "npm run build && npm run package",
+    "clean": "rm -rf dist *.xpi"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.0"
+  }
+}
