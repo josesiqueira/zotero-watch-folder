@@ -1,6 +1,7 @@
 # zotero-watch-folder-zotero8
 
-> **AS-IS fork notice:** This repository is an as-is fork of [`josesiqueira/zotero-watch-folder`](https://github.com/josesiqueira/zotero-watch-folder), maintained for Zotero 8 compatibility.
+# ⚠️ IMPORTANT NOTICE: AS-IS fork for Zotero 8
+> This repository is an as-is fork of [`josesiqueira/zotero-watch-folder`](https://github.com/josesiqueira/zotero-watch-folder), maintained for Zotero 8 compatibility.
 
 A powerful Zotero 8 plugin that automatically monitors a folder for new files and imports them into your Zotero library with metadata retrieval, smart organization, and collection synchronization.
 
