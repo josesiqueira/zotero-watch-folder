@@ -1,4 +1,6 @@
-# Zotero Watch Folder
+# zotero-watch-folder-zotero8
+
+> **AS-IS fork notice:** This repository is an as-is fork of [`josesiqueira/zotero-watch-folder`](https://github.com/josesiqueira/zotero-watch-folder), maintained for Zotero 8 compatibility.
 
 A powerful Zotero 8 plugin that automatically monitors a folder for new files and imports them into your Zotero library with metadata retrieval, smart organization, and collection synchronization.
 
@@ -40,7 +42,7 @@ A powerful Zotero 8 plugin that automatically monitors a folder for new files an
 
 ## Installation
 
-1. Download the latest `.xpi` file from [Releases](https://github.com/josesiqueira/zotero-watch-folder/releases)
+1. Download the latest `.xpi` file from [Releases](../../releases)
 2. In Zotero, go to `Tools` → `Add-ons`
 3. Click the gear icon and select `Install Add-on From File...`
 4. Select the downloaded `.xpi` file
@@ -77,8 +79,8 @@ After installation, configure the plugin in `Edit` → `Settings` → `Watch Fol
 
 ```bash
 # Clone the repository
-git clone https://github.com/josesiqueira/zotero-watch-folder.git
-cd zotero-watch-folder
+git clone https://github.com/josesiqueira/zotero-watch-folder-zotero8.git
+cd zotero-watch-folder-zotero8
 
 # Install dependencies
 npm install
@@ -88,6 +90,9 @@ npm run build
 
 # Package as XPI
 npm run package
+
+# Build + package + upload XPI to the matching GitHub release tag
+npm run release
 ```
 
 The XPI file will be created in the project root directory.
@@ -95,7 +100,7 @@ The XPI file will be created in the project root directory.
 ## Project Structure
 
 ```
-zotero-watch-folder/
+zotero-watch-folder-zotero8/
 ├── manifest.json           # Plugin manifest for Zotero 8
 ├── bootstrap.js            # Plugin lifecycle (startup/shutdown)
 ├── prefs.js               # Default preference values

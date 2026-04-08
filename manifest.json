@@ -10,8 +10,9 @@
   },
   "applications": {
     "zotero": {
-      "id": "watch-folder@zotero-plugin",
-      "strict_min_version": "8.0",
+      "id": "watch-folder@zotero-plugin.org",
+      "update_url": "https://raw.githubusercontent.com/josesiqueira/zotero-watch-folder/main/update.json",
+      "strict_min_version": "6.999",
       "strict_max_version": "8.*"
     }
   }

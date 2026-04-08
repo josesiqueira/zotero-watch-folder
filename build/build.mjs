@@ -108,18 +108,45 @@ async function build() {
     }
     console.log();
 
-    // Step 3: Copy folders
-    console.log('Copying folders...');
-    for (const folder of FOLDERS_TO_COPY) {
-        const srcPath = path.join(ROOT_DIR, folder);
-        const destPath = path.join(DIST_DIR, folder);
+    // Step 3: Copy content files (excluding .mjs source files)
+    console.log('Copying content files...');
+    const contentDir = path.join(ROOT_DIR, 'content');
+    const distContentDir = path.join(DIST_DIR, 'content');
 
-        if (await exists(srcPath)) {
+    const contentEntries = await fs.readdir(contentDir, { withFileTypes: true });
+    for (const entry of contentEntries) {
+        const srcPath = path.join(contentDir, entry.name);
+        const destPath = path.join(distContentDir, entry.name);
+
+        if (entry.isDirectory()) {
+            // Copy directories (icons, scripts)
             await copyDir(srcPath, destPath);
-            console.log(`  ✓ Copied: ${folder}/`);
+            console.log(`  ✓ Copied directory: content/${entry.name}/`);
+        } else if (!entry.name.endsWith('.mjs')) {
+            // Copy non-.mjs files only
+            await copyFile(srcPath, destPath);
+            console.log(`  ✓ Copied: content/${entry.name}`);
         } else {
-            console.log(`  ⚠ Skipped (not found): ${folder}/`);
+            console.log(`  ⊗ Skipped source: content/${entry.name}`);
         }
+    }
+    console.log();
+
+    // Step 4: Copy locale folder
+    console.log('Copying locale...');
+    const localeDir = path.join(ROOT_DIR, 'locale');
+    if (await exists(localeDir)) {
+        await copyDir(localeDir, path.join(DIST_DIR, 'locale'));
+        console.log(`  ✓ Copied: locale/`);
+    }
+    console.log();
+
+    // Verify bundled script exists
+    const bundledScript = path.join(DIST_DIR, 'content', 'scripts', 'watchFolder.js');
+    if (await exists(bundledScript)) {
+        console.log(`✓ Bundled script verified: content/scripts/watchFolder.js`);
+    } else {
+        console.log(`⚠ Warning: Bundled script not found. Run 'npm run bundle' first.`);
     }
     console.log();
 
