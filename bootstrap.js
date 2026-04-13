@@ -1,325 +1,125 @@
-/* eslint-disable no-unused-vars */
 /**
  * Zotero Watch Folder - Bootstrap Entry Point
- *
- * This file handles the plugin lifecycle for Zotero 8.
- * Uses ESM modules, native async/await, and IOUtils (no .jsm, no Bluebird, no OS.File).
+ * Loads bundled script for Zotero 7/8 compatibility.
  */
 
 var chromeHandle;
-var watchFolderService;
-var metadataRetriever;
-var collectionSyncService;
-var firstRunHandled = false;
 
-const PREF_BRANCH = "extensions.zotero.watchFolder.";
+function install(data, reason) {}
 
-/**
- * Called when the plugin is first installed or enabled
- */
-function install(data, reason) {
-    // Nothing to do on install
+async function startup({ id, version, resourceURI, rootURI }, reason) {
+  // Chrome must be registered before awaiting, so preference panes and
+  // chrome:// URLs resolve correctly when Zotero initialises.
+  var aomStartup = Components.classes[
+    "@mozilla.org/addons/addon-manager-startup;1"
+  ].getService(Components.interfaces.amIAddonManagerStartup);
+  var manifestURI = Services.io.newURI(rootURI + "manifest.json");
+  chromeHandle = aomStartup.registerChrome(manifestURI, [
+    ["content", "zotero-watch-folder", rootURI + "content/"],
+    ["locale",  "zotero-watch-folder", "en-US", rootURI + "locale/en-US/"]
+  ]);
+
+  await Zotero.initializationPromise;
+
+  // Set default preferences so Zotero.Prefs.get() works before the user
+  // has opened the pref pane (prefs.js at XPI root is not auto-loaded).
+  _initDefaultPrefs();
+
+  // Load the esbuild bundle into the Zotero global scope.
+  // rootURI already ends with "/", so do NOT add another slash.
+  const ctx = { rootURI };
+  ctx._globalThis = ctx;
+
+  try {
+    Services.scriptloader.loadSubScript(
+      rootURI + "content/scripts/watchFolder.js",
+      ctx
+    );
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] Failed to load bundle: ${e}`);
+    return;
+  }
+
+  if (!Zotero.WatchFolder || !Zotero.WatchFolder.hooks) {
+    Zotero.logError("[WatchFolder] Bundle loaded but Zotero.WatchFolder not set — aborting startup.");
+    return;
+  }
+
+  // Set _rootURI BEFORE calling onStartup() so preference pane registration works
+  Zotero.WatchFolder.hooks._rootURI = rootURI;
+  await Zotero.WatchFolder.hooks.onStartup();
 }
 
-/**
- * Called when the plugin is uninstalled or disabled
- */
-function uninstall(data, reason) {
-    // Nothing to do on uninstall
+async function onMainWindowLoad({ window }, reason) {
+  if (Zotero.WatchFolder && Zotero.WatchFolder.hooks) {
+    await Zotero.WatchFolder.hooks.onMainWindowLoad(window);
+  }
 }
 
-/**
- * Called when the plugin starts up
- * @param {Object} data - Add-on data including id, version, rootURI
- * @param {number} reason - Startup reason constant
- */
-async function startup({ id, version, resourceURI, rootURI = resourceURI.spec }, reason) {
-    // Register chrome content and locale paths
-    const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"]
-        .getService(Ci.amIAddonManagerStartup);
+async function onMainWindowUnload({ window }, reason) {
+  if (Zotero.WatchFolder && Zotero.WatchFolder.hooks) {
+    await Zotero.WatchFolder.hooks.onMainWindowUnload(window);
+  }
+}
 
-    const manifestURI = Services.io.newURI(rootURI + "manifest.json");
-    chromeHandle = aomStartup.registerChrome(manifestURI, [
-        ["content", "zotero-watch-folder", rootURI + "content/"],
-        ["locale", "zotero-watch-folder", "en-US", rootURI + "locale/en-US/"]
-    ]);
+async function shutdown({ id, version, resourceURI, rootURI }, reason) {
+  if (reason === APP_SHUTDOWN) return;
 
-    // Wait for Zotero to be fully initialized
-    await Zotero.initializationPromise;
+  if (Zotero.WatchFolder && Zotero.WatchFolder.hooks) {
+    await Zotero.WatchFolder.hooks.onShutdown();
+  }
 
-    // Register preference pane
-    Zotero.PreferencePanes.register({
-        pluginID: "watch-folder@zotero-plugin",
-        src: rootURI + "content/preferences.xhtml",
-        label: "Watch Folder",
-        image: rootURI + "content/icons/watch-folder-16.png"
-    });
+  if (chromeHandle) {
+    chromeHandle.destruct();
+    chromeHandle = null;
+  }
+}
 
-    // Initialize default preferences if not set
-    initDefaultPreferences();
+function uninstall(data, reason) {}
 
-    // Lazy load and initialize the watch folder service
+// ---------------------------------------------------------------------------
+// Default preferences  (mirrors prefs.js but using the Services API so it
+// works regardless of where the file is located in the XPI).
+// ---------------------------------------------------------------------------
+function _initDefaultPrefs() {
+  const branch = Services.prefs.getDefaultBranch("extensions.zotero.watchFolder.");
+  function _set(key, val) {
     try {
-        // Import WatchFolderService singleton getter
-        const { getWatchFolderService } = ChromeUtils.importESModule(
-            "chrome://zotero-watch-folder/content/watchFolder.mjs"
-        );
+      switch (typeof val) {
+        case "boolean": branch.setBoolPref(key, val); break;
+        case "number":  branch.setIntPref(key, val);  break;
+        case "string":  branch.setCharPref(key, val); break;
+      }
+    } catch (_) {}
+  }
 
-        // Import MetadataRetriever
-        const { initMetadataRetriever } = ChromeUtils.importESModule(
-            "chrome://zotero-watch-folder/content/metadataRetriever.mjs"
-        );
-
-        // Initialize metadata retriever first (it will be used by the watch service)
-        metadataRetriever = await initMetadataRetriever();
-
-        // Initialize watch folder service (using singleton getter)
-        watchFolderService = getWatchFolderService();
-        await watchFolderService.init();
-
-        // Connect metadata retriever to watch folder service
-        watchFolderService.setMetadataRetriever(metadataRetriever);
-
-        // Start watching if enabled in preferences
-        if (getPref("enabled")) {
-            await watchFolderService.startWatching();
-        }
-
-        // Initialize collection sync service (Phase 2)
-        try {
-            const { initCollectionSync } = ChromeUtils.importESModule(
-                "chrome://zotero-watch-folder/content/collectionSync.mjs"
-            );
-            collectionSyncService = await initCollectionSync();
-            Zotero.debug("Zotero Watch Folder: Collection sync service initialized");
-        } catch (syncError) {
-            Zotero.debug(`Zotero Watch Folder: Collection sync not initialized - ${syncError.message}`);
-            // Collection sync is optional, don't fail startup
-        }
-
-        Zotero.debug("Zotero Watch Folder: Plugin started successfully");
-    } catch (error) {
-        Zotero.logError(`Zotero Watch Folder: Failed to initialize service - ${error.message}`);
-        Zotero.debug(error.stack);
-    }
-}
-
-/**
- * Called when the plugin shuts down
- * @param {Object} data - Add-on data
- * @param {number} reason - Shutdown reason constant
- */
-async function shutdown({ id, version, resourceURI, rootURI = resourceURI.spec }, reason) {
-    // Skip cleanup if Zotero is shutting down entirely
-    if (reason === APP_SHUTDOWN) {
-        return;
-    }
-
-    Zotero.debug("Zotero Watch Folder: Shutting down plugin");
-
-    // Stop the watch folder service
-    if (watchFolderService) {
-        try {
-            await watchFolderService.stopWatching();
-            await watchFolderService.destroy();
-            watchFolderService = null;
-        } catch (error) {
-            Zotero.logError(`Zotero Watch Folder: Error during service shutdown - ${error.message}`);
-        }
-    }
-
-    // Shutdown metadata retriever
-    if (metadataRetriever) {
-        try {
-            const { shutdownMetadataRetriever } = ChromeUtils.importESModule(
-                "chrome://zotero-watch-folder/content/metadataRetriever.mjs"
-            );
-            shutdownMetadataRetriever();
-            metadataRetriever = null;
-        } catch (error) {
-            Zotero.logError(`Zotero Watch Folder: Error during metadata retriever shutdown - ${error.message}`);
-        }
-    }
-
-    // Shutdown collection sync service (Phase 2)
-    if (collectionSyncService) {
-        try {
-            const { shutdownCollectionSync } = ChromeUtils.importESModule(
-                "chrome://zotero-watch-folder/content/collectionSync.mjs"
-            );
-            await shutdownCollectionSync();
-            collectionSyncService = null;
-        } catch (error) {
-            Zotero.logError(`Zotero Watch Folder: Error during collection sync shutdown - ${error.message}`);
-        }
-    }
-
-    // Shutdown duplicate detector (Phase 3)
-    try {
-        const { shutdownDuplicateDetector } = ChromeUtils.importESModule(
-            "chrome://zotero-watch-folder/content/duplicateDetector.mjs"
-        );
-        shutdownDuplicateDetector();
-    } catch (error) {
-        Zotero.debug(`Zotero Watch Folder: Error during duplicate detector shutdown - ${error.message}`);
-    }
-
-    // Unregister chrome
-    if (chromeHandle) {
-        chromeHandle.destruct();
-        chromeHandle = null;
-    }
-
-    // Reset first run state
-    firstRunHandled = false;
-
-    Zotero.debug("Zotero Watch Folder: Plugin shutdown complete");
-}
-
-/**
- * Called when a main Zotero window loads
- * @param {Object} params - Contains window reference
- */
-async function onMainWindowLoad({ window }) {
-    // Insert FTL localization file for Fluent
-    window.MozXULElement.insertFTLIfNeeded("zotero-watch-folder.ftl");
-
-    // Store window reference if needed for UI updates
-    if (watchFolderService) {
-        watchFolderService.addWindow(window);
-    }
-
-    // Handle first run (check for existing files to import)
-    if (!firstRunHandled && getPref("enabled") && getPref("sourcePath")) {
-        try {
-            const { handleFirstRun } = ChromeUtils.importESModule(
-                "chrome://zotero-watch-folder/content/firstRunHandler.mjs"
-            );
-            const result = await handleFirstRun(window);
-            if (result.handled) {
-                firstRunHandled = true;
-                Zotero.debug(`Zotero Watch Folder: First run handled, imported ${result.imported} files`);
-            }
-        } catch (error) {
-            Zotero.logError(`Zotero Watch Folder: First run handler error - ${error.message}`);
-        }
-    }
-
-    Zotero.debug("Zotero Watch Folder: Main window loaded");
-}
-
-/**
- * Called when a main Zotero window unloads
- * @param {Object} params - Contains window reference
- */
-function onMainWindowUnload({ window }) {
-    // Clean up window references
-    if (watchFolderService) {
-        watchFolderService.removeWindow(window);
-    }
-
-    Zotero.debug("Zotero Watch Folder: Main window unloaded");
-}
-
-/**
- * Initialize default preference values
- */
-function initDefaultPreferences() {
-    // Match keys defined in preferences.xhtml plus additional runtime preferences
-    const defaults = {
-        // Core watch settings
-        "enabled": false,
-        "sourcePath": "",
-        "pollInterval": 5,
-        "fileTypes": "pdf",
-        "targetCollection": "Inbox",
-        "importMode": "stored",
-        "postImportAction": "leave",
-        "autoRetrieveMetadata": true,
-        "maxConcurrentMetadata": 2,
-        "lastWatchedPath": "",
-        // File naming
-        "autoRename": true,
-        "renamePattern": "{firstCreator} - {year} - {title}",
-        "maxFilenameLength": 150,
-        // Duplicate detection (Phase 3)
-        "duplicateCheck": true,
-        "duplicateMatchDOI": true,
-        "duplicateMatchISBN": true,
-        "duplicateMatchTitle": true,
-        "duplicateTitleThreshold": 0.85,
-        "duplicateMatchHash": false,
-        "duplicateAction": "skip",
-        // Smart rules (Phase 3)
-        "smartRulesEnabled": false,
-        "smartRules": "[]",
-        // Phase 2: Collection Sync
-        "adaptivePolling": true,
-        "collectionSyncEnabled": false,
-        "mirrorPath": "",
-        "mirrorRootCollection": "",
-        "mirrorPollInterval": 10,
-        "bidirectionalSync": false,
-        "conflictResolution": "last"
-    };
-
-    for (const [key, value] of Object.entries(defaults)) {
-        if (!hasPref(key)) {
-            setPref(key, value);
-        }
-    }
-}
-
-/**
- * Get a preference value
- * @param {string} key - Preference key (without branch prefix)
- * @returns {*} Preference value
- */
-function getPref(key) {
-    const branch = Services.prefs.getBranch(PREF_BRANCH);
-    const type = branch.getPrefType(key);
-
-    switch (type) {
-        case Services.prefs.PREF_BOOL:
-            return branch.getBoolPref(key);
-        case Services.prefs.PREF_INT:
-            return branch.getIntPref(key);
-        case Services.prefs.PREF_STRING:
-            return branch.getStringPref(key);
-        default:
-            return null;
-    }
-}
-
-/**
- * Set a preference value
- * @param {string} key - Preference key (without branch prefix)
- * @param {*} value - Value to set
- */
-function setPref(key, value) {
-    const branch = Services.prefs.getBranch(PREF_BRANCH);
-
-    switch (typeof value) {
-        case "boolean":
-            branch.setBoolPref(key, value);
-            break;
-        case "number":
-            branch.setIntPref(key, value);
-            break;
-        case "string":
-            branch.setStringPref(key, value);
-            break;
-        default:
-            throw new Error(`Unsupported preference type: ${typeof value}`);
-    }
-}
-
-/**
- * Check if a preference exists
- * @param {string} key - Preference key (without branch prefix)
- * @returns {boolean} True if preference exists
- */
-function hasPref(key) {
-    const branch = Services.prefs.getBranch(PREF_BRANCH);
-    return branch.getPrefType(key) !== Services.prefs.PREF_INVALID;
+  _set("enabled",                false);
+  _set("sourcePath",             "");
+  _set("pollInterval",           5);
+  _set("targetCollection",       "Inbox");
+  _set("fileTypes",              "pdf");
+  _set("importMode",             "stored");
+  _set("postImportAction",       "leave");
+  _set("autoRetrieveMetadata",   true);
+  _set("lastWatchedPath",        "");
+  _set("renamePattern",          "{firstCreator} - {year} - {title}");
+  _set("maxFilenameLength",      150);
+  _set("autoRename",             true);
+  _set("duplicateCheck",         true);
+  _set("duplicateMatchDOI",      true);
+  _set("duplicateMatchISBN",     true);
+  _set("duplicateMatchTitle",    true);
+  _set("duplicateTitleThreshold",85);   // stored as int, 0.85 * 100
+  _set("duplicateMatchHash",     false);
+  _set("duplicateAction",        "skip");
+  _set("smartRulesEnabled",      false);
+  _set("smartRules",             "[]");
+  _set("adaptivePolling",        true);
+  _set("maxConcurrentMetadata",  2);
+  _set("collectionSyncEnabled",  false);
+  _set("mirrorPath",             "");
+  _set("mirrorRootCollection",   "");
+  _set("mirrorPollInterval",     10);
+  _set("bidirectionalSync",      false);
+  _set("conflictResolution",     "last");
 }

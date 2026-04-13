@@ -18,10 +18,10 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
 
 // Plugin configuration
-const ADDON_ID = 'watch-folder@zotero-plugin';
-const GITHUB_USERNAME = 'josesiqueira';
-const GITHUB_REPO = 'zotero-watch-folder';
-const MIN_ZOTERO_VERSION = '8.0';
+const ADDON_ID = 'watch-folder@zotero-plugin.org';
+const GITHUB_USERNAME = process.env.GITHUB_USERNAME || 'josesiqueira';
+const GITHUB_REPO = process.env.GITHUB_REPO || 'zotero-watch-folder-zotero8';
+const MIN_ZOTERO_VERSION = '6.999';
 
 /**
  * Read the manifest.json and extract version
@@ -173,10 +173,9 @@ async function package_() {
     console.log(`  ${hash}`);
     console.log();
     console.log('Next steps:');
-    console.log('  1. Update GITHUB_USERNAME in build/package.mjs');
-    console.log('  2. Create a GitHub release with tag v' + version);
-    console.log('  3. Upload the XPI file to the release');
-    console.log('  4. Host update.json for auto-updates');
+    console.log('  1. Set GITHUB_USERNAME/GITHUB_REPO env vars if needed');
+    console.log('  2. Run "npm run release:upload" to attach the XPI to release v' + version);
+    console.log('  3. Host update.json for auto-updates');
 }
 
 // Run package

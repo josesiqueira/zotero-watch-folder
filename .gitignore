@@ -12,6 +12,12 @@ Thumbs.db
 # Editor files
 .vscode/
 .idea/
+.claude/
+.cursor/
+.copilot/
+notes/
+Notes/
+Zotero API/
 *.swp
 *.swo
 

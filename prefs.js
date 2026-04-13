@@ -22,7 +22,7 @@ pref("extensions.zotero.watchFolder.duplicateCheck", true);
 pref("extensions.zotero.watchFolder.duplicateMatchDOI", true);
 pref("extensions.zotero.watchFolder.duplicateMatchISBN", true);
 pref("extensions.zotero.watchFolder.duplicateMatchTitle", true);
-pref("extensions.zotero.watchFolder.duplicateTitleThreshold", 0.85);
+pref("extensions.zotero.watchFolder.duplicateTitleThreshold", 85);  // stored as int (0.85 * 100)
 pref("extensions.zotero.watchFolder.duplicateMatchHash", false);  // Expensive, disabled by default
 pref("extensions.zotero.watchFolder.duplicateAction", "skip");  // "skip", "import", "ask"
 
