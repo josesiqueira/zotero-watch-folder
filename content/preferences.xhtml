@@ -1,12 +1,8 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<vbox id="watch-folder-preferences" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
-      xmlns:html="http://www.w3.org/1999/xhtml">
-
-  <linkset>
-    <html:link rel="localization" href="zotero-watch-folder.ftl"/>
-  </linkset>
-
-  <script src="chrome://zotero-watch-folder/content/preferences.js"/>
+<vbox id="watch-folder-preferences" 
+      xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      style="overflow: auto;"
+      onload="if (typeof WatchFolderPrefs !== 'undefined' &amp;&amp; WatchFolderPrefs.onLoad) WatchFolderPrefs.onLoad()">
 
   <!-- Watch Folder Section -->
   <groupbox>
@@ -23,7 +19,8 @@
       <html:input id="watch-folder-source-path" type="text" style="flex: 1;"
                   preference="extensions.zotero.watchFolder.sourcePath"
                   readonly="true"/>
-      <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"/>
+      <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"
+              oncommand="WatchFolderPrefs.browseForFolder()"/>
     </hbox>
 
     <hbox align="center">
