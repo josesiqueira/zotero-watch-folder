@@ -127,3 +127,50 @@ export async function getOrCreateTargetCollection(collectionName, libraryID = Zo
     return null;
   }
 }
+
+/**
+ * Get or create a path of nested collections
+ * @param {string} path - Slash-separated collection path (e.g. "Inbox/Subfolder")
+ * @param {number} [libraryID] - Library ID
+ * @returns {Promise<Zotero.Collection|null>} The leaf collection
+ */
+export async function getOrCreateCollectionPath(path, libraryID = Zotero.Libraries.userLibraryID) {
+  if (!path || path.trim() === '') return null;
+
+  const parts = path.split('/').filter(p => p.trim() !== '');
+  let parentID = null;
+  let currentCollection = null;
+
+  for (const name of parts) {
+    try {
+      // Look for existing child collection
+      const children = Zotero.Collections.getByParent(parentID, libraryID);
+      let found = false;
+      for (const col of children) {
+        if (col.name === name) {
+          currentCollection = col;
+          parentID = col.id;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        // Create new child collection
+        const col = new Zotero.Collection();
+        col.libraryID = libraryID;
+        col.name = name;
+        col.parentID = parentID;
+        await col.saveTx();
+        currentCollection = col;
+        parentID = col.id;
+        Zotero.debug(`[WatchFolder] Created collection: ${name} under parent ${parentID || 'root'}`);
+      }
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] Error in getOrCreateCollectionPath for "${name}": ${e.message}`);
+      return null;
+    }
+  }
+
+  return currentCollection;
+}
