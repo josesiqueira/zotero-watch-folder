@@ -268,6 +268,10 @@ export class WatchFolderService {
         // Get relative path from watchPath to filePath
         if (filePath.startsWith(watchPath)) {
           let relativePath = filePath.substring(watchPath.length);
+          Zotero.debug(`[WatchFolder] File path: ${filePath}`);
+          Zotero.debug(`[WatchFolder] Watch path: ${watchPath}`);
+          Zotero.debug(`[WatchFolder] Initial relative path: ${relativePath}`);
+
           // Remove leading separator
           if (relativePath.startsWith('/') || relativePath.startsWith('\\')) {
             relativePath = relativePath.substring(1);
@@ -278,10 +282,14 @@ export class WatchFolderService {
           pathParts.pop(); // Remove filename
           
           if (pathParts.length > 0) {
+            Zotero.debug(`[WatchFolder] Folder parts found: ${JSON.stringify(pathParts)}`);
             targetCollection = targetCollection + '/' + pathParts.join('/');
+          } else {
+            Zotero.debug(`[WatchFolder] No subfolders found in relative path.`);
           }
         }
-
+        
+        Zotero.debug(`[WatchFolder] Final target collection path: ${targetCollection}`);
         newFiles.push({ path: filePath, collection: targetCollection });
       }
 

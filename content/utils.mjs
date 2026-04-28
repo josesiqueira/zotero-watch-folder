@@ -135,6 +135,7 @@ export async function getOrCreateTargetCollection(collectionName, libraryID = Zo
  * @returns {Promise<Zotero.Collection|null>} The leaf collection
  */
 export async function getOrCreateCollectionPath(path, libraryID = Zotero.Libraries.userLibraryID) {
+  Zotero.debug(`[WatchFolder] Attempting to get/create collection path: ${path}`);
   if (!path || path.trim() === '') return null;
 
   const parts = path.split('/').filter(p => p.trim() !== '');
@@ -143,11 +144,13 @@ export async function getOrCreateCollectionPath(path, libraryID = Zotero.Librari
 
   for (const name of parts) {
     try {
+      Zotero.debug(`[WatchFolder] Looking for collection: "${name}" under parent: ${parentID || 'root'}`);
       // Look for existing child collection
       const children = Zotero.Collections.getByParent(parentID, libraryID);
       let found = false;
       for (const col of children) {
         if (col.name === name) {
+          Zotero.debug(`[WatchFolder] Found existing collection: "${name}" (ID: ${col.id})`);
           currentCollection = col;
           parentID = col.id;
           found = true;
@@ -156,6 +159,7 @@ export async function getOrCreateCollectionPath(path, libraryID = Zotero.Librari
       }
 
       if (!found) {
+        Zotero.debug(`[WatchFolder] Collection "${name}" not found, creating it...`);
         // Create new child collection
         const col = new Zotero.Collection();
         col.libraryID = libraryID;
@@ -164,10 +168,10 @@ export async function getOrCreateCollectionPath(path, libraryID = Zotero.Librari
         await col.saveTx();
         currentCollection = col;
         parentID = col.id;
-        Zotero.debug(`[WatchFolder] Created collection: ${name} under parent ${parentID || 'root'}`);
+        Zotero.debug(`[WatchFolder] Successfully created collection: "${name}" (ID: ${parentID})`);
       }
     } catch (e) {
-      Zotero.logError(`[WatchFolder] Error in getOrCreateCollectionPath for "${name}": ${e.message}`);
+      Zotero.logError(`[WatchFolder] CRITICAL ERROR in getOrCreateCollectionPath for "${name}": ${e.message}`);
       return null;
     }
   }
