@@ -139,32 +139,37 @@ export async function getOrCreateCollectionPath(path, libraryID = Zotero.Librari
   if (!path || path.trim() === '') return null;
 
   const parts = path.split('/').filter(p => p.trim() !== '');
-  let parentID = null;
+  let parentID = null; // null = root level
   let currentCollection = null;
 
   for (const name of parts) {
     try {
       Zotero.debug(`[WatchFolder] Looking for collection: "${name}" under parent: ${parentID || 'root'}`);
-      // Look for existing child collection
-      const children = Zotero.Collections.getByParent(parentID, libraryID);
-      let found = false;
-      for (const col of children) {
-        if (col.name === name) {
-          Zotero.debug(`[WatchFolder] Found existing collection: "${name}" (ID: ${col.id})`);
-          currentCollection = col;
-          parentID = col.id;
-          found = true;
-          break;
-        }
+
+      // For root level use getByLibrary (getByParent(false) is unreliable);
+      // for nested levels use getByParent with the numeric parent ID
+      let candidates;
+      if (parentID === null) {
+        candidates = Zotero.Collections.getByLibrary(libraryID).filter(col => !col.parentID);
+      } else {
+        candidates = Zotero.Collections.getByParent(parentID, libraryID);
       }
 
-      if (!found) {
+      const found = candidates.find(col => col.name === name);
+
+      if (found) {
+        Zotero.debug(`[WatchFolder] Found existing collection: "${name}" (ID: ${found.id})`);
+        currentCollection = found;
+        parentID = found.id;
+      } else {
         Zotero.debug(`[WatchFolder] Collection "${name}" not found, creating it...`);
-        // Create new child collection
         const col = new Zotero.Collection();
         col.libraryID = libraryID;
         col.name = name;
-        col.parentID = parentID;
+        // Only set parentID for non-root — setting it to null/false clears libraryID internally
+        if (parentID !== null) {
+          col.parentID = parentID;
+        }
         await col.saveTx();
         currentCollection = col;
         parentID = col.id;
