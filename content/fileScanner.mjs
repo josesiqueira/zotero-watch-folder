@@ -115,6 +115,11 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
                 const info = await IOUtils.stat(childPath);
 
                 if (info.type === 'directory') {
+                    // Skip the 'imported' folder to avoid re-processing moved files
+                    if (PathUtils.filename(childPath) === 'imported') {
+                        Zotero.debug(`[Watch Folder] scanFolderRecursive: Skipping 'imported' folder: ${childPath}`);
+                        continue;
+                    }
                     // Recursively scan subdirectories
                     const subFiles = await scanFolderRecursive(childPath, maxDepth - 1);
                     files.push(...subFiles);
