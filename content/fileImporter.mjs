@@ -103,20 +103,27 @@ export async function handlePostImportAction(filePath, action = null) {
       break;
 
     case 'move':
-      // Move to 'imported' subfolder
+      // Move to watchRoot/imported/, mirroring the subfolder structure
       try {
-        const parentDir = PathUtils.parent(filePath);
-        const importedDir = PathUtils.join(parentDir, 'imported');
+        const watchRoot = getPref('sourcePath');
+        let destPath;
 
-        // Create subfolder if not exists
-        const dirExists = await IOUtils.exists(importedDir);
-        if (!dirExists) {
-          await IOUtils.makeDirectory(importedDir, { createAncestors: true });
-          Zotero.debug(`[WatchFolder] Created 'imported' subfolder: ${importedDir}`);
+        if (watchRoot && filePath.startsWith(watchRoot)) {
+          const importedBaseDir = PathUtils.join(watchRoot, 'imported');
+          const relativePath = filePath.substring(watchRoot.length).replace(/^[/\\]/, '');
+          destPath = PathUtils.join(importedBaseDir, relativePath);
+        } else {
+          // Fallback: put in 'imported' folder next to the file
+          destPath = PathUtils.join(PathUtils.parent(filePath), 'imported', filename);
         }
 
-        // Move the file
-        const destPath = PathUtils.join(importedDir, filename);
+        const destDir = PathUtils.parent(destPath);
+        const dirExists = await IOUtils.exists(destDir);
+        if (!dirExists) {
+          await IOUtils.makeDirectory(destDir, { createAncestors: true });
+          Zotero.debug(`[WatchFolder] Created directory: ${destDir}`);
+        }
+
         await IOUtils.move(filePath, destPath);
         Zotero.debug(`[WatchFolder] Moved file to: ${destPath}`);
       } catch (error) {
