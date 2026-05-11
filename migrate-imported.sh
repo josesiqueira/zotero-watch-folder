@@ -65,8 +65,13 @@ while IFS= read -r -d '' imported_dir; do
                 ((skipped++)) || true
                 continue
             fi
-            mv "$src_file" "$dest_file"
-            echo "  Moved: $dest_file"
+            if mv "$src_file" "$dest_file" 2>/dev/null; then
+              echo "  Moved: $dest_file"
+            else
+              echo "  WARN (mv failed): $src_file"
+              ((skipped++)) || true
+              continue
+            fi
         fi
         ((moved++)) || true
     done < <(find "$imported_dir" -type f -print0)
