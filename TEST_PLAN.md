@@ -158,6 +158,118 @@ mkdir -p ~/ZoteroWatchTest/processed
 
 ---
 
+### Test 1.11: Zotero -> Disk Deletion Sync
+
+Verifies the 3-button trash-sync dialog driven by `extensions.zotero.watchFolder.diskDeleteOnTrash` in `content/watchFolder.mjs` (`_handleZoteroTrash` / `_promptDiskDelete`).
+
+Preconditions:
+- Watch Folder enabled, Source Folder set, at least one imported item present whose source file is still in the watch folder.
+- Set `extensions.zotero.watchFolder.diskDeleteOnTrash` to `ask` via `about:config`.
+
+#### 1.11.a: Default button — Move to OS trash
+- [ ] Right-click an imported item in Zotero -> `Move Item to Trash`
+- [ ] In the 3-button dialog, click `Move to OS trash` (the default)
+
+**Expected:**
+- Source file is gone from the watch folder
+- File is present in the OS trash (Mac Trash / Windows Recycle Bin / Linux Files trash) and can be restored
+- Debug console shows: `[WatchFolder] Trash sync: moved <path> to OS trash`
+- Tracking entry for the item is removed
+
+#### 1.11.b: Keep on disk
+- [ ] Trash another imported item in Zotero
+- [ ] Click `Keep on disk`
+
+**Expected:**
+- Source file remains untouched in the watch folder
+- Tracking entry is still removed (item is no longer linked to the file)
+- No "deleted" debug line appears
+
+#### 1.11.c: Delete permanently
+- [ ] Trash another imported item
+- [ ] Click `Delete permanently`
+
+**Expected:**
+- Source file is permanently removed (not in OS trash)
+- Debug console shows: `[WatchFolder] Trash sync: permanently deleted <path>`
+
+#### 1.11.d: "Don't ask again" persists choice
+- [ ] Trash another imported item
+- [ ] Tick `Don't ask again`, then click `Move to OS trash`
+- [ ] Open `about:config` and inspect `extensions.zotero.watchFolder.diskDeleteOnTrash`
+
+**Expected:**
+- Pref value is now `os_trash`
+- Trash another item: no dialog appears, file goes straight to OS trash
+- Repeat the test with `Keep on disk` (-> pref becomes `never`) and `Delete permanently` (-> pref becomes `permanent`) to confirm each choice persists
+
+#### 1.11.e: Linked-mode warning before permanent delete
+- [ ] Set Import Mode to `Link to file in current location` and re-import a file
+- [ ] Reset `diskDeleteOnTrash` to `ask`
+- [ ] Trash the linked item in Zotero
+
+**Expected:**
+- Dialog message includes the linked-mode warning: "you are in linked mode — the watch-folder file is the ONLY copy. Permanent delete cannot be undone."
+- Clicking `Delete permanently` still proceeds (warning is informational only)
+
+#### 1.11.f: Multi-item batched prompt
+- [ ] Reset `diskDeleteOnTrash` to `ask`
+- [ ] Select 3+ imported items in Zotero and move them all to trash in one operation
+
+**Expected:**
+- A single dialog appears (not one per item) with message starting with `N items were moved to Zotero's bin.`
+- The chosen action is applied to every selected file
+
+---
+
+### Test 1.12: Disk -> Zotero Deletion Sync
+
+Verifies the auto-bin-on-disk-delete behaviour driven by `extensions.zotero.watchFolder.diskDeleteSync` in `content/watchFolder.mjs` (`_handleExternalDeletions` / `_showExternalDeletionPopup`).
+
+Preconditions:
+- Watch Folder enabled with several tracked files imported (`Leave file in place` post-import action so files stay on disk).
+- Set `extensions.zotero.watchFolder.diskDeleteSync` to `auto` via `about:config`.
+
+#### 1.12.a: Single external delete
+- [ ] In the OS file manager (or `rm`), delete one tracked file from the watch folder
+- [ ] Wait for the next poll cycle (poll interval seconds)
+
+**Expected:**
+- The matching Zotero item moves to the bin (`item.deleted = true`)
+- A popup appears titled "Zotero Watch Folder" listing the deleted path and the item title
+- Popup footer mentions Zotero still has its own copy in storage (stored mode)
+- Debug console shows: `[WatchFolder] Detected 1 externally-deleted file(s)`
+
+#### 1.12.b: Multiple deletes batched into one popup
+- [ ] Delete 3+ tracked files from the watch folder in a single operation (before the next scan)
+- [ ] Wait for the next poll cycle
+
+**Expected:**
+- A single popup lists all deleted paths and matching item titles (up to 20, with `…and N more.` if exceeded)
+- All matching items are in Zotero's bin
+- Only one popup appears, not one per file
+
+#### 1.12.c: `diskDeleteSync=never` disables the feature
+- [ ] Set `extensions.zotero.watchFolder.diskDeleteSync` to `never` in `about:config`
+- [ ] Delete another tracked file from the watch folder
+- [ ] Wait for the next poll cycle
+
+**Expected:**
+- The Zotero item is NOT moved to the bin
+- No popup appears
+- Tracking entry remains (the feature is fully bypassed)
+
+#### 1.12.d: Linked-mode popup wording
+- [ ] Reset `diskDeleteSync` to `auto`
+- [ ] Set Import Mode to `Link to file in current location`, import a fresh file, then delete it externally from the watch folder
+- [ ] Wait for the next poll cycle
+
+**Expected:**
+- Popup appears and the matching item is in the bin
+- Footer explicitly mentions linked attachments and broken file links (something like "These were linked attachments — the items are now in the bin with broken file links.")
+
+---
+
 ## Phase 2: Collection ↔ Folder Sync
 
 ### Test 2.1: Enable Collection Sync
@@ -453,6 +565,8 @@ And remove test collections from Zotero.
 | 1.8 | File Type Filter | ⬜ | |
 | 1.9 | Linked Import | ⬜ | |
 | 1.10 | First Run | ⬜ | |
+| 1.11 | Zotero -> Disk Deletion | ⬜ | |
+| 1.12 | Disk -> Zotero Deletion | ⬜ | |
 | 2.1 | Enable Sync | ⬜ | |
 | 2.2 | Collection → Folder | ⬜ | |
 | 2.3 | Item → Folder | ⬜ | |
@@ -1110,6 +1224,74 @@ Mock `getPref('sourcePath')` → `''` (or `null`). Mock `getPref('lastWatchedPat
 
 ---
 
+### trackingStore.mjs — UT-014b (new fields)
+
+#### UT-014b — `createTrackingRecord` — `postImportAction` and `expectedOnDisk` defaults
+
+**Function:** `createTrackingRecord(data)`
+
+Two new fields were added to `TrackingRecord` to support the deletion-sync scenarios in `watchFolder.mjs` (UT-050 / UT-051):
+
+- `postImportAction` (string): `'leave' | 'delete' | 'move'` — records the post-import disposition so subsequent passes know whether the file was supposed to vanish after import.
+- `expectedOnDisk` (boolean): `true` if the file should currently exist at `path`. Set to `false` when `postImportAction === 'delete'` so the external-deletion scanner (Scenario 1) can ignore those entries.
+
+Defaulting rule: `expectedOnDisk` uses `data.expectedOnDisk !== false` so an explicit `false` is preserved; `undefined` defaults to `true`.
+
+| # | Input | Expected |
+|---|-------|----------|
+| a | `{}` | `postImportAction === 'leave'`, `expectedOnDisk === true` |
+| b | `{ postImportAction: 'delete', expectedOnDisk: false }` | both preserved verbatim |
+| c | `{ expectedOnDisk: false }` | `expectedOnDisk === false` (not coerced back to true) |
+| d | `{ expectedOnDisk: true }` and `{ expectedOnDisk: undefined }` | both → `true` |
+| e | `{ postImportAction: 'leave' \| 'delete' \| 'move' }` | all three values accepted as-is |
+
+---
+
+### watchFolder.mjs — UT-050, UT-051
+
+These cases exercise the two deletion-sync scenarios added to `WatchFolderService`. The test file `test/unit/watchFolder.test.mjs` mocks `content/utils.mjs`, `fileScanner.mjs`, `fileImporter.mjs`, `trackingStore.mjs`, `fileRenamer.mjs`, `smartRules.mjs`, and `duplicateDetector.mjs`. Each `it()` constructs a fresh `WatchFolderService` instance, injects a stubbed `_trackingStore`, and adds a fake window to `service._windows`.
+
+#### UT-050 — `WatchFolderService._handleZoteroTrash` (Scenario 2 — Zotero → disk)
+
+**Method:** `_handleZoteroTrash(itemIDs)`
+
+Triggered when items are moved to the Zotero trash. Behaviour is controlled by the new `diskDeleteOnTrash` pref (`ask` / `os_trash` / `permanent` / `never`). The `ask` mode opens a 3-button dialog via `Services.prompt.confirmEx`: button 0 = "Move to OS trash", button 1 = "Keep on disk", button 2 = "Delete permanently", plus a "Don't ask again" checkbox.
+
+| # | Scenario | Expected |
+|---|----------|----------|
+| a | `mode=never` | No prompt, no disk action; tracking entry dropped |
+| b | `mode=os_trash` | `nsIFile.initWithPath(path)` + `nsIFile.moveToTrash()` silently; no `IOUtils.remove`; no prompt |
+| c | `mode=permanent` | `IOUtils.remove(path)` silently; no `moveToTrash`; no prompt |
+| d | `mode=ask`, user picks button 0 (Move to OS trash) | `moveToTrash` called; `IOUtils.remove` not called |
+| e | `mode=ask`, user picks button 1 (Keep on disk) | Neither `moveToTrash` nor `IOUtils.remove` called; tracking still cleared |
+| f | `mode=ask`, user picks button 2 (Delete permanently) | `IOUtils.remove(path)` called; `moveToTrash` not called |
+| g | `mode=ask` + "Don't ask again" checked + button 0 | `setPref('diskDeleteOnTrash', 'os_trash')` |
+| h | `mode=ask` + "Don't ask again" checked + button 2 | `setPref('diskDeleteOnTrash', 'permanent')` |
+| i | `mode=ask` + "Don't ask again" checked + button 1 | `setPref('diskDeleteOnTrash', 'never')` |
+| j | File already missing on disk (`IOUtils.exists → false`) | No prompt, no action, tracking entry dropped |
+| k | Record has `expectedOnDisk === false` (plugin already removed it post-import) | Skipped — no `moveToTrash`; tracking entry dropped |
+| l | Multiple items (`[1, 2, 3]`) with `mode=ask` | Single batched prompt; one `moveToTrash` call per item; one `removeByItemID` per item |
+| m | OS-trash fallback: `mode=os_trash` but `nsIFile.moveToTrash` is `undefined` (older platform) | Falls back to `IOUtils.remove(path)` |
+
+#### UT-051 — `WatchFolderService._handleExternalDeletions` (Scenario 1 — disk → Zotero)
+
+**Method:** `_handleExternalDeletions(diskPaths)` — `diskPaths` is a `Set<string>` of paths still present on disk after the latest scan.
+
+For every tracking record whose `path` is no longer in `diskPaths`, the corresponding Zotero item is moved to the bin and the user gets a single batched popup. Behaviour gated by the `diskDeleteSync` pref (`auto` / `never`). Records with `expectedOnDisk === false` are always skipped (the plugin deleted those files itself post-import).
+
+| # | Scenario | Expected |
+|---|----------|----------|
+| a | `mode=never` | No `Zotero.Items.getAsync`, no popup, no tracking changes |
+| b | `mode=auto`, tracked file missing from disk, `importMode=stored` | `item.deleted = true`, `item.saveTx()` called, popup shown, tracking entry removed |
+| c | Tracked file still on disk (path appears in `diskPaths` set) | Skipped — no Zotero call, no popup |
+| d | Record has `expectedOnDisk === false` | Skipped — plugin deleted the file post-import, no Zotero call |
+| e | Item missing from `Zotero.Items.getAsync` (returns `null`) | Tracking entry cleared, no popup |
+| f | Item already trashed (`fakeItem.deleted === true`) | Skips `saveTx`, but still listed in the batched popup |
+| g | Multiple deletions | Single batched popup; `removeByItemID` called once per record |
+| h | `importMode=linked` | Popup wording contains `"linked attachments"` and `"broken file links"` |
+
+---
+
 ## Coverage Summary
 
 Test files live under `test/unit/`. `test/integration/` is empty — integration coverage is a future TODO.
@@ -1119,20 +1301,23 @@ Test files live under `test/unit/`. `test/integration/` is empty — integration
 | `utils.mjs` | `test/unit/utils.test.mjs` | UT-001 to UT-004 |
 | `fileRenamer.mjs` | `test/unit/fileRenamer.test.mjs` | UT-005 to UT-008 |
 | `pathMapper.mjs` | `test/unit/pathMapper.test.mjs` | UT-009, UT-010 |
-| `trackingStore.mjs` | `test/unit/trackingStore.test.mjs` | UT-011 to UT-014 |
+| `trackingStore.mjs` | `test/unit/trackingStore.test.mjs` | UT-011 to UT-014, UT-014b |
 | `duplicateDetector.mjs` | `test/unit/duplicateDetector.test.mjs` | UT-015 to UT-020 |
 | `smartRules.mjs` | `test/unit/smartRules.test.mjs` | UT-021 to UT-027 |
 | `conflictResolver.mjs` | `test/unit/conflictResolver.test.mjs` | UT-028 to UT-032 |
 | `syncState.mjs` | `test/unit/syncState.test.mjs` | UT-033 to UT-036 |
 | `fileScanner.mjs`, `folderWatcher.mjs`, `fileImporter.mjs`, `bulkOperations.mjs`, `collectionWatcher.mjs` | `test/unit/fileScanner.test.mjs` | UT-037 to UT-041 |
 | `firstRunHandler.mjs` | `test/unit/firstRunHandler.test.mjs` | UT-049 (only `no_path` guard) |
+| `watchFolder.mjs` | `test/unit/watchFolder.test.mjs` | UT-050, UT-051 |
 
-Modules with no automated coverage yet: `metadataRetriever.mjs`, `watchFolder.mjs`, `collectionSync.mjs`, `fileImporter.mjs` (only `isSupportedFileType` / `filterSupportedFiles` are tested via `fileScanner.test.mjs`).
+Modules with no automated coverage yet: `metadataRetriever.mjs`, `collectionSync.mjs`. (`fileImporter.mjs` was previously listed here; a sibling agent added `test/unit/fileImporter.test.mjs` this session — that table row is owned by them.)
 
-**Total automated test cases:** 215 individual `it()` assertions across 10 test files (UT-001 through UT-041, plus UT-049). UT-042 through UT-048 were intentionally removed when the V1 bidirectional-reconciliation handler was deleted.
+**Total automated test cases (this section's accounting):** UT-001 through UT-041, plus UT-049, UT-050, UT-051, and the new UT-014b — 241 individual `it()` assertions across 11 test files within the rows documented above. UT-042 through UT-048 were intentionally removed when the V1 bidirectional-reconciliation handler was deleted. A 12th file (`test/unit/fileImporter.test.mjs`, covering UT-053+) was added concurrently this session and is documented by the owning agent — combined `npx vitest run` totals will be higher.
 
 ### Known documentation/test gaps
 
 - `checkFirstRun` branches `fresh_install`, `path_changed`, and `normal` are documented in `content/firstRunHandler.mjs` but only the `no_path` branch has a unit test.
 - No tests yet exercise the full `handleFirstRun` flow (dialog → scan → import); manual Test 1.10 covers it.
 - `collectionSync.mjs` (the largest module at ~36 KB) has no unit tests; manual Phase 2 covers it.
+- `watchFolder.mjs` is now partially covered (UT-050, UT-051) but the public surface — `start/stop`, scan loop, observer registration, `_promptDiskDelete` UI strings, and the `_moveToOSTrash` helper in isolation — is still untested.
+- `fileImporter.handlePostImportAction`'s new `{ action, finalPath }` return shape has no direct unit test (only indirect coverage via UT-050 fixtures that assume a record's `expectedOnDisk` will be set correctly post-import).
