@@ -2,9 +2,15 @@
 # All identifiers prefixed with "watch-folder-" to avoid namespace collisions
 
 # Preference pane sections
+watch-folder-pref-section-about = About this plugin
 watch-folder-pref-section-watch = Watch Folder
 watch-folder-pref-section-import = Import Settings
 watch-folder-pref-section-naming = File Naming
+
+# About box (top of preferences pane)
+watch-folder-pref-about-text = This plugin watches a folder you pick and automatically imports any PDFs (or other file types you list) into Zotero. When a new file appears, the plugin imports it, retrieves metadata, and renames the attachment using a template.
+watch-folder-pref-about-storage = Each imported file is copied into Zotero's own storage (under ~/Zotero/storage/). By default the original file is left in your watch folder untouched, so you have two copies — your library is safe even if you later delete from the watch folder.
+watch-folder-pref-about-trash = If you move an imported item to Zotero's bin, the plugin asks what to do with the source file (move to OS trash, keep, or delete permanently). If you delete a tracked file from the watch folder, the matching Zotero item moves to the bin and a popup notifies you.
 
 # Watch folder settings
 watch-folder-pref-source-dir = Source Folder:
