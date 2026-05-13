@@ -1,115 +1,107 @@
 # Module Dependencies
 
-Captures the dependency relationships between plugin features and code modules: the critical path through the feature set, the runtime module graph, and per-feature risk levels with mitigations.
+How the code modules wire together and where the risk lives. Use this when navigating the source.
 
 ---
 
-## Critical Path
-
-The **critical path** (longest sequential dependency chain) is:
-
-```
-Infrastructure → F1.1 → F1.2 → F1.3 → F1.4 → F2.1 → F2.2 → F2.3 → F2.4
-```
-
-This is the minimum sequential work required for full functionality.
-
-### Sequential dependencies (cannot be parallelized)
-
-| Task A | Task B | Why Sequential? |
-|--------|--------|-----------------|
-| F1.1 Config | F1.2 Import | Import needs config to know what/where |
-| F1.2 Import | F1.3 Metadata | Metadata needs imported items |
-| F1.3 Metadata | F1.4 Rename | Rename needs metadata for filename |
-| F2.1-F2.3 | F2.4 Conflict | Conflict resolution needs sync operations |
-| Infrastructure | All features | Features need bootstrap/prefs |
-
----
-
-## Module Dependency Graph (Code Level)
+## Runtime dependency graph
 
 ```
 bootstrap.js
     │
-    ├──► watchFolder.mjs ◄─────────────────────┐
-    │        │                                  │
-    │        ├──► fileScanner.mjs              │
-    │        ├──► fileImporter.mjs ◄───────────┼──► duplicateDetector.mjs
-    │        ├──► metadataRetriever.mjs        │
-    │        ├──► fileRenamer.mjs              │
-    │        ├──► trackingStore.mjs            │
-    │        └──► smartRules.mjs ◄─────────────┘
-    │
-    ├──► collectionSync.mjs (Phase 2)
-    │        │
-    │        ├──► syncState.mjs
-    │        ├──► collectionWatcher.mjs
-    │        ├──► folderWatcher.mjs
-    │        ├──► pathMapper.mjs
-    │        └──► conflictResolver.mjs
-    │
-    └──► bulkOperations.mjs (Phase 3)
+    └──► content/index.mjs (hooks)
              │
-             ├──► watchFolder.mjs (uses fileRenamer)
-             └──► collectionSync.mjs (uses for reorganize)
+             ├──► watchFolder.mjs ◄──────────────────┐
+             │        │                               │
+             │        ├──► fileScanner.mjs           │
+             │        ├──► fileImporter.mjs ────────►│ duplicateDetector.mjs
+             │        ├──► metadataRetriever.mjs    │
+             │        ├──► fileRenamer.mjs          │
+             │        ├──► trackingStore.mjs        │
+             │        └──► smartRules.mjs ◄─────────┘
+             │
+             ├──► firstRunHandler.mjs
+             │        ├──► fileScanner.mjs
+             │        ├──► fileImporter.mjs
+             │        └──► trackingStore.mjs
+             │
+             ├──► collectionSync.mjs (Phase 2 — lazy)
+             │        ├──► syncState.mjs
+             │        ├──► collectionWatcher.mjs
+             │        ├──► folderWatcher.mjs
+             │        ├──► pathMapper.mjs
+             │        └──► conflictResolver.mjs
+             │
+             └──► bulkOperations.mjs (Phase 3)
+                      ├──► fileRenamer.mjs
+                      └──► metadataRetriever.mjs
+
+All modules ──► utils.mjs (getPref, setPref, delay, getFileHash,
+                           sanitizeFilename, getOrCreateCollectionPath)
 ```
 
-### Infrastructure components
+`utils.mjs:getOrCreateCollectionPath` is what lets the recursive folder scan in `watchFolder.mjs._scan` build nested collection paths like `Inbox/Topics/RE` from a relative subfolder path.
+
+## Infrastructure
 
 | Component | Depends On | Blocks |
 |-----------|------------|--------|
-| manifest.json | Nothing | All features |
-| bootstrap.js | manifest.json | All features |
-| prefs.js | Nothing | preferences.xhtml |
-| Fluent (.ftl) | Nothing | UI strings |
-| preferences.xhtml | prefs.js, Fluent | User configuration |
-| preferences.js | preferences.xhtml | None |
-| Build system | All source files | Release |
+| manifest.json | nothing | all features |
+| bootstrap.js | manifest.json | all features |
+| prefs.js | nothing | preferences UI |
+| Fluent (.ftl) | nothing | UI strings |
+| preferences.xhtml / .js | prefs.js, Fluent | user configuration |
 
-### Phase 1 feature dependencies
+## Phase 1 — core watcher
 
-| Feature | Depends On | Blocks |
-|---------|------------|--------|
-| **F1.1** Watch Config | Infrastructure | F1.2, F1.3, F1.4, F1.5 |
-| **F1.2** Auto-Import | F1.1 | F1.3, F1.5, F3.1, F3.2 |
-| **F1.3** Auto-Metadata | F1.2 | F1.4 |
-| **F1.4** Auto-Rename | F1.3 | Phase 2 (for linked files) |
-| **F1.5** Existing Files | F1.2 | None |
+| Feature | Module(s) | Depends on |
+|---------|-----------|------------|
+| Watch config | `preferences.{xhtml,js}` | infrastructure |
+| Folder polling | `watchFolder.mjs`, `fileScanner.mjs` | config |
+| Import | `fileImporter.mjs` | folder polling |
+| Metadata | `metadataRetriever.mjs` | import |
+| Rename | `fileRenamer.mjs` | metadata |
+| Tracking | `trackingStore.mjs` | import |
+| First run | `firstRunHandler.mjs` | config, scanner, importer |
+| Recursive subfolder → collection | `watchFolder.mjs._scan` + `utils.mjs:getOrCreateCollectionPath` | import |
 
-### Phase 2 feature dependencies
+## Phase 2 — collection ↔ folder sync (linked files only)
 
-| Feature | Depends On | Blocks |
-|---------|------------|--------|
-| **F2.1** Collection→Folder | Phase 1 complete, Linked Files mode | F2.2 |
-| **F2.2** Item Movement | F2.1 | F2.3 |
-| **F2.3** Folder→Collection | F2.2 | F2.4 |
-| **F2.4** Conflict Resolution | F2.1, F2.2, F2.3 | None |
+| Feature | Module |
+|---------|--------|
+| Coordinator | `collectionSync.mjs` |
+| Zotero side watcher | `collectionWatcher.mjs` |
+| Disk side watcher | `folderWatcher.mjs` |
+| Path translation | `pathMapper.mjs` |
+| Conflict strategies | `conflictResolver.mjs` |
+| Persisted state | `syncState.mjs` |
 
-### Phase 3 feature dependencies
+Phase 2 only operates on items whose attachment is `LINK_MODE_LINKED_FILE`. Stored-copy attachments are skipped because Zotero owns those paths.
 
-| Feature | Depends On | Blocks |
-|---------|------------|--------|
-| **F3.1** Smart Rules | F1.2 (import flow) | F3.3 (partially) |
-| **F3.2** Duplicate Detection | F1.2 (pre-import check) | F3.3 (partially) |
-| **F3.3** Bulk Operations | F1.3, F1.4, F3.1, F3.2 | None |
+## Phase 3 — advanced
+
+| Feature | Module | Depends on |
+|---------|--------|------------|
+| Smart rules | `smartRules.mjs` | Phase 1 import flow |
+| Duplicate detection | `duplicateDetector.mjs` | Phase 1 import flow |
+| Bulk operations | `bulkOperations.mjs` | metadata, rename; optional Phase 2 for reorganize |
 
 ---
 
-## Risk Assessment by Dependency
+## Risk assessment
 
-| Feature | Risk Level | Risk Reason | Mitigation |
-|---------|------------|-------------|------------|
-| F1.1 | Low | Simple config, well-understood | None needed |
-| F1.2 | Medium | File system edge cases | Extensive testing |
-| F1.3 | High | External API (metadata services) | Graceful degradation, retry logic |
-| F1.4 | Low | String manipulation | Edge case testing |
-| F1.5 | Medium | Batch processing, UI feedback | Progress indicators |
-| F2.1-F2.4 | High | Bidirectional sync, conflicts | Conservative conflict handling |
-| F3.1 | Medium | Rule engine complexity | Start simple, iterate |
-| F3.2 | Medium | Fuzzy matching accuracy | Configurable thresholds |
-| F3.3 | Low | Uses existing components | Integration testing |
+| Module / area | Risk | Why | Mitigation |
+|---------------|------|-----|------------|
+| `fileImporter.mjs` | Medium | Filesystem edge cases (cloud sync delays, permissions, locks) | Stability check, retry on next scan |
+| `metadataRetriever.mjs` | High | External services (Zotero recognition, DOI/CrossRef); failures are normal | Tag `_needs-review`, throttle, queue |
+| `fileRenamer.mjs` | Low | Pure string + filesystem; bounded by `sanitizeFilename` | Edge-case tests for long names, illegal chars |
+| `collectionSync.mjs` + watchers | High | Bidirectional sync with two independent change sources; races, feedback loops | `_isSyncing` reentrancy guard, pause-other-side pattern, persisted state, conservative tagging |
+| `pathMapper.mjs` | Medium | Cross-platform name sanitization, case-insensitive filesystems | Sanitize at boundary, cache resolutions |
+| `smartRules.mjs` | Medium | User-defined regex and condition combinatorics | Validate on load, sort by priority, AND within rule |
+| `duplicateDetector.mjs` | Medium | Fuzzy title threshold tuning | Try indexed methods (DOI/ISBN) first, configurable threshold |
+| `bulkOperations.mjs` | Low | Composes existing modules | Batch + progress callback, dry-run mode |
 
-### Why the high-risk items are high-risk
+The two high-risk areas to be careful around:
 
-- **F1.3 (Auto-Metadata)** — Depends on Zotero's recognition service plus external DOI/CrossRef resolvers. Network failure, rate limits, or unrecognizable PDFs are normal cases that must degrade gracefully (tag with `_needs-review` rather than failing the whole import).
-- **F2.1-F2.4 (Collection/Folder sync)** — The hardest features in the plugin. Bidirectional sync with two independent change sources (Zotero notifier events and filesystem polling) introduces races, feedback loops, and edge cases (rename + move in same tick, multi-collection items, case-insensitive filesystems). Mitigation: pause one side while applying changes from the other, persist a full sync-state snapshot, conservative conflict tagging instead of silent overwrites.
+- **Metadata retrieval** — graceful degradation matters more than success rate. Network/rate limits and unrecognizable PDFs are normal cases. Surface them via the `_needs-review` tag, never block the import.
+- **Phase 2 sync** — two independent change sources (Zotero notifier and filesystem polling) makes feedback loops the default failure mode. The codebase prevents them via `_isSyncing` / `_pendingCollections` / `_pendingItems` guards in `collectionSync.mjs`; do not remove those guards when refactoring.

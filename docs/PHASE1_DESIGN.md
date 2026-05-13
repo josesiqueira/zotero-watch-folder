@@ -1,189 +1,162 @@
-# Phase 1 Design — Core Watch Folder (MVP)
+# Phase 1 Design — Core Watch Folder
 
-Design reference for Phase 1: acceptance criteria for features F1.1–F1.5, the error-handling response matrix, the persisted tracking record schema, and the manual testing checklist.
-
----
-
-## Acceptance Criteria
-
-### F1.1 — Watch Folder Configuration
-
-**Description:** User configures a source folder path, poll interval, target collection, file types to watch, and import mode through a preference pane.
-
-**Dependencies:** Infrastructure only (bootstrap.js, prefs.js, preferences.xhtml)
-
-**User-Facing Elements:**
-- Preference pane accessible via Edit > Preferences > Watch Folder
-- Source folder path with "Browse" button using Zotero's FilePicker
-- Poll interval slider/input (1-60 seconds, default 5)
-- Target collection dropdown (creates "Inbox" if not exists)
-- File types text field (default: "pdf", optional: "pdf,epub,djvu")
-- Import mode dropdown: "Stored Copy" or "Linked File"
-- Enable/disable toggle checkbox
-
-**Technical Requirements:**
-- Store all settings via `Zotero.Prefs` with prefix `extensions.zotero.watchFolder.*`
-- Validate folder path exists on enable
-- Create target collection if it does not exist
-- Re-initialize watcher when settings change
-
-**Acceptance:**
-- [ ] User can select a folder via FilePicker
-- [ ] User can set poll interval (1-60 seconds)
-- [ ] Settings persist across Zotero restarts
-
-### F1.2 — Auto-Import
-
-**Description:** When a new file is detected in the watch folder, wait for it to stabilize, then import it into Zotero.
-
-**Dependencies:** F1.1 (needs configuration values)
-
-**Behavior:**
-1. Polling loop detects new file (not in `knownFiles` cache or `mtime` changed)
-2. Wait 2 seconds for file write completion (cloud sync, network mount)
-3. Verify file size stability (check twice with 1-second delay)
-4. Import file using `Zotero.Attachments.importFromFile()` or `linkFromFile()`
-5. Place item in configured target collection
-6. Add file to `knownFiles` tracking cache
-7. Persist tracking data across restarts
-
-**Post-Import Actions (configurable):**
-- "Leave in place" - file stays in watch folder
-- "Delete" - remove source file after successful import
-- "Move to subfolder" - move to `watch-folder/imported/`
-
-**Acceptance:**
-- [ ] New files detected within poll interval + 2 seconds
-- [ ] Files imported to correct collection
-- [ ] Already-imported files not re-imported
-
-### F1.3 — Auto-Retrieve Metadata
-
-**Description:** After import, automatically trigger Zotero's built-in metadata retrieval.
-
-**Dependencies:** F1.2 (needs imported attachment items)
-
-**Behavior:**
-1. After import completes, check if item can be recognized
-2. Queue item for recognition via `Zotero.RecognizeDocument.recognizeItems([item])`
-3. Throttle: max 2 concurrent metadata lookups, 1-2 second delay between requests
-4. On success: item gets title, authors, year, DOI populated
-5. On failure: add tag `_needs-review` so user can filter and manually fix
-
-**Acceptance:**
-- [ ] Metadata retrieval triggers automatically
-- [ ] Failed retrieval adds `_needs-review` tag
-
-### F1.4 — Auto-Rename Files
-
-**Description:** After metadata retrieval succeeds, rename the attachment file based on a configurable pattern.
-
-**Dependencies:** F1.3 (needs metadata for filename generation)
-
-**Behavior:**
-1. Listen for metadata retrieval completion
-2. Build filename from template: default `{firstCreator} - {year} - {title}`
-3. Sanitize filename (remove illegal characters, truncate)
-4. Rename via `Zotero.Attachments.renameAttachmentFile()`
-
-**Template Variables:**
-- `{firstCreator}` - First author's last name
-- `{creators}` - All authors (comma-separated)
-- `{year}` - Publication year
-- `{title}` - Full title
-- `{shortTitle}` - First 50 chars of title
-- `{DOI}` - DOI value
-
-**Acceptance:**
-- [ ] Files renamed after metadata retrieval
-- [ ] Rename pattern configurable and works
-
-### F1.5 — Existing Files on First Run
-
-**Description:** On first enable or when watch folder path changes, handle existing files.
-
-**Dependencies:** F1.2 (uses import functionality)
-
-**Can Run In Parallel With:** F1.3, F1.4 (independent functionality)
-
-**Behavior:**
-1. Detect "first run" condition: no tracking data exists OR path changed
-2. Scan folder for all files matching configured extensions
-3. Prompt user: "Found X files in watch folder. Import all?"
-4. Process sequentially with progress indicator
-5. Show completion summary
-
-**Acceptance:**
-- [ ] First run detected correctly
-- [ ] User prompted with file count
-- [ ] Batch import with progress
+Phase 1 is the always-on watcher: detect new files in a configured folder, import them into Zotero, retrieve metadata, optionally rename. Plus a one-shot first-run flow for files already present when the user enables the plugin.
 
 ---
 
-## Error Handling Strategy
+## Features
 
-| Error Type | Response |
-|------------|----------|
-| Folder not found | Disable watching, notify user |
-| File permission denied | Skip file, log, retry next scan |
-| File locked | Defer import, retry next scan |
-| Import failed | Add to retry queue (max 3 attempts) |
-| Metadata retrieval failed | Tag with `_needs-review` |
-| Rename failed | Keep original name, log |
+### F1.1 — Watch folder configuration
 
-Additional error semantics inherited from the overall design:
-- File permission errors → log and skip, notify user
-- Network errors during metadata retrieval → queue for retry
-- Corrupt PDFs → import but tag with `_import-error`
-- Watch folder path doesn't exist → disable watching, notify user
+User configures: source folder path, poll interval, target collection, file types, import mode (stored/linked), and post-import action through `content/preferences.xhtml`.
+
+- Preferences live under `extensions.zotero.watchFolder.*` (see `content/utils.mjs:14 getPref`).
+- Folder picker uses Zotero's `FilePicker` wrapper.
+- Target collection is auto-created on first import if missing (`utils.mjs:getOrCreateTargetCollection`).
+- Toggling enabled starts/stops the watcher (`content/index.mjs:onStartup`).
+
+### F1.2 — Auto-import
+
+`watchFolder.mjs._scan()` runs on a `setTimeout`-driven loop:
+
+1. `scanFolderRecursive(watchPath)` walks the watch path and returns matching files (`content/fileScanner.mjs:91`).
+2. Already-tracked paths (by `trackingStore`) and in-flight paths are skipped.
+3. For each new file, derive the target collection from the subfolder it sits in (see "Recursive subfolder → collection" below).
+4. `_processNewFile(path, collection)`:
+   - `_waitForFileStable` — checks size doesn't change between two stats.
+   - `getFileHash` — SHA-256 of first 1 MB; if the hash matches an existing tracked record, treat as duplicate and skip.
+   - Optional pre-import duplicate check (`duplicateDetector.checkForDuplicate`) when enabled.
+   - `importFile(path, { collectionName })` returns the new Zotero item.
+   - For `importMode === 'stored'`, runs `handlePostImportAction` (delete / move-to-imported / leave).
+   - Tracking record persisted via `trackingStore.add` + `.save()`.
+   - Smart rules engine runs against the item (`smartRules.processItemWithRules`).
+   - Item is queued on the `metadataRetriever`; on success, optional auto-rename runs.
+
+### Recursive subfolder → collection mapping
+
+`scanFolderRecursive` walks subdirectories (skipping `imported/`). For each found file, `_scan` computes the path relative to the watch root and appends each path segment to the configured target collection:
+
+```
+watchPath:    /home/user/Inbox-Mirror
+file:         /home/user/Inbox-Mirror/Topics/RE/paper.pdf
+target:       Inbox/Topics/RE   (created via utils.mjs:getOrCreateCollectionPath)
+```
+
+`getOrCreateCollectionPath` walks/creates each segment under the user library, using `Zotero.Collections.getByParent` for nested lookups (`utils.mjs:148`).
+
+### F1.3 — Metadata retrieval
+
+After import, the item is queued in `metadataRetriever` which calls `Zotero.RecognizeDocument.recognizeItems([item])`. Concurrency is capped and requests are spaced. On failure the parent item is tagged `_needs-review`.
+
+### F1.4 — Auto-rename
+
+After successful metadata retrieval, the post-completion callback in `watchFolder._processNewFile` calls `fileRenamer.renameAttachment(item)`. The rename pattern is templated, defaulting to `{firstCreator} - {year} - {title}`.
+
+Template variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`. Filename is sanitized via `utils.sanitizeFilename` (illegal chars stripped, length capped by `maxFilenameLength`).
+
+### F1.5 — First-run handling (V2 simple flow)
+
+`content/firstRunHandler.mjs` runs once from `onMainWindowLoad` when the plugin is enabled and a `sourcePath` is set. It is a **one-way scan-and-import flow** — there is no bidirectional reconciliation, no inventory, no merge planning.
+
+Flow (`firstRunHandler.mjs:195 handleFirstRun`):
+
+1. `checkFirstRun()` — returns `isFirstRun: true` if no `lastWatchedPath` pref and tracking store is empty, OR if `sourcePath` differs from the saved `lastWatchedPath`.
+2. `scanFolder(sourcePath)` — top-level scan (non-recursive) to count existing files.
+3. If 0 files: mark complete and return.
+4. Otherwise prompt the user with three choices: **Import All**, **Skip**, **Cancel**.
+   - Import All → `importExistingFiles(window, files)` runs `importBatch` with a `Zotero.ProgressWindow`.
+   - Skip → mark complete without importing.
+   - Cancel → leave state alone; prompt will reappear next session.
+5. Mark complete by writing `sourcePath` to the `lastWatchedPath` pref.
+
+`resetFirstRunState()` clears the pref so the next startup re-triggers. `rescanExistingFiles(window)` is the user-facing "re-scan" trigger (resets + runs `handleFirstRun`).
 
 ---
 
-## Data Structures
+## Acceptance criteria
 
-### TrackingRecord
+| Feature | Criterion |
+|---------|-----------|
+| F1.1 | User can pick a folder via FilePicker; settings persist across restarts |
+| F1.2 | New files detected within `pollInterval + 2s`; already-imported files not re-imported |
+| F1.2 | Files placed in correct nested collection per subfolder |
+| F1.3 | Metadata retrieval auto-triggers; failures add `_needs-review` tag |
+| F1.4 | Files renamed per pattern after successful metadata retrieval |
+| F1.5 | First-run prompt shows correct file count; Import/Skip/Cancel each behave correctly |
+
+---
+
+## Error handling
+
+| Error | Response |
+|-------|----------|
+| Watch folder missing | Log; `startWatching` aborts; user notified via preferences UI |
+| File permission denied | Log; skip file; will retry on next scan |
+| File still being written | Stability check fails; skip; retry on next scan |
+| Import throws | Logged via `Zotero.logError`; processing set cleared in `finally` |
+| Metadata retrieval fails | Tag parent item `_needs-review`; tracking record marked `metadataRetrieved: false` |
+| Rename fails | Keep original name; logged |
+| Duplicate detected (hash) | Skip; add tracking record marked `isDuplicate: true` to prevent re-check |
+| Duplicate detected (DOI/title) with action `skip` | Skip; track as above |
+| Duplicate detected with action `import` | Import anyway (so user can compare) |
+
+---
+
+## Data structures
+
+### TrackingRecord (`content/trackingStore.mjs:27`)
 
 ```typescript
 interface TrackingRecord {
-  path: string;
-  hash: string;
-  mtime: number;
-  size: number;
-  itemID: number;
-  importDate: string;
+  path: string;             // original file path
+  hash: string;             // SHA-256 of first 1 MB
+  mtime: number;            // last-modified timestamp
+  size: number;             // file size in bytes
+  itemID: number;           // Zotero item ID after import
+  importDate: string;       // ISO timestamp
   metadataRetrieved: boolean;
   renamed: boolean;
 }
 ```
 
-The hash is computed over the first 1 MB of the file (MD5) so a replaced file with a different version is detected as new. Records are kept in a bounded LRU cache (cap ~5000) and persisted via `IOUtils.writeJSON()` / `IOUtils.readJSON()` so state survives restart.
+Persisted as JSON at `<Zotero.DataDirectory>/zotero-watch-folder-tracking.json`. LRU-capped at 5000 entries; oldest evicted on insert.
+
+### First-run state
+
+Single preference: `extensions.zotero.watchFolder.lastWatchedPath`. Presence + match to current `sourcePath` indicates first run already happened.
 
 ---
 
-## API Usage Summary
+## API usage summary
 
 | Operation | API |
 |-----------|-----|
-| Check file exists | `await IOUtils.exists(path)` |
-| Get file info | `await IOUtils.stat(path)` |
+| Check path exists | `await IOUtils.exists(path)` |
+| Stat file | `await IOUtils.stat(path)` → `{ size, lastModified, type }` |
 | List directory | `await IOUtils.getChildren(path)` |
-| Import stored copy | `await Zotero.Attachments.importFromFile({...})` |
-| Import linked file | `await Zotero.Attachments.linkFromFile({...})` |
+| Read first 1 MB | `await IOUtils.read(path, { maxBytes: 1048576 })` |
+| Hash | `await crypto.subtle.digest('SHA-256', data)` |
+| Import stored copy | `await Zotero.Attachments.importFromFile({ file, parentItemID, collections })` |
+| Import linked file | `await Zotero.Attachments.linkFromFile({ ... })` |
 | Trigger metadata | `await Zotero.RecognizeDocument.recognizeItems([item])` |
-| Rename file | `await attachment.renameAttachmentFile(newName)` |
-| Get/set preferences | `Zotero.Prefs.get/set(key, value)` |
-| Register observer | `Zotero.Notifier.registerObserver(...)` |
+| Rename attachment | `await attachment.renameAttachmentFile(newName)` |
+| Get/set prefs | `Zotero.Prefs.get/set(key, value)` |
+| Observe changes | `Zotero.Notifier.registerObserver(observer, ['item'])` |
+| Show progress | `new Zotero.ProgressWindow()` with `ItemProgress` |
 
 ---
 
-## Testing Checklist
+## Manual testing checklist
 
-- [ ] Configure watch folder via preferences
-- [ ] Enable/disable toggle works
-- [ ] Single PDF imports correctly
-- [ ] Multiple PDFs import sequentially
-- [ ] Metadata retrieval triggers automatically
-- [ ] Files renamed after metadata retrieval
-- [ ] Cloud-synced folders work (file stability check)
-- [ ] First run detects existing files
-- [ ] Plugin enable/disable cycle clean
+- [ ] Configure folder via preferences; toggle on/off
+- [ ] Single PDF imports into the correct collection
+- [ ] Recursive subfolders map to nested collections (e.g. `Inbox/Topics/RE`)
+- [ ] Already-imported file is not re-imported (path or hash match)
+- [ ] Cloud-synced folder (Dropbox/pCloud) imports work — partial writes don't import
+- [ ] Metadata retrieval runs; failed items receive `_needs-review`
+- [ ] Auto-rename applies pattern; long titles truncated
+- [ ] First-run prompt appears with correct count
+- [ ] First-run "Skip" marks complete without importing
+- [ ] First-run "Cancel" leaves state untouched (prompt returns next session)
+- [ ] Trash sync: move an imported item to Zotero's trash → dialog asks whether to delete the source file. "Don't ask again" persists the choice as `diskDeleteOnTrash = always` or `never`.
+- [ ] Disable plugin → timers and observers released (no leftover polling)

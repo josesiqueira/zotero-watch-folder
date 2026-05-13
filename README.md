@@ -1,152 +1,105 @@
-# zotero-watch-folder-zotero8
+# Zotero Watch Folder
 
-A powerful Zotero 8 plugin that automatically monitors a folder for new files and imports them into your Zotero library with metadata retrieval, smart organization, and collection synchronization.
+A Zotero plugin that watches a folder on disk and automatically imports new PDFs (and other configured file types) into your library, with optional metadata retrieval, smart renaming, and collection mirroring.
+
+Built for Zotero 8, also compatible with Zotero 7 and the upcoming Zotero 9 (`strict_min_version: 6.999`, `strict_max_version: 9.*`).
+
+## What it does
+
+Drop a file into your watched folder and the plugin imports it into a target collection in Zotero. Optionally, it fetches metadata, renames the file from a template, and keeps a collection tree mirrored against a folder tree on disk.
+
+## Install
+
+1. Download the latest `.xpi` from the [Releases](https://github.com/josesiqueira/zotero-watch-folder/releases) page.
+2. In Zotero, open `Tools` -> `Add-ons`.
+3. Click the gear icon and choose `Install Add-on From File...`.
+4. Select the downloaded `.xpi` and restart Zotero when prompted.
+
+## Configure
+
+Open `Edit` -> `Settings` -> `Watch Folder` (on macOS: `Zotero` -> `Settings`).
+
+Core settings:
+
+- **Enable Watch Folder** - master on/off switch.
+- **Source Folder** - the folder to monitor.
+- **Target Collection** - where imported items land (default `Inbox`).
+- **Poll Interval** - seconds between scans (default `5`).
+- **File Types** - comma-separated extensions, e.g. `pdf,epub`.
+- **Import Mode** - `stored` (copy into Zotero) or `linked` (link to original).
+- **Post-Import Action** - `leave`, `delete`, or `move` the source file.
+- **Auto-Retrieve Metadata** - fetch PDF metadata after import.
+- **Auto-Rename** + **Rename Pattern** - template like `{firstCreator} - {year} - {title}`. Available variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`, `{itemType}`, `{publicationTitle}`.
+
+Optional collection mirroring (Phase 2):
+
+- **Mirror Path** and **Mirror Root Collection** - keep a collection subtree and a folder subtree in sync.
+- **Bidirectional Sync** - propagate changes both ways.
+- **Conflict Resolution** - `zotero`, `disk`, `last`, `both`, or `manual`.
+
+All preferences live under `extensions.zotero.watchFolder.*` and can be inspected in `about:config`.
 
 ## Features
 
-### Phase 1: Auto-Import
-- **Watch Folder Monitoring** - Automatically detect new PDF files in a designated folder
-- **Recursive Subfolder Import** - Automatically scan subfolders and map them to Zotero collections (e.g., `WatchFolder/Research/AI` → `TargetCollection/Research/AI`)
-- **Automatic Metadata Retrieval** - Fetch metadata from online sources for imported PDFs
-- **Smart File Renaming** - Rename files based on metadata using customizable patterns (e.g., `{firstCreator} - {year} - {title}`)
-- **First-Run Detection** - Option to import existing files when first configured
-- **Post-Import Actions** - Choose to leave, delete, or move files after import
-- **File Type Filtering** - Configure which file types to monitor (PDF, EPUB, etc.)
+**Auto-import (Phase 1)**
 
-### Phase 2: Collection Sync
-- **Bidirectional Mirroring** - Sync Zotero collections with folder structure on disk
-- **Item Movement Tracking** - Moving items between collections updates folder structure
-- **Folder to Collection Sync** - Creating folders on disk creates corresponding collections
-- **Conflict Resolution** - Multiple strategies for handling sync conflicts (Zotero wins, disk wins, newest wins, keep both)
+- Polling-based folder watcher with adaptive interval.
+- Recursive subfolder scan: `WatchFolder/Research/AI/paper.pdf` imports into `TargetCollection/Research/AI`.
+- Metadata retrieval queue with throttling and a `_needs-review` tag for failures.
+- Template-based file renaming with sanitization and a configurable max length.
+- First-run detection: when the watch folder is set for the first time (or changed), the plugin scans existing files and offers `Import All`, `Skip`, or `Cancel`. Imports run in a batch with a progress window.
+- Trash sync: when you move an imported item to Zotero's trash, the plugin asks whether to also delete the source file from the watch folder. A "Don't ask again" checkbox switches to silent delete or silent keep. Controlled by `extensions.zotero.watchFolder.diskDeleteOnTrash` (`ask` / `always` / `never`).
 
-### Phase 3: Advanced Features
-- **Smart Rules Engine** - Create rules to automatically categorize imports based on:
-  - Title, author, DOI, publication, tags, filename, and more
-  - Actions: add to collection, add tag, set field, skip import
-  - Support for nested collection paths (e.g., "Research/AI/Papers")
-- **Duplicate Detection** - Prevent duplicate imports using:
-  - DOI matching (100% confidence)
-  - ISBN matching (100% confidence)
-  - Fuzzy title matching (configurable threshold)
-  - Content hash matching (optional)
-- **Bulk Operations** - Mass operations for library maintenance:
-  - Reorganize all files using current naming pattern
-  - Retry metadata for failed items
-  - Apply smart rules to existing library items
+**Collection mirroring (Phase 2)**
 
-## Requirements
+- Collection tree on disk reflects the Zotero collection tree (and optionally vice versa).
+- Item moves between collections are mirrored as file moves on disk.
+- New folders on disk can create matching collections.
+- Multiple conflict-resolution strategies for divergent state.
 
-- Zotero 8.0 or later
-- Windows, macOS, or Linux
+**Smart features (Phase 3)**
 
-## Installation
+- Smart rules engine: match on title, author, DOI, publication, tags, filename, etc.; apply actions like add-to-collection, add-tag, set-field, or skip-import. Supports nested collection paths.
+- Duplicate detection: DOI, ISBN, fuzzy title (configurable threshold), and optional content hash.
+- Bulk operations: re-apply naming pattern, retry failed metadata, apply rules across the existing library.
 
-1. Download the latest `.xpi` file from [Releases](../../releases)
-2. In Zotero, go to `Tools` → `Add-ons`
-3. Click the gear icon and select `Install Add-on From File...`
-4. Select the downloaded `.xpi` file
-5. Restart Zotero
+## Known limitations
 
-## Configuration
+- Smart rules are evaluated correctly, but there is no GUI for editing them yet. Rules are stored as JSON in `extensions.zotero.watchFolder.smartRules` and must be edited via `about:config` or a small script.
+- Folder watching is poll-based, not OS-event-based. Very short poll intervals on large folders may increase CPU/disk use.
+- Manual end-to-end test coverage in a live Zotero 8 instance is still in progress (see `TEST_PLAN.md`).
 
-After installation, configure the plugin in `Edit` → `Settings` → `Watch Folder`:
+## For developers
 
-### Basic Settings
-- **Enable Watch Folder** - Turn monitoring on/off
-- **Source Folder** - The folder to monitor for new files
-- **Target Collection** - Where to place imported items (default: "Inbox")
-- **Poll Interval** - How often to check for new files (seconds)
-- **File Types** - Comma-separated list of extensions to monitor
-
-### Import Options
-- **Import Mode** - Store files in Zotero or link to original location
-- **Post-Import Action** - What to do with source files after import
-- **Auto-Retrieve Metadata** - Automatically fetch metadata for PDFs
-
-### File Naming
-- **Auto-Rename** - Rename files after metadata is retrieved
-- **Rename Pattern** - Template for new filenames
-  - Available variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`, `{itemType}`, `{publicationTitle}`
-- **Max Filename Length** - Truncate long filenames
-
-### Duplicate Detection
-- **Enable Duplicate Check** - Check for duplicates before import
-- **Match by DOI/ISBN/Title** - Configure detection methods
-- **Title Similarity Threshold** - For fuzzy title matching (0.0-1.0)
-
-## Building from Source
+The code is plain ES modules under `content/`, loaded by `bootstrap.js`.
 
 ```bash
-# Clone the repository
-git clone https://github.com/stark1tty/zotero-watch-folder-zotero8.git
-cd zotero-watch-folder-zotero8
-
-# Install dependencies
-npm install
-
-# Build the plugin
-npm run build
-
-# Package as XPI
-npm run package
-
-# Build + package + upload XPI to the matching GitHub release tag
-npm run release
+npm install      # install dev dependencies (esbuild, vitest, archiver)
+npm run build    # produce build output
+npm run package  # produce the .xpi
+npm test         # run the vitest unit suite (215 tests across 10 files)
 ```
 
-The XPI file will be created in the project root directory.
+Module-level design docs live in `docs/`:
 
-## Project Structure
+- `docs/ARCHITECTURE.md` - high-level layout.
+- `docs/MODULE_DEPENDENCIES.md` - which module depends on which.
+- `docs/PHASE1_DESIGN.md` - watch + import + rename.
+- `docs/PHASE2_DESIGN.md` - collection/folder sync.
+- `docs/PHASE3_AND_PERFORMANCE.md` - rules, duplicates, bulk ops, perf notes.
 
-```
-zotero-watch-folder-zotero8/
-├── manifest.json           # Plugin manifest for Zotero 8
-├── bootstrap.js            # Plugin lifecycle (startup/shutdown)
-├── prefs.js               # Default preference values
-├── content/
-│   ├── watchFolder.mjs    # Main orchestration service
-│   ├── fileScanner.mjs    # Folder scanning logic
-│   ├── fileImporter.mjs   # Zotero import integration
-│   ├── trackingStore.mjs  # Import history tracking
-│   ├── metadataRetriever.mjs  # PDF metadata fetching
-│   ├── fileRenamer.mjs    # Template-based renaming
-│   ├── firstRunHandler.mjs    # Initial setup wizard
-│   ├── collectionSync.mjs     # Collection sync coordinator
-│   ├── collectionWatcher.mjs  # Zotero collection observer
-│   ├── folderWatcher.mjs      # Disk folder observer
-│   ├── pathMapper.mjs         # Path ↔ collection mapping
-│   ├── syncState.mjs          # Sync state persistence
-│   ├── conflictResolver.mjs   # Sync conflict handling
-│   ├── smartRules.mjs         # Rules engine
-│   ├── duplicateDetector.mjs  # Duplicate detection
-│   ├── bulkOperations.mjs     # Mass operations
-│   ├── utils.mjs              # Shared utilities
-│   ├── preferences.xhtml      # Settings UI
-│   └── preferences.js         # Settings logic
-├── locale/
-│   └── en-US/
-│       └── zotero-watch-folder.ftl  # Localization strings
-└── build/
-    ├── build.mjs          # Build script
-    └── package.mjs        # XPI packaging script
-```
+Useful entry points:
 
-## Technical Details
-
-This plugin is built for Zotero 8 using modern web technologies:
-- **ES Modules** (`.mjs`) - No legacy `.jsm` files
-- **Native async/await** - No Bluebird promises
-- **IOUtils/PathUtils** - Modern Mozilla file APIs
-- **Fluent Localization** - `.ftl` files for i18n
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
+- `bootstrap.js` - plugin lifecycle.
+- `content/watchFolder.mjs` - main orchestrator.
+- `content/firstRunHandler.mjs` - the simple scan-and-prompt first-run flow.
+- `content/collectionSync.mjs` - Phase 2 sync coordinator.
+- `content/smartRules.mjs`, `content/duplicateDetector.mjs`, `content/bulkOperations.mjs` - Phase 3.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+Issues and pull requests are welcome at <https://github.com/josesiqueira/zotero-watch-folder>. Please run `npm test` before opening a PR and, where it makes sense, add a unit test next to the module you are changing.
 
-## Acknowledgments
+## License
 
-- Built for [Zotero](https://www.zotero.org/) - the free, easy-to-use tool for collecting, organizing, and citing research
+MIT. See `LICENSE`.
