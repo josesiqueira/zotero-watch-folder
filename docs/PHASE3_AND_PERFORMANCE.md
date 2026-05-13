@@ -1,19 +1,17 @@
 # Phase 3 Design and Performance
 
-Design reference for Phase 3 advanced features (Smart Rules, Duplicate Detection, Bulk Operations) and the cross-cutting performance optimization strategy (adaptive polling, LRU cache, benchmark targets).
+Phase 3 features (Smart Rules, Duplicate Detection, Bulk Operations) plus the cross-cutting performance strategy.
 
 ---
 
 ## F3.1 — Smart Rules Engine
 
-User-defined automation rules that fire during the import flow to categorize, tag, or skip items based on their metadata.
+User-defined automation rules that run during the import flow to categorize, tag, or skip items based on metadata. Implemented in `content/smartRules.mjs`.
 
-**Dependencies:** F1.2 Auto-Import (hooks into import flow). Can be developed in parallel with F3.2.
-
-### Rule Structure
+### Rule shape
 
 ```javascript
-const rule = {
+{
   id: '1706234567890',
   name: 'RE Papers',
   enabled: true,
@@ -26,61 +24,45 @@ const rule = {
     { type: 'addTag', value: 'requirements-engineering' }
   ],
   stopOnMatch: false
-};
+}
 ```
 
-### Available Condition Fields
-- `title`, `firstCreator`, `creators`, `year`
-- `publicationTitle`, `DOI`, `doiPrefix`
-- `abstractNote`, `itemType`, `tags`, `filename`
+### Fields
 
-### Available Operators
-- `contains`, `notContains`, `equals`, `notEquals`
-- `startsWith`, `endsWith`, `matchesRegex`
-- `greaterThan`, `lessThan`, `isEmpty`, `isNotEmpty`
+`title`, `firstCreator`, `creators`, `year`, `publicationTitle`, `DOI`, `doiPrefix`, `abstractNote`, `itemType`, `tags`, `filename` (see `smartRules.mjs:16 CONDITION_FIELDS`).
 
-### Available Actions
-- `addToCollection` (supports nested paths: "Topics/RE/Surveys")
-- `addTag`
-- `setField`
-- `skipImport`
+### Operators
 
-### Evaluation Semantics
+`contains`, `notContains`, `equals`, `notEquals`, `startsWith`, `endsWith`, `matchesRegex`, `greaterThan`, `lessThan`, `isEmpty`, `isNotEmpty` (`smartRules.mjs:34`).
 
-Rules are evaluated in priority order. All conditions within a rule are AND-ed (every condition must match). When a rule matches, its actions are appended to the queue. If `stopOnMatch` is true, evaluation halts; otherwise lower-priority rules continue to run, so a single item can pick up multiple tags and collection memberships.
+### Actions
 
-**Acceptance:**
-- [ ] Rules can be created/edited/removed
-- [ ] Rules execute on import
-- [ ] Nested collection paths work
+`addToCollection` (supports nested paths like `Topics/RE/Surveys` via `utils.getOrCreateCollectionPath`), `addTag`, `setField`, `skipImport` (`smartRules.mjs:52`).
+
+### Evaluation
+
+Rules are sorted by priority (descending) at load time (`smartRules.mjs:108`). Conditions within a rule are AND-ed. On match, the rule's actions are applied. If `stopOnMatch` is true, evaluation halts; otherwise lower-priority rules continue, so an item can pick up multiple tags and collection memberships from successive matches.
+
+Rules are persisted as JSON in the `smartRules` preference.
 
 ---
 
 ## F3.2 — Duplicate Detection
 
-Pre-import check that flags items already in the library, allowing skip/import/ask behavior to be configured.
+Pre-import / post-import check against the existing library. Implemented in `content/duplicateDetector.mjs`. Action on duplicate (`skip` / `import`) is configurable via the `duplicateAction` preference.
 
-**Dependencies:** F1.2 Auto-Import (pre-import check). Can be developed in parallel with F3.1.
-
-### Detection Methods
+### Methods (in cost order)
 
 | Method | Confidence | Cost |
 |--------|------------|------|
-| DOI match | 100% | Low (indexed) |
-| ISBN match | 100% | Low (indexed) |
-| Title fuzzy match | Configurable (85% default) | Medium (cache) |
-| Content hash | 100% | High (file read) |
+| DOI match | 100% | low (indexed) |
+| ISBN match | 100% | low (indexed) |
+| Title fuzzy match | configurable (Levenshtein, default 0.85) | medium |
+| Content hash (SHA-256 first 1 MB) | 100% on identical bytes | high (file read) |
 
-### Evaluation Order
+First positive result short-circuits. `checkForDuplicate(metadata, filePath)` is callable both pre-import (file hash only — metadata not yet known) and post-import (full metadata-based detection).
 
-Methods are tried in increasing cost order; the first positive result short-circuits the rest:
-
-1. **DOI** — exact match against indexed `DOI` field; near-zero cost, perfect confidence.
-2. **ISBN** — same, for books.
-3. **Title fuzzy match** — Levenshtein-based similarity against an in-memory title cache. Returns a confidence score between 0 and 1; user-configurable threshold (default 0.85).
-4. **Content hash** — MD5 of the file. Catches re-downloads of the same PDF under different filenames, but requires reading the file, so only run if enabled in prefs.
-
-Similarity calculation:
+Similarity:
 ```javascript
 calculateSimilarity(str1, str2) {
   const distance = this.levenshteinDistance(str1, str2);
@@ -88,104 +70,70 @@ calculateSimilarity(str1, str2) {
 }
 ```
 
-**Acceptance:**
-- [ ] DOI matching works
-- [ ] Title fuzzy matching works
-- [ ] Configurable actions (skip/import/ask)
+`watchFolder.mjs:_processNewFile` calls `checkForDuplicate({}, filePath)` before import when `duplicateCheck` pref is enabled.
 
 ---
 
 ## F3.3 — Bulk Operations
 
-Mass operations applied to existing library items.
+Mass operations over existing library items. Implemented in `content/bulkOperations.mjs`. All operations support a `dryRun` mode and report progress through an `onProgress({ current, total, currentItem, status })` callback.
 
-**Dependencies:** F1.3 (metadata), F1.4 (rename), F3.1 (rules), F3.2 (duplicates). Phase 2 optional, used for the reorganize path when collection sync is enabled.
+| Operation | Function | What it does |
+|-----------|----------|--------------|
+| Reorganize all | `reorganizeAll(options)` | Iterate items with attachments, re-apply naming pattern; if Phase 2 is enabled, also re-place into collection folder |
+| Retry failed metadata | `retryAllMetadata(options)` | Iterate items tagged `_needs-review`, re-run `Zotero.RecognizeDocument`; tag removed on success |
+| Apply rules to existing | `applyRulesToAll(options)` | Run the Smart Rules engine over all existing items so a new rule retroactively categorizes the back catalog |
 
-### Operations
-
-1. **Reorganize All Items** — Iterate every item with an attachment and re-apply the current naming pattern and (if Phase 2 is on) collection folder placement. Supports `dryRun` mode so users can preview the changes before committing.
-2. **Retry Failed Metadata** — Iterate items tagged `_needs-review` and re-trigger `Zotero.RecognizeDocument`. Successful retrievals remove the tag automatically.
-3. **Apply Rules to Existing** — Run the Smart Rules engine over existing library items (not just newly imported ones), so a newly added rule retroactively categorizes the back catalog.
-
-All bulk operations report incremental progress via an `onProgress({ current, total })` callback so the UI can drive a progress bar.
-
-**Acceptance:**
-- [ ] Reorganize respects naming pattern
-- [ ] Retry metadata works
-- [ ] Progress indicator updates
+Other helpers: `isBulkOperationRunning()`, `cancelBulkOperation()`. Batches default to 10 items with a 100 ms inter-batch delay to keep the UI responsive.
 
 ---
 
 ## Performance Optimization
 
-### Adaptive Polling
+### Adaptive polling
 
-Polling interval scales with activity. After repeated empty scans, the interval grows by 1.5x up to a maximum (default 120s). On any non-empty scan, the interval resets to the base value (5s). This gives near-instant detection during active work and near-zero cost during idle periods.
+Polling interval scales with activity. After repeated empty scans the interval grows; on any non-empty scan it resets to the base. See `watchFolder.mjs:_scan` for the live implementation, which uses a 1.2x growth factor after 10 empty scans and caps at 2x the base interval. The simpler reference shape:
 
 ```javascript
-export class AdaptivePoller {
-  constructor() {
-    this.baseInterval = 5000;
-    this.maxInterval = 120000;
+reportScanResult(filesFound) {
+  if (filesFound > 0) {
     this.currentInterval = this.baseInterval;
     this.consecutiveEmptyScans = 0;
-  }
-
-  reportScanResult(filesFound) {
-    if (filesFound > 0) {
-      this.currentInterval = this.baseInterval;
-      this.consecutiveEmptyScans = 0;
-    } else {
-      this.consecutiveEmptyScans++;
-      if (this.consecutiveEmptyScans > 10) {
-        this.currentInterval = Math.min(
-          this.currentInterval * 1.5,
-          this.maxInterval
-        );
-      }
-    }
+  } else if (++this.consecutiveEmptyScans > 10) {
+    this.currentInterval = Math.min(
+      this.currentInterval * 1.5,
+      this.maxInterval
+    );
   }
 }
 ```
 
-Additional adaptive policies inherited from the architecture spec:
-- When Zotero window is focused, poll faster; when minimized/unfocused, slow down.
-- If the system is on battery power, reduce poll frequency further.
-- After a wake from sleep, do one immediate scan then resume normal schedule.
+### LRU import history (`content/trackingStore.mjs`)
 
-### LRU Cache for Import History
-
-Imported-file tracking is bounded with a fixed-size LRU cache (default 5000 entries). On insert, oldest entries are evicted. This caps RAM regardless of library size.
+Tracking is bounded with a fixed-size LRU (default 5000 entries). On insert past capacity, oldest entry is evicted:
 
 ```javascript
-export class LRUCache {
-  constructor(maxSize = 5000) {
-    this.maxSize = maxSize;
-    this.cache = new Map();
+set(key, value) {
+  if (this.cache.has(key)) this.cache.delete(key);
+  if (this.cache.size >= this.maxSize) {
+    const oldest = this.cache.keys().next().value;
+    this.cache.delete(oldest);
   }
-
-  set(key, value) {
-    if (this.cache.has(key)) this.cache.delete(key);
-    if (this.cache.size >= this.maxSize) {
-      const oldest = this.cache.keys().next().value;
-      this.cache.delete(oldest);
-    }
-    this.cache.set(key, value);
-  }
+  this.cache.set(key, value);
 }
 ```
 
-For libraries past ~10000 files, a Bloom filter is an alternative if the false-positive risk is acceptable (a re-import attempt would be skipped silently). The LRU approach is the default because it has no false positives.
+For libraries past ~10000 files a Bloom filter is an alternative; LRU is the default because it has no false positives (a Bloom filter would silently skip a legitimate re-import).
 
-### Other Optimization Levers
+### Other levers
 
-- **No `setInterval`** — use `setTimeout` to chain scans so a slow scan can never overlap with the next.
-- **Cheap diffing** — one `stat()` on the directory; only walk children if `mtime` or count changed.
-- **Concurrency cap** — max 2 concurrent metadata lookups with 1-2s spacing to avoid hammering Zotero's recognition service and external DOI resolvers.
-- **Debounced bulk drops** — when many files appear in one scan, process sequentially with a small delay, not all in parallel.
-- **Lazy init** — allocate nothing until the user enables the feature; on disable, release every timer, observer, and cache.
+- **No `setInterval`** — chain via `setTimeout` so a slow scan can never overlap the next.
+- **Cheap diffing** — already-tracked paths short-circuit; stability check + hash only runs on new paths.
+- **Concurrency cap** — `metadataRetriever` caps concurrent lookups and spaces requests to avoid hammering Zotero's recognition service and external DOI resolvers.
+- **Lazy init** — `collectionSync` and `duplicateDetector` are initialized on first use; idempotent shutdown handlers.
+- **Disable releases resources** — `WatchFolderService.destroy()` clears timers, unregisters the notifier, saves and drops the tracking store, clears window refs.
 
-### Performance Targets
+### Targets
 
 | Metric | Target |
 |--------|--------|

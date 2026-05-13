@@ -144,14 +144,17 @@ mkdir -p ~/ZoteroWatchTest/processed
 
 ### Test 1.10: First Run Detection
 - [ ] Disable Watch Folder
-- [ ] Copy 3 PDFs to inbox
-- [ ] Change Source Folder to a different path, then back to inbox
+- [ ] Clear the `extensions.zotero.watchFolder.lastWatchedPath` pref (via `about:config` or the Error Console), or point Source Folder to a different path you have not used before
+- [ ] Copy 3 PDFs to that folder
 - [ ] Enable Watch Folder
 
-**Expected:**
-- Dialog appears asking to import existing files
-- All 3 files are imported as a batch
-- Debug console shows: `[WatchFolder] First run handled, imported 3 files`
+**Expected (V2 simple flow — see `content/firstRunHandler.mjs`):**
+- `checkFirstRun()` returns `{ isFirstRun: true, reason: 'fresh_install' }` (or `'path_changed'` if the path differs from the previous one)
+- A confirm dialog appears with three buttons: `Import All`, `Skip`, `Cancel`
+- Choosing `Import All` runs `importBatch` over the 3 files and shows a progress window with `Imported 3 file(s)`
+- Choosing `Skip` saves the current path as `lastWatchedPath` and does not import
+- Choosing `Cancel` leaves state untouched so the prompt re-appears next startup
+- No Zotero → disk export, no merge-plan dialog, no hash-fallback matching is performed (those were V1 only)
 
 ---
 
@@ -477,29 +480,33 @@ And remove test collections from Zotero.
 
 # Automated Test Cases (vitest)
 
-The cases below are implemented in the `test/` directory and run via `npm test`. Use them as acceptance criteria when modifying the corresponding modules.
+The cases below are implemented in `test/unit/` and run via `npm test`. Use them as acceptance criteria when modifying the corresponding modules.
 
-These cases were ported from the V1 TEST-PLAN. Unit tests (UT-xxx) target pure or near-pure logic by mocking the few Gecko/Zotero globals they touch (`Zotero.debug`, `Zotero.Prefs`, `IOUtils`, `PathUtils`, `crypto.subtle`). Integration tests (IT-xxx) need a fuller mocked Zotero environment (`Zotero.Items`, `Zotero.Collections`, `Zotero.Attachments`, `Zotero.Search`, `Zotero.Notifier`, `Zotero.Libraries.userLibraryID`).
+Only unit tests (UT-xxx) are implemented today. They target pure or near-pure logic and mock the Gecko/Zotero globals via `test/setup/geckoMocks.js`. Integration tests against a full Zotero mock are not yet in place — `test/integration/` exists but is empty.
 
-### Recommended Vitest Setup
+### Vitest Setup
 
-```
-// vitest.config.mjs
+Actual `vitest.config.mjs`:
+
+```js
 import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     globals: true,
-    environment: 'node',  // or 'jsdom'
-    setupFiles: ['./test/setup/geckoMocks.js']
-  }
+    environment: 'node',
+    setupFiles: ['./test/setup/geckoMocks.js'],
+  },
 });
 ```
 
-The mock shim (`geckoMocks.js`) needs to expose on `globalThis`:
-- `Zotero.debug`, `Zotero.logError`, `Zotero.Prefs.get`, `Zotero.Prefs.set`
-- `IOUtils.exists`, `IOUtils.stat`, `IOUtils.read`, `IOUtils.readJSON`, `IOUtils.writeJSON`, `IOUtils.getChildren`, `IOUtils.makeDirectory`, `IOUtils.move`, `IOUtils.remove`
-- `PathUtils.join`, `PathUtils.filename`, `PathUtils.parent`
-- `crypto.subtle.digest`
+`test/setup/geckoMocks.js` exposes the following on `globalThis`:
+
+- `Zotero`: `debug`, `logError`, `log`, `warn`, platform flags (`isWin/isMac/isLinux`), `Prefs.get/set`, `Collections.getByLibrary/get/getLoaded`, `Items.get`, `Libraries.userLibraryID`, `Notifier.registerObserver/unregisterObserver`, `Attachments.importFromFile/linkFromFile`, `RecognizeDocument`, `DB.executeTransaction`, `Promise.delay`, `getMainWindows`, and a `ProgressWindow` constructor (with nested `ItemProgress`).
+- `IOUtils`: `exists`, `stat`, `read`, `readJSON`, `readUTF8`, `writeJSON`, `writeUTF8`, `getChildren`, `makeDirectory`, `move`, `copy`, `remove`.
+- `PathUtils`: `join`, `filename`, `parent`.
+- `crypto.subtle.digest` (returns a fake 16-byte `ArrayBuffer`).
+- `Services`: `io.newURI`, `prefs.getBranch(...)`, `prompt` with `BUTTON_POS_*`, `BUTTON_TITLE_*`, `confirmEx`.
+- `ChromeUtils.importESModule`, `ChromeUtils.defineLazyGetter`.
 
 ---
 
@@ -1089,7 +1096,7 @@ Mock `syncService` with spy methods. Verify:
 
 ### firstRunHandler.mjs — UT-049
 
-UT-042 through UT-048 previously targeted private helpers of a different (bidirectional reconciliation) design and have been removed along with that code path.
+UT-042 through UT-048 previously targeted private helpers of a V1 bidirectional-reconciliation design (`_relativePath`, `_parentRel`, `buildMergePlan`, etc.). That design is gone — V2 uses a simple detect → scan → confirm dialog → `importBatch` flow — so those cases were removed. Only the `no_path` guard is unit-tested today; the `fresh_install`, `path_changed`, and `normal` branches of `checkFirstRun` are not yet covered and would benefit from added unit tests.
 
 #### UT-049 — `checkFirstRun` — no sourcePath configured
 
@@ -1103,371 +1110,29 @@ Mock `getPref('sourcePath')` → `''` (or `null`). Mock `getPref('lastWatchedPat
 
 ---
 
-## Integration Tests
-
-Integration tests require a more complete Zotero mock: `Zotero.Items`, `Zotero.Collections`, `Zotero.Attachments`, `Zotero.Search`, `Zotero.Notifier`, `Zotero.Libraries.userLibraryID`. Use Vitest with a custom mock factory that returns fake Zotero item/collection objects.
-
-### utils.mjs — IT-001 through IT-004
-
-#### IT-001 — `getOrCreateTargetCollection` — finds existing collection
-
-Mock `Zotero.Collections.getByLibrary` to return a collection with `name:'Inbox'`. Call `getOrCreateTargetCollection('Inbox')`. Verify the existing collection is returned and `saveTx()` is NOT called.
-
----
-
-#### IT-002 — `getOrCreateTargetCollection` — creates new collection
-
-Mock `Zotero.Collections.getByLibrary` to return empty array. Mock `new Zotero.Collection()`. Verify `saveTx()` is called once.
-
----
-
-#### IT-003 — `getOrCreateTargetCollection` — empty name returns null
-
-Call with `''` or `'  '`. Verify result is `null` and no Zotero call is made.
-
----
-
-#### IT-004 — `getFileHash` — SHA-256 calculation
-
-Mock `IOUtils.read` to return a known byte array. Mock `crypto.subtle.digest` to return a known hash buffer. Verify returned hex string matches expected.
-
-Edge case: `IOUtils.read` throws → returns `null`.
-
----
-
-### fileScanner.mjs — IT-005 through IT-013
-
-#### IT-005 — `scanFolder` — normal directory
-
-Mock `IOUtils.exists` → `true`, `IOUtils.stat(folderPath)` → `{type:'directory'}`, `IOUtils.getChildren` → `['/watch/a.pdf', '/watch/b.txt']`. Mock per-file stats. Mock `isAllowedFileType` (or mock pref) so only `.pdf` passes.
-
-Expected: returns `[{path:'/watch/a.pdf', mtime:..., size:...}]`.
-
----
-
-#### IT-006 — `scanFolder` — folder does not exist
-
-Mock `IOUtils.exists` → `false`. Expected: returns `[]`.
-
----
-
-#### IT-007 — `scanFolder` — path is a file, not directory
-
-Mock `IOUtils.stat` → `{type:'regular'}`. Expected: returns `[]`.
-
----
-
-#### IT-008 — `scanFolder` — permission error
-
-Mock `IOUtils.getChildren` to throw `{name:'NotAllowedError'}`. Expected: returns `[]` (no throw propagated).
-
----
-
-#### IT-009 — `scanFolderRecursive` — maxDepth prevents infinite loops
-
-Mock a deep directory tree. Call with `maxDepth=2`. Verify directories beyond depth 2 are not recursed.
-
----
-
-#### IT-010 — `isFileStable` — stable file
-
-Mock `IOUtils.stat` to return same size on both calls. Mock `delay` to be instant. Expected: `true`.
-
----
-
-#### IT-011 — `isFileStable` — file still growing
-
-Mock `IOUtils.stat` to return increasing sizes. Expected: `false`.
-
----
-
-#### IT-012 — `isFileStable` — zero-size file
-
-Mock `IOUtils.stat` → `{size:0}`. Expected: `false` (without even waiting for second check).
-
----
-
-#### IT-013 — `isFileStableWithRetry` — succeeds on second attempt
-
-First call to `isFileStable` returns `false`, second returns `true`. Verify overall return is `true`.
-
----
-
-### fileImporter.mjs — IT-014 through IT-021
-
-#### IT-014 — `importFile` — stored mode
-
-Mock `IOUtils.exists` → `true`. Mock `Zotero.Attachments.importFromFile` to return a fake item. Mock `getOrCreateTargetCollection`. Verify `importFromFile` called with correct arguments.
-
----
-
-#### IT-015 — `importFile` — linked mode
-
-Mock prefs: `importMode:'linked'`. Verify `Zotero.Attachments.linkFromFile` is called instead of `importFromFile`.
-
----
-
-#### IT-016 — `importFile` — file does not exist
-
-Mock `IOUtils.exists` → `false`. Expect the function to throw an error with message containing "does not exist".
-
----
-
-#### IT-017 — `handlePostImportAction` — delete mode
-
-Mock `IOUtils.remove`. Verify it is called with the correct file path.
-
----
-
-#### IT-018 — `handlePostImportAction` — move mode
-
-Mock `PathUtils.parent`, `PathUtils.join`, `IOUtils.exists`, `IOUtils.makeDirectory`, `IOUtils.move`. Verify file is moved to `<parent>/imported/<filename>`.
-
----
-
-#### IT-019 — `handlePostImportAction` — leave mode
-
-Verify neither `IOUtils.remove` nor `IOUtils.move` is called.
-
----
-
-#### IT-020 — `importBatch` — progress callback
-
-Call `importBatch` with 3 files. Provide an `onProgress` spy. Verify it is called 3 times with `(1,3)`, `(2,3)`, `(3,3)`.
-
----
-
-#### IT-021 — `importBatch` — continues after individual failure
-
-Mock one file to throw during import. Verify other files are still imported and the failed one appears in `results.failed`.
-
----
-
-### duplicateDetector.mjs — IT-022 through IT-027
-
-#### IT-022 — `DuplicateDetector.findByDOI` — normalisation
-
-Mock `Zotero.Search` to return a result when queried with the normalised DOI. Test variants:
-
-| # | Input DOI | Normalised DOI searched |
-|---|-----------|-------------------------|
-| a | `'https://doi.org/10.1000/xyz'` | `'10.1000/xyz'` |
-| b | `'doi:10.1000/xyz'` | `'10.1000/xyz'` |
-| c | `'10.1000/xyz'` | `'10.1000/xyz'` |
-| d | `'HTTP://DX.DOI.ORG/10.1000/xyz'` | `'10.1000/xyz'` |
-
----
-
-#### IT-023 — `DuplicateDetector.checkDuplicate` — respects disabled flag
-
-Mock `getPref('duplicateCheck')` → `false`. Verify `checkDuplicate` returns `{isDuplicate:false}` without calling any search.
-
----
-
-#### IT-024 — `DuplicateDetector.checkDuplicate` — DOI takes priority over title
-
-If DOI matches, title check should NOT be performed. Verify `findByTitle` spy is not called.
-
----
-
-#### IT-025 — `DuplicateDetector.storeContentHash` — modifies Extra field
-
-Mock `IOUtils.read`, `crypto.subtle.digest`, and item's `getField('extra')` / `setField` / `saveTx`. Verify:
-- Hash is appended to Extra in format `watchfolder-hash:<hex>`
-- Existing `watchfolder-hash:` entry is replaced, not duplicated
-
----
-
-#### IT-026 — `DuplicateDetector.handleDuplicate` — skip action
-
-Mock `getPref('duplicateAction')` → `'skip'`. Verify action returned is `'skip'` and `item.addTag` is NOT called.
-
----
-
-#### IT-027 — `DuplicateDetector.handleDuplicate` — import+tag action
-
-Mock `getPref('duplicateAction')` → `'import'`. Verify `item.addTag('_duplicate')` is called and `item.saveTx()` is called.
-
----
-
-### trackingStore.mjs — IT-028 through IT-030
-
-#### IT-028 — `TrackingStore.save` and `load` — serialisation round-trip
-
-Mock `IOUtils.writeJSON` to capture what is written. Mock `IOUtils.readJSON` to return that captured data. After `save()` then `load()`, verify all records are restored identically.
-
----
-
-#### IT-029 — `TrackingStore.load` — corrupt JSON
-
-Mock `IOUtils.readJSON` to throw `SyntaxError`. Verify store initialises with empty map (no throw propagated).
-
----
-
-#### IT-030 — `TrackingStore.load` — invalid data structure
-
-Mock `IOUtils.readJSON` → `{version:1, records:'not-an-array'}`. Verify store initialises with empty map.
-
----
-
-### smartRules.mjs — IT-031 through IT-037
-
-#### IT-031 — `SmartRulesEngine.getOrCreateCollectionPath` — nested path creation
-
-Mock `Zotero.Collections.getByLibrary` to return empty collections. Mock `new Zotero.Collection()` factory. Call `getOrCreateCollectionPath('A/B/C')`. Verify 3 collections are created with correct parent IDs.
-
----
-
-#### IT-032 — `SmartRulesEngine.getOrCreateCollectionPath` — existing path
-
-Mock `Zotero.Collections.getByLibrary` to return a collection tree `A > B > C`. Verify no `saveTx()` calls are made — existing collections are reused.
-
----
-
-#### IT-033 — `SmartRulesEngine.executeAction` — addToCollection
-
-Mock `getOrCreateCollectionPath`. Mock item with `getCollections()` returning `[]`, `addToCollection()`, `saveTx()`. Verify `addToCollection` and `saveTx` are called.
-
----
-
-#### IT-034 — `SmartRulesEngine.executeAction` — addTag
-
-Mock item with `getTags()` returning `[]`. Verify `addTag` and `saveTx` called.
-
----
-
-#### IT-035 — `SmartRulesEngine.executeAction` — addTag — no duplicate tag
-
-Mock item `getTags()` returning `[{tag:'reviewed'}]`. Call with `addTag, 'reviewed'`. Verify `saveTx` is NOT called (tag already present).
-
----
-
-#### IT-036 — `SmartRulesEngine.executeAction` — setField
-
-Mock item with `setField`, `saveTx`. Verify `setField('notes', 'imported')` and `saveTx` called.
-
----
-
-#### IT-037 — `SmartRulesEngine.executeAction` — setField — missing field name
-
-Call `executeAction({type:'setField', value:'foo'}, item)` (no `field` property). Verify returns `false`.
-
----
-
-### metadataRetriever.mjs — IT-038 through IT-040
-
-#### IT-038 — `MetadataRetriever.queueItem` — deduplication
-
-Set `_isRunning = false` (to prevent processing). Queue same itemID twice. Verify `_queue.length === 1`.
-
----
-
-#### IT-039 — `MetadataRetriever._hasMetadata` — attachment with titled parent
-
-Mock parent item returned by `Zotero.Items.get` with `getField('title')` returning a real title. Verify `_hasMetadata` returns `true`.
-
----
-
-#### IT-040 — `MetadataRetriever._hasMetadata` — attachment whose title is a filename
-
-Mock parent `getField('title')` → `'paper.pdf'`. Verify returns `false`.
-
----
-
-### watchFolder.mjs — IT-041 through IT-042
-
-#### IT-041 — `WatchFolderService._waitForFileStable`
-
-Access `_waitForFileStable` via class instantiation or expose for test. Mock `IOUtils.stat` and `delay`.
-
-| # | Scenario | Expected |
-|---|----------|----------|
-| a | Size stable after first check (same as initial) | `true` on first comparison |
-| b | Size stabilises on second attempt | `true` |
-| c | Size never stable over maxAttempts | Falls through to final stat check |
-| d | File disappears during check | `false` |
-
----
-
-#### IT-042 — `WatchFolderService.handleNotification` — delete event
-
-Mock `_trackingStore.removeByItemID`. Call `handleNotification('delete', 'item', [42], {})`. Verify `removeByItemID(42)` called.
-
----
-
-### firstRunHandler.mjs — IT-043 through IT-045
-
-IT-051 through IT-080 previously targeted the bidirectional reconciliation API (`matchInventories`, `executeDiskToZotero`, `executeZoteroToDisk`, `_getOrCreateCollectionFromPath`) and have been removed along with that code path. The remaining cases cover `checkFirstRun` on V2's simpler flow.
-
-#### IT-043 — `firstRunHandler.checkFirstRun` — fresh install
-
-Mock prefs: `sourcePath:'/watch'`, `lastWatchedPath:''`. Mock `trackingStore.getStats()` → `{total:0}`. Verify returns `{isFirstRun:true, reason:'fresh_install'}`.
-
----
-
-#### IT-044 — `firstRunHandler.checkFirstRun` — path changed
-
-Mock prefs: `sourcePath:'/new'`, `lastWatchedPath:'/old'`. Verify `{isFirstRun:true, reason:'path_changed'}`.
-
----
-
-#### IT-045 — `firstRunHandler.checkFirstRun` — normal run
-
-Mock prefs: `sourcePath:'/watch'`, `lastWatchedPath:'/watch'`. Mock `trackingStore.getStats()` → `{total:5}`. Verify `{isFirstRun:false, reason:'normal'}`.
-
----
-
-### pathMapper.mjs — IT-046 through IT-050
-
-#### IT-046 — `PathMapper.getPathForCollection` — path construction
-
-Mock `PathUtils.join` to use simple string concatenation. Mock `Zotero.Collections.get` to return parent collections. Call `getPathForCollection` on a nested collection. Verify the path includes all ancestor sanitized names.
-
----
-
-#### IT-047 — `PathMapper.getPathForCollection` — cache behaviour
-
-Call twice for same collection. Verify `Zotero.Collections.get` is called only once (second call uses cache).
-
----
-
-#### IT-048 — `PathMapper.getUniqueFilePath` — no conflict
-
-Mock `IOUtils.exists` → `false`. Verify returns `folderPath/desiredFilename`.
-
----
-
-#### IT-049 — `PathMapper.getUniqueFilePath` — conflict resolution
-
-Mock `IOUtils.exists` → `true` for first 2 attempts, then `false`. Verify returns filename with ` (2)` suffix.
-
----
-
-#### IT-050 — `PathMapper.getUniqueFilePath` — exceeds 100 attempts
-
-Mock `IOUtils.exists` always `true`. Verify throws `Error('Could not find unique filename')`.
-
----
-
 ## Coverage Summary
 
-| Module | Unit Tests | Integration Tests |
-|--------|-----------|-------------------|
-| `utils.mjs` | UT-001 to UT-004 | IT-001 to IT-004 |
-| `fileScanner.mjs` | UT-037 | IT-005 to IT-013 |
-| `fileRenamer.mjs` | UT-005 to UT-008 | — |
-| `fileImporter.mjs` | UT-039 | IT-014 to IT-021 |
-| `trackingStore.mjs` | UT-011 to UT-014 | IT-028 to IT-030 |
-| `duplicateDetector.mjs` | UT-015 to UT-020 | IT-022 to IT-027 |
-| `smartRules.mjs` | UT-021 to UT-027 | IT-031 to IT-037 |
-| `conflictResolver.mjs` | UT-028 to UT-032 | — |
-| `pathMapper.mjs` | UT-009, UT-010 | IT-046 to IT-050 |
-| `syncState.mjs` | UT-033 to UT-036 | — |
-| `collectionWatcher.mjs` | UT-041 | — |
-| `folderWatcher.mjs` | UT-038 | — |
-| `metadataRetriever.mjs` | — | IT-038 to IT-040 |
-| `watchFolder.mjs` | — | IT-041 to IT-042 |
-| `bulkOperations.mjs` | UT-040 | — |
-| `firstRunHandler.mjs` | UT-049 | IT-043 to IT-045 |
+Test files live under `test/unit/`. `test/integration/` is empty — integration coverage is a future TODO.
 
-**Total automated test cases:** 49 Unit + 80 Integration = 129
+| Module | Test file | Unit Tests |
+|--------|-----------|-----------|
+| `utils.mjs` | `test/unit/utils.test.mjs` | UT-001 to UT-004 |
+| `fileRenamer.mjs` | `test/unit/fileRenamer.test.mjs` | UT-005 to UT-008 |
+| `pathMapper.mjs` | `test/unit/pathMapper.test.mjs` | UT-009, UT-010 |
+| `trackingStore.mjs` | `test/unit/trackingStore.test.mjs` | UT-011 to UT-014 |
+| `duplicateDetector.mjs` | `test/unit/duplicateDetector.test.mjs` | UT-015 to UT-020 |
+| `smartRules.mjs` | `test/unit/smartRules.test.mjs` | UT-021 to UT-027 |
+| `conflictResolver.mjs` | `test/unit/conflictResolver.test.mjs` | UT-028 to UT-032 |
+| `syncState.mjs` | `test/unit/syncState.test.mjs` | UT-033 to UT-036 |
+| `fileScanner.mjs`, `folderWatcher.mjs`, `fileImporter.mjs`, `bulkOperations.mjs`, `collectionWatcher.mjs` | `test/unit/fileScanner.test.mjs` | UT-037 to UT-041 |
+| `firstRunHandler.mjs` | `test/unit/firstRunHandler.test.mjs` | UT-049 (only `no_path` guard) |
+
+Modules with no automated coverage yet: `metadataRetriever.mjs`, `watchFolder.mjs`, `collectionSync.mjs`, `fileImporter.mjs` (only `isSupportedFileType` / `filterSupportedFiles` are tested via `fileScanner.test.mjs`).
+
+**Total automated test cases:** 215 individual `it()` assertions across 10 test files (UT-001 through UT-041, plus UT-049). UT-042 through UT-048 were intentionally removed when the V1 bidirectional-reconciliation handler was deleted.
+
+### Known documentation/test gaps
+
+- `checkFirstRun` branches `fresh_install`, `path_changed`, and `normal` are documented in `content/firstRunHandler.mjs` but only the `no_path` branch has a unit test.
+- No tests yet exercise the full `handleFirstRun` flow (dialog → scan → import); manual Test 1.10 covers it.
+- `collectionSync.mjs` (the largest module at ~36 KB) has no unit tests; manual Phase 2 covers it.
