@@ -104,4 +104,4 @@ Issues and pull requests are welcome at <https://github.com/josesiqueira/zotero-
 
 ## License
 
-MIT. See `LICENSE`.
+GNU GPL v3.0. See `LICENSE` for the full text.
