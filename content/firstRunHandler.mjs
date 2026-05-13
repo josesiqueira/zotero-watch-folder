@@ -6,7 +6,7 @@
  */
 
 import { getPref, setPref } from './utils.mjs';
-import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
+import { scanFolder } from './fileScanner.mjs';
 import { importBatch } from './fileImporter.mjs';
 import { getTrackingStore } from './trackingStore.mjs';
 
@@ -25,13 +25,13 @@ const PREF_LAST_PATH = 'lastWatchedPath';
  */
 export async function checkFirstRun() {
   const currentPath = getPref('sourcePath');
-  const lastPath = getPref(PREF_LAST_PATH);
-  const trackingStore = getTrackingStore();
 
-  // No path configured - nothing to do
+  // No path configured - nothing to do (guard before any trackingStore access)
   if (!currentPath) {
     return { isFirstRun: false, reason: 'no_path' };
   }
+
+  const lastPath = getPref(PREF_LAST_PATH);
 
   // Path changed from previous configuration
   if (lastPath && lastPath !== currentPath) {
@@ -39,6 +39,7 @@ export async function checkFirstRun() {
   }
 
   // No tracking data (fresh install or cleared)
+  const trackingStore = getTrackingStore();
   const stats = trackingStore.getStats();
   if (!lastPath && stats.total === 0) {
     return { isFirstRun: true, reason: 'fresh_install' };
@@ -61,7 +62,7 @@ export async function getExistingFilesCount() {
   }
 
   try {
-    const files = await scanFolderRecursive(sourcePath);
+    const files = await scanFolder(sourcePath);
     return { count: files.length, files };
   } catch (error) {
     Zotero.debug(`[WatchFolder] Error scanning for existing files: ${error.message}`);
@@ -149,26 +150,11 @@ export async function importExistingFiles(window, files) {
 
   let cancelled = false;
 
-  const sourcePath = getPref('sourcePath');
-  const baseTarget = getPref('targetCollection') || 'Inbox';
-
-  // Extract file paths and collections from file objects
-  const filesToImport = files.map(f => {
-    let collection = baseTarget;
-    if (f.path.startsWith(sourcePath)) {
-        let relative = f.path.substring(sourcePath.length);
-        if (relative.startsWith('/') || relative.startsWith('\\')) relative = relative.substring(1);
-        const parts = relative.split(/[/\\]/);
-        parts.pop(); // filename
-        if (parts.length > 0) {
-            collection = baseTarget + '/' + parts.join('/');
-        }
-    }
-    return { path: f.path, collection };
-  });
+  // Extract file paths from file objects
+  const filePaths = files.map(f => f.path);
 
   // Import with progress callback
-  const results = await importBatch(filesToImport, {
+  const results = await importBatch(filePaths, {
     onProgress: (current, total) => {
       if (cancelled) return;
       itemProgress.setText(`${current} / ${total}`);

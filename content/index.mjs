@@ -6,6 +6,8 @@
 import { getWatchFolderService } from './watchFolder.mjs';
 import { initMetadataRetriever, shutdownMetadataRetriever } from './metadataRetriever.mjs';
 import { handleFirstRun } from './firstRunHandler.mjs';
+import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
+import { shutdownCollectionSync } from './collectionSync.mjs';
 
 // Global references
 let watchFolderService = null;
@@ -95,6 +97,20 @@ export const hooks = {
             } catch (error) {
                 Zotero.logError(`Zotero Watch Folder: Metadata retriever shutdown error - ${error.message}`);
             }
+        }
+
+        // duplicateDetector and collectionSync are lazily initialized.
+        // Their shutdown helpers are idempotent — safe to call even if never inited.
+        try {
+            shutdownDuplicateDetector();
+        } catch (error) {
+            Zotero.logError(`Zotero Watch Folder: Duplicate detector shutdown error - ${error.message}`);
+        }
+
+        try {
+            await shutdownCollectionSync();
+        } catch (error) {
+            Zotero.logError(`Zotero Watch Folder: Collection sync shutdown error - ${error.message}`);
         }
     }
 };
