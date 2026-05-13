@@ -247,6 +247,15 @@ export class WatchFolderService {
       // Scan for files recursively
       const files = await scanFolderRecursive(watchPath);
 
+      // Detect externally-deleted files (tracked but no longer on disk) and
+      // auto-move the matching Zotero items to the bin. Single batched popup.
+      try {
+        const diskPaths = new Set(files.map(f => f.path));
+        await this._handleExternalDeletions(diskPaths);
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] External-deletion scan failed: ${e.message}`);
+      }
+
       // Filter out already tracked and currently processing files
       const newFiles = [];
       for (const fileInfo of files) {
@@ -413,23 +422,29 @@ export class WatchFolderService {
       Zotero.debug(`[WatchFolder] Imported successfully, itemID: ${itemID}`);
 
       // Step 3b: Handle post-import action (delete, move, or leave)
+      // Default to a "leave" result so linked-mode imports record the original path.
+      let postImportResult = { action: 'leave', finalPath: filePath };
       const importMode = getPref('importMode') || 'stored';
       if (importMode === 'stored') {
-        // Only handle post-import action for stored copies (linked files must stay in place)
         try {
-          await handlePostImportAction(filePath);
+          postImportResult = await handlePostImportAction(filePath);
         } catch (e) {
           Zotero.debug(`[WatchFolder] Post-import action failed: ${e.message}`);
         }
       }
 
-      // Step 4: Add to tracking store
+      // Step 4: Add to tracking store. The recorded `path` is the final disk
+      // location after any post-import move; for 'delete' it stays as the
+      // original (the entry is marked expectedOnDisk=false so external-delete
+      // detection skips it).
       if (this._trackingStore) {
         this._trackingStore.add({
-          path: filePath,
+          path: postImportResult.finalPath || filePath,
           hash: hash,
           itemID: itemID,
-          importedAt: Date.now()
+          importedAt: Date.now(),
+          postImportAction: postImportResult.action,
+          expectedOnDisk: postImportResult.finalPath !== null
         });
 
         // Persist tracking data
@@ -592,11 +607,17 @@ export class WatchFolderService {
 
   /**
    * Handle items being moved to Zotero's trash. Based on the
-   * `diskDeleteOnTrash` preference, optionally delete the corresponding
+   * `diskDeleteOnTrash` preference, optionally remove the corresponding
    * source files from the watch folder.
-   * - 'never'  : leave the source files alone, but drop the tracking entry
-   * - 'always' : delete the source files silently and drop the tracking entry
-   * - 'ask'    : prompt the user with a single batched confirm dialog
+   *
+   * Modes:
+   * - 'never'      : leave the source files alone, drop the tracking entry
+   * - 'os_trash'   : move source files to the OS trash silently
+   * - 'permanent'  : permanently delete source files silently
+   * - 'ask'        : show a 3-button dialog (OS trash / Permanent / Keep)
+   *
+   * Linked mode adds an extra warning before permanent-delete since the
+   * watch-folder file is the only copy.
    *
    * @param {number[]} ids - Trashed Zotero item IDs
    */
@@ -609,7 +630,10 @@ export class WatchFolderService {
     const targets = [];
     for (const id of ids) {
       const record = this._trackingStore.findByItemID(id);
-      if (!record || !record.path) continue;
+      if (!record || !record.path || record.expectedOnDisk === false) {
+        if (record) this._trackingStore.removeByItemID(id);
+        continue;
+      }
       const exists = await IOUtils.exists(record.path).catch(() => false);
       if (!exists) {
         // File already gone — just clear the tracking entry
@@ -622,82 +646,218 @@ export class WatchFolderService {
     if (targets.length === 0) return;
 
     const mode = getPref('diskDeleteOnTrash') || 'ask';
-
-    if (mode === 'never') {
-      // Keep the file on disk; drop tracking so the same file can be re-imported later
-      for (const { itemID } of targets) {
-        this._trackingStore.removeByItemID(itemID);
-      }
-      return;
-    }
-
-    let shouldDelete = mode === 'always';
+    let action = mode; // 'never' | 'os_trash' | 'permanent' | 'ask'
 
     if (mode === 'ask') {
-      shouldDelete = this._promptDiskDelete(targets);
+      action = this._promptDiskDelete(targets);
+      // action is now one of 'os_trash' | 'permanent' | 'never'
     }
 
-    if (shouldDelete) {
-      for (const { itemID, path } of targets) {
+    for (const { itemID, path } of targets) {
+      if (action === 'os_trash') {
+        await this._moveToOSTrash(path);
+      } else if (action === 'permanent') {
         try {
           await IOUtils.remove(path);
-          Zotero.debug(`[WatchFolder] Trash sync: removed source file ${path}`);
+          Zotero.debug(`[WatchFolder] Trash sync: permanently deleted ${path}`);
         } catch (e) {
-          Zotero.debug(`[WatchFolder] Trash sync: failed to remove ${path}: ${e.message}`);
+          Zotero.debug(`[WatchFolder] Trash sync: failed to delete ${path}: ${e.message}`);
         }
-        this._trackingStore.removeByItemID(itemID);
       }
-    } else {
-      // User declined; still drop tracking since the item no longer exists in Zotero
-      for (const { itemID } of targets) {
-        this._trackingStore.removeByItemID(itemID);
-      }
+      // 'never' → leave file alone
+      this._trackingStore.removeByItemID(itemID);
     }
+
+    try { await this._trackingStore.save(); } catch (_) {}
   }
 
   /**
-   * Show a confirm dialog asking whether to also delete the source files
-   * from the watch folder. Includes a "Don't ask again" checkbox that
-   * updates the `diskDeleteOnTrash` preference accordingly.
+   * Show a 3-button confirm dialog asking what to do with the watch-folder
+   * source files. The default action is to move them to the OS trash (Mac
+   * Trash / Windows Recycle Bin / XDG Trash) — recoverable from the OS.
+   *
+   * "Don't ask again" persists the chosen action to the `diskDeleteOnTrash`
+   * preference.
    *
    * @param {{itemID: number, path: string}[]} targets
-   * @returns {boolean} True if the user chose to delete the files
+   * @returns {'os_trash' | 'permanent' | 'never'} The chosen action
    */
   _promptDiskDelete(targets) {
     const window = this._pickWindow();
     if (!window || !Services || !Services.prompt) {
-      // No UI available; default to NOT deleting (safer)
-      return false;
+      // No UI available; default to NOT touching disk (safer)
+      return 'never';
     }
 
     const count = targets.length;
-    const title = 'Zotero Watch Folder';
+    const importMode = getPref('importMode') || 'stored';
+    const linkedWarning = importMode === 'linked'
+      ? '\n\nNote: you are in linked mode — the watch-folder file is the ONLY copy. '
+      + 'Permanent delete cannot be undone.'
+      : '';
+
     const message = count === 1
-      ? `An item was moved to Zotero's trash.\n\nAlso delete the source file from your watch folder?\n\n${targets[0].path}`
-      : `${count} items were moved to Zotero's trash.\n\nAlso delete the source files from your watch folder?`;
+      ? `An item was moved to Zotero's bin.\n\nWhat should happen to the source file?\n\n${targets[0].path}${linkedWarning}`
+      : `${count} items were moved to Zotero's bin.\n\nWhat should happen to the source files?${linkedWarning}`;
 
     const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
-                + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING;
+                + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_2 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_0_DEFAULT;
 
     const checkState = { value: false };
     const result = Services.prompt.confirmEx(
       window,
-      title,
+      'Zotero Watch Folder',
       message,
       flags,
-      'Delete from disk',  // Button 0 → Yes
-      'Keep on disk',      // Button 1 → No
-      null,
+      'Move to OS trash',     // Button 0 → recoverable
+      'Keep on disk',         // Button 1 → leave alone
+      'Delete permanently',   // Button 2 → irreversible
       "Don't ask again",
       checkState
     );
 
-    const yes = result === 0;
+    const action = result === 0 ? 'os_trash'
+                 : result === 1 ? 'never'
+                 : result === 2 ? 'permanent'
+                 : 'never';
+
     if (checkState.value) {
-      // Persist the user's choice as the new default
-      setPref('diskDeleteOnTrash', yes ? 'always' : 'never');
+      setPref('diskDeleteOnTrash', action);
     }
-    return yes;
+    return action;
+  }
+
+  /**
+   * Move a file to the OS trash via nsIFile.moveToTrash().
+   * If the platform doesn't support it (older Gecko, sandboxing), fall back
+   * to a permanent IOUtils.remove with a debug warning.
+   *
+   * @param {string} path - Absolute file path
+   */
+  async _moveToOSTrash(path) {
+    try {
+      if (typeof Components !== 'undefined' && Components.classes && Components.interfaces) {
+        const file = Components.classes['@mozilla.org/file/local;1']
+          .createInstance(Components.interfaces.nsIFile);
+        file.initWithPath(path);
+        if (typeof file.moveToTrash === 'function') {
+          file.moveToTrash();
+          Zotero.debug(`[WatchFolder] Trash sync: moved ${path} to OS trash`);
+          return;
+        }
+      }
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] OS trash failed for ${path}: ${e.message} — falling back to permanent delete`);
+    }
+    // Fallback
+    try {
+      await IOUtils.remove(path);
+      Zotero.debug(`[WatchFolder] Trash sync: fallback permanent delete for ${path}`);
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] Trash sync: fallback delete failed for ${path}: ${e.message}`);
+    }
+  }
+
+  /**
+   * Detect files that used to be tracked but are no longer on disk and
+   * auto-move the corresponding Zotero items to the bin. Shows one batched
+   * popup summarizing what happened.
+   *
+   * @param {Set<string>} diskPaths - Paths currently present in the watch folder
+   */
+  async _handleExternalDeletions(diskPaths) {
+    if (!this._trackingStore) return;
+    if ((getPref('diskDeleteSync') || 'auto') === 'never') return;
+
+    const records = this._trackingStore.getAll();
+    const missing = [];
+
+    for (const record of records) {
+      if (record.expectedOnDisk === false) continue;   // postImportAction='delete' — not external
+      if (!record.path || !record.itemID) continue;
+      if (diskPaths.has(record.path)) continue;
+
+      // Double-check on disk (race-safe — the scan list may be stale by ms)
+      const exists = await IOUtils.exists(record.path).catch(() => false);
+      if (exists) continue;
+
+      missing.push(record);
+    }
+
+    if (missing.length === 0) return;
+    Zotero.debug(`[WatchFolder] Detected ${missing.length} externally-deleted file(s)`);
+
+    const trashed = [];
+    for (const record of missing) {
+      try {
+        const item = await Zotero.Items.getAsync(record.itemID);
+        if (!item) {
+          // Item already gone from Zotero; just clear the tracking entry
+          this._trackingStore.removeByItemID(record.itemID);
+          continue;
+        }
+        if (!item.deleted) {
+          item.deleted = true;
+          await item.saveTx();
+        }
+        let title = '(untitled)';
+        try {
+          title = (item.getDisplayTitle && item.getDisplayTitle()) || item.getField('title') || title;
+        } catch (_) {}
+        trashed.push({ path: record.path, itemID: record.itemID, title });
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Failed to auto-bin item ${record.itemID}: ${e.message}`);
+      }
+      this._trackingStore.removeByItemID(record.itemID);
+    }
+
+    try {
+      await this._trackingStore.save();
+    } catch (_) {}
+
+    if (trashed.length > 0) {
+      this._showExternalDeletionPopup(trashed);
+    }
+  }
+
+  /**
+   * Informational popup listing items that were just auto-moved to Zotero's
+   * bin because their watch-folder source files disappeared. Shows
+   * mode-specific wording (stored vs linked).
+   *
+   * @param {{path: string, itemID: number, title: string}[]} trashed
+   */
+  _showExternalDeletionPopup(trashed) {
+    const window = this._pickWindow();
+    if (!window || !Services || !Services.prompt) return;
+
+    const importMode = getPref('importMode') || 'stored';
+    const count = trashed.length;
+    const lines = trashed.slice(0, 20).map(t => `- ${t.path}  → "${t.title}"`).join('\n');
+    const more = trashed.length > 20 ? `\n…and ${trashed.length - 20} more.` : '';
+
+    let footer;
+    if (importMode === 'linked') {
+      footer = 'These were linked attachments — the items are now in the bin '
+             + 'with broken file links. Restore them from the bin to keep the records, '
+             + 'or empty the bin to discard.';
+    } else {
+      footer = 'Zotero still has its own copies in storage. Restore the items '
+             + 'from Zotero\'s bin to keep them, or empty the bin to discard.';
+    }
+
+    const message = `${count} file(s) were deleted from your watch folder.\n`
+                  + 'The matching Zotero items have been moved to the bin.\n\n'
+                  + `${lines}${more}\n\n`
+                  + footer;
+
+    try {
+      Services.prompt.alert(window, 'Zotero Watch Folder', message);
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] External-deletion popup failed: ${e.message}`);
+    }
   }
 
   /**

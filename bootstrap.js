@@ -102,7 +102,8 @@ function _initDefaultPrefs() {
   _set("postImportAction",       "leave");
   _set("autoRetrieveMetadata",   true);
   _set("lastWatchedPath",        "");
-  _set("diskDeleteOnTrash",      "ask");  // "ask" | "always" | "never"
+  _set("diskDeleteOnTrash",      "ask");  // "ask" | "os_trash" | "permanent" | "never"
+  _set("diskDeleteSync",         "auto"); // "auto" | "never"
   _set("renamePattern",          "{firstCreator} - {year} - {title}");
   _set("maxFilenameLength",      150);
   _set("autoRename",             true);

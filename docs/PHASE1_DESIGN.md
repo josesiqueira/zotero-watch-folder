@@ -158,5 +158,6 @@ Single preference: `extensions.zotero.watchFolder.lastWatchedPath`. Presence + m
 - [ ] First-run prompt appears with correct count
 - [ ] First-run "Skip" marks complete without importing
 - [ ] First-run "Cancel" leaves state untouched (prompt returns next session)
-- [ ] Trash sync: move an imported item to Zotero's trash → dialog asks whether to delete the source file. "Don't ask again" persists the choice as `diskDeleteOnTrash = always` or `never`.
+- [ ] Trash sync (Zotero → disk): move an imported item to Zotero's bin → 3-button dialog appears (`Move to OS trash` default / `Keep on disk` / `Delete permanently`). "Don't ask again" persists `diskDeleteOnTrash` as `os_trash`, `never`, or `permanent`. Linked mode adds an extra warning before permanent delete.
+- [ ] Trash sync (disk → Zotero): delete a tracked watch-folder file externally → next scan moves the matching Zotero item to the bin and shows an informational popup. Disable via `diskDeleteSync = never`. Linked-mode popup mentions broken file links.
 - [ ] Disable plugin → timers and observers released (no leftover polling)

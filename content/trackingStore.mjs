@@ -9,7 +9,7 @@
 /**
  * Represents a tracking record for an imported file
  * @typedef {Object} TrackingRecord
- * @property {string} path - Original file path
+ * @property {string} path - File path (final disk location after any post-import move)
  * @property {string} hash - SHA-256 hash of first 1MB
  * @property {number} mtime - Last modified time
  * @property {number} size - File size in bytes
@@ -17,6 +17,9 @@
  * @property {string} importDate - ISO date string
  * @property {boolean} metadataRetrieved - Has metadata been fetched?
  * @property {boolean} renamed - Has file been renamed?
+ * @property {string} postImportAction - 'leave' | 'delete' | 'move'
+ * @property {boolean} expectedOnDisk - True if the file should currently exist at `path`
+ *   (false when postImportAction was 'delete' so external-deletion detection ignores it)
  */
 
 /**
@@ -33,7 +36,9 @@ export function createTrackingRecord(data) {
         itemID: data.itemID || 0,
         importDate: data.importDate || new Date().toISOString(),
         metadataRetrieved: data.metadataRetrieved || false,
-        renamed: data.renamed || false
+        renamed: data.renamed || false,
+        postImportAction: data.postImportAction || 'leave',
+        expectedOnDisk: data.expectedOnDisk !== false  // default true
     };
 }
 

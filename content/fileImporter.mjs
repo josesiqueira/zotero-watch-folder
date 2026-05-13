@@ -80,6 +80,9 @@ export async function importFile(filePath, options = {}) {
  * Handle post-import action (leave, delete, or move file)
  * @param {string} filePath - Original file path
  * @param {string} action - 'leave', 'delete', or 'move'
+ * @returns {Promise<{action: string, finalPath: string|null}>}
+ *   action: the action actually taken ('leave' | 'delete' | 'move')
+ *   finalPath: where the file now lives on disk, or null if it was deleted
  */
 export async function handlePostImportAction(filePath, action = null) {
   const actionToTake = action || getPref('postImportAction') || 'leave';
@@ -89,18 +92,18 @@ export async function handlePostImportAction(filePath, action = null) {
     case 'leave':
       // Do nothing - file stays in place
       Zotero.debug(`[WatchFolder] Leaving file in place: ${filename}`);
-      break;
+      return { action: 'leave', finalPath: filePath };
 
     case 'delete':
       // Delete the source file
       try {
         await IOUtils.remove(filePath);
         Zotero.debug(`[WatchFolder] Deleted source file: ${filename}`);
+        return { action: 'delete', finalPath: null };
       } catch (error) {
         Zotero.logError(`[WatchFolder] Failed to delete file ${filename}: ${error.message}`);
         throw error;
       }
-      break;
 
     case 'move':
       // Move to watchRoot/imported/, mirroring the subfolder structure
@@ -126,14 +129,15 @@ export async function handlePostImportAction(filePath, action = null) {
 
         await IOUtils.move(filePath, destPath);
         Zotero.debug(`[WatchFolder] Moved file to: ${destPath}`);
+        return { action: 'move', finalPath: destPath };
       } catch (error) {
         Zotero.logError(`[WatchFolder] Failed to move file ${filename}: ${error.message}`);
         throw error;
       }
-      break;
 
     default:
       Zotero.debug(`[WatchFolder] Unknown post-import action: ${actionToTake}, leaving file in place`);
+      return { action: 'leave', finalPath: filePath };
   }
 }
 
