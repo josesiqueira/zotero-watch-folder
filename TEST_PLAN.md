@@ -1,6 +1,10 @@
 # Zotero Watch Folder - Test Plan
 
-Complete test cases to verify all plugin functionality.
+Two layers of manual verification:
+1. **Smoke Test** (below) — 10-minute pass covering the dangerous failure paths. Run before every release.
+2. **Exhaustive Verification** (Phase 1, 2, 3, Edge Cases) — the full 30+ case sweep. Run on a rainy day, when a feature changes substantially, or when something specific breaks.
+
+The automated `vitest` suite (`npm test`, 259 tests) runs the pure logic. Everything below targets in-Zotero behavior that cannot be unit-tested.
 
 ## Setup
 
@@ -20,6 +24,108 @@ mkdir -p ~/ZoteroWatchTest/processed
 3. Open Zotero Error Console: `Tools` → `Developer` → `Error Console`
 
 ---
+
+## Smoke Test (10 minutes)
+
+Run these before every release. If any fail, do NOT ship — investigate first. Each line is an action; each **Expected** block is what should happen. If the expected behavior matches, tick the box.
+
+### S.1 — Settings render and save (30 sec)
+- [ ] Open `Edit` → `Settings` → `Watch Folder`
+- [ ] Set Source Folder to `~/ZoteroWatchTest/inbox`, Target Collection to `TestImports`, File Types to `pdf`, enable the plugin, click OK
+
+**Expected:** dialog closes without error; reopening Settings shows the values were persisted; Error Console shows `[WatchFolder] Started watching folder`.
+
+---
+
+### S.2 — Auto-import a PDF (2 min, includes metadata wait)
+- [ ] Copy a PDF with a DOI into `~/ZoteroWatchTest/inbox`
+- [ ] Wait up to 60 seconds for metadata retrieval
+
+**Expected:**
+- Item appears in `TestImports` collection
+- After metadata retrieval, the item has title / authors / DOI populated (or, if metadata fails, is tagged `_needs-review`)
+- Source PDF is still in the inbox (post-import action defaults to `leave`)
+
+---
+
+### S.3 — Duplicate detection (1 min)
+- [ ] With the previous item still in the library, copy the **same** PDF into `~/ZoteroWatchTest/inbox` a second time
+- [ ] Wait one poll cycle
+
+**Expected:**
+- The second import is skipped (no duplicate item appears)
+- Error Console shows `[WatchFolder] DOI match: ...` or a similar dedupe log
+
+---
+
+### S.4 — First-run prompt (2 min)
+- [ ] In `about:config`, clear `extensions.zotero.watchFolder.lastWatchedPath`
+- [ ] Drop 3 fresh PDFs into the inbox
+- [ ] Disable then re-enable the plugin (or change the Source Folder to a new path you have not used)
+
+**Expected:**
+- A confirm dialog appears: `Import All` / `Skip` / `Cancel`
+- Clicking `Import All` imports all 3 files and shows a progress window with `Imported 3 file(s)`
+- Clicking `Skip` saves the path (the prompt does not return next session)
+- Clicking `Cancel` leaves state untouched (the prompt returns next session)
+
+---
+
+### S.5 — Zotero → disk deletion sync (2 min)
+- [ ] Right-click an imported item in Zotero → `Move Item to Bin`
+
+**Expected:**
+- A 3-button dialog appears: `Move to OS trash` (default) / `Keep on disk` / `Delete permanently`, with a `Don't ask again` checkbox
+- Clicking `Move to OS trash` removes the source file from the watch folder and puts it in the OS trash (Mac Trash / Windows Recycle Bin / Linux Files — verify by opening the OS trash)
+- Repeat with a different item and tick `Don't ask again` while clicking `Move to OS trash` — verify `about:config` now shows `extensions.zotero.watchFolder.diskDeleteOnTrash = os_trash`
+
+---
+
+### S.6 — Disk → Zotero deletion sync (2 min)
+- [ ] Set `extensions.zotero.watchFolder.diskDeleteOnTrash` back to `ask` in `about:config` so it doesn't fight the next test
+- [ ] Import a fresh PDF (drop into inbox, wait for it to appear in Zotero)
+- [ ] Delete the PDF from the watch folder using your file manager (or `rm ~/ZoteroWatchTest/inbox/foo.pdf`)
+- [ ] Wait one poll cycle
+
+**Expected:**
+- A popup appears titled `Zotero Watch Folder` listing the deleted file and the matching Zotero item title
+- The Zotero item is now in the Bin (visible under `Bin` in the collection sidebar)
+- For stored mode, the popup mentions Zotero still has its own copy
+- Closing the popup, restoring the item from the Bin keeps the metadata (the file attachment may be broken in linked mode — that is expected and called out in the popup)
+
+---
+
+### S.7 — Plugin disable/enable cleanup (1 min)
+- [ ] Disable the plugin in `Tools` → `Add-ons Manager`
+- [ ] Open the Error Console; copy a PDF into the inbox
+- [ ] Wait 15 seconds
+
+**Expected:**
+- No `[WatchFolder]` log lines appear in the console after disable
+- The PDF stays in the inbox; no item created in Zotero
+- Re-enabling the plugin resumes polling and imports the file
+
+---
+
+### Smoke test results
+
+| Case | Status | Notes |
+|---|---|---|
+| S.1 — Settings render/save | ⬜ | |
+| S.2 — Auto-import + metadata | ⬜ | |
+| S.3 — Duplicate detection | ⬜ | |
+| S.4 — First-run prompt | ⬜ | |
+| S.5 — Zotero → disk deletion | ⬜ | |
+| S.6 — Disk → Zotero deletion | ⬜ | |
+| S.7 — Plugin disable/enable | ⬜ | |
+
+If all seven pass, the plugin is shippable. If any fail, investigate before releasing.
+
+---
+
+# Exhaustive Verification
+
+The sections below contain the full 30+ case sweep. Run when a feature changes substantially, when something specific breaks, or when you want extra confidence before a major release. Most cases overlap with the smoke test above; that overlap is intentional — the smoke test gives you the fast critical path, this section gives you the thorough variation coverage.
 
 ## Phase 1: Core Watch Folder
 

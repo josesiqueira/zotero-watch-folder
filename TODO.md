@@ -4,7 +4,7 @@ Phase 1, Phase 2, and Phase 3 features are all implemented. The remaining open i
 
 ## Open
 
-- [ ] **Manual end-to-end testing in a live Zotero install.** `TEST_PLAN.md` contains 32 manual cases covering import, metadata, renaming, first-run, collection sync, smart rules, and duplicate detection. None are checked off yet. Top priority before the next release.
+- [ ] **Run the 10-minute Smoke Test in a live Zotero install** (`TEST_PLAN.md` → Smoke Test section, cases S.1 through S.7). Covers the dangerous failure paths. Required before any release. The full Exhaustive Verification section (~30 cases) is optional and can be run on a rainy day.
 - [ ] **Smart rules management UI.** The engine in `content/smartRules.mjs` works, but rules currently have to be authored as JSON in the `extensions.zotero.watchFolder.smartRules` preference. A small editor in the preferences pane would make the feature usable for non-developers.
 
 ## Done
