@@ -69,7 +69,7 @@ All preferences live under `extensions.zotero.watchFolder.*` and can be inspecte
 
 - Smart rules are evaluated correctly, but there is no GUI for editing them yet. Rules are stored as JSON in `extensions.zotero.watchFolder.smartRules` and must be edited via `about:config` or a small script.
 - Folder watching is poll-based, not OS-event-based. Very short poll intervals on large folders may increase CPU/disk use.
-- Manual end-to-end test coverage in a live Zotero 8 instance is still in progress (see `TEST_PLAN.md`).
+- Manual end-to-end test coverage in a live Zotero 8 instance is still in progress. See `TEST_PLAN.md` — the 10-minute Smoke Test at the top is the required pre-release pass; the Exhaustive Verification section below it is optional but useful when something specific breaks.
 
 ## For developers
 
