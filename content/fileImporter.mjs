@@ -190,7 +190,7 @@ export async function importBatch(files, options = {}) {
         }
       }
 
-      Zotero.debug(`[WatchFolder] Successfully imported: ${filename} (${i + 1}/${filePaths.length})`);
+      Zotero.debug(`[WatchFolder] Successfully imported: ${filename} (${i + 1}/${files.length})`);
     } catch (error) {
       results.failed.push({
         path: filePath,
@@ -200,10 +200,10 @@ export async function importBatch(files, options = {}) {
     }
 
     // Report progress
-    onProgress(i + 1, filePaths.length);
+    onProgress(i + 1, files.length);
 
     // Delay between imports to avoid overwhelming Zotero
-    if (i < filePaths.length - 1 && delayBetween > 0) {
+    if (i < files.length - 1 && delayBetween > 0) {
       await new Promise(r => setTimeout(r, delayBetween));
     }
   }
