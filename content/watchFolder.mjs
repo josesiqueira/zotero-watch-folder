@@ -5,7 +5,7 @@
  */
 
 import { getPref, delay, getFileHash } from './utils.mjs';
-import { scanFolder } from './fileScanner.mjs';
+import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
@@ -244,8 +244,8 @@ export class WatchFolderService {
         return;
       }
 
-      // Scan for files
-      const files = await scanFolder(watchPath);
+      // Scan for files recursively
+      const files = await scanFolderRecursive(watchPath);
 
       // Filter out already tracked and currently processing files
       const newFiles = [];
@@ -262,7 +262,35 @@ export class WatchFolderService {
           continue;
         }
 
-        newFiles.push(filePath);
+        // Calculate target collection based on relative path
+        let targetCollection = getPref('targetCollection') || 'Inbox';
+        
+        // Get relative path from watchPath to filePath
+        if (filePath.startsWith(watchPath)) {
+          let relativePath = filePath.substring(watchPath.length);
+          Zotero.debug(`[WatchFolder] File path: ${filePath}`);
+          Zotero.debug(`[WatchFolder] Watch path: ${watchPath}`);
+          Zotero.debug(`[WatchFolder] Initial relative path: ${relativePath}`);
+
+          // Remove leading separator
+          if (relativePath.startsWith('/') || relativePath.startsWith('\\')) {
+            relativePath = relativePath.substring(1);
+          }
+          
+          // Get directory part of relative path
+          const pathParts = relativePath.split(/[/\\]/);
+          pathParts.pop(); // Remove filename
+          
+          if (pathParts.length > 0) {
+            Zotero.debug(`[WatchFolder] Folder parts found: ${JSON.stringify(pathParts)}`);
+            targetCollection = targetCollection + '/' + pathParts.join('/');
+          } else {
+            Zotero.debug(`[WatchFolder] No subfolders found in relative path.`);
+          }
+        }
+        
+        Zotero.debug(`[WatchFolder] Final target collection path: ${targetCollection}`);
+        newFiles.push({ path: filePath, collection: targetCollection });
       }
 
       if (newFiles.length > 0) {
@@ -273,8 +301,8 @@ export class WatchFolderService {
         this._currentInterval = (getPref('pollInterval') || 5) * 1000;
 
         // Process new files
-        for (const filePath of newFiles) {
-          await this._processNewFile(filePath);
+        for (const fileObj of newFiles) {
+          await this._processNewFile(fileObj.path, fileObj.collection);
         }
       } else {
         // Increment empty scan counter for adaptive polling
@@ -304,14 +332,15 @@ export class WatchFolderService {
    * Process a newly detected file
    * @private
    * @param {string} filePath - Absolute path to the file
+   * @param {string} [targetCollection] - Target collection path
    * @returns {Promise<void>}
    */
-  async _processNewFile(filePath) {
+  async _processNewFile(filePath, targetCollection) {
     // Mark as processing to prevent duplicate handling
     this._processingFiles.add(filePath);
 
     try {
-      Zotero.debug(`[WatchFolder] Processing new file: ${filePath}`);
+      Zotero.debug(`[WatchFolder] Processing new file: ${filePath} into ${targetCollection}`);
 
       // Step 1: Check if file is stable (size not changing)
       const isStable = await this._waitForFileStable(filePath);
@@ -373,7 +402,7 @@ export class WatchFolderService {
       }
 
       // Step 3: Import file via fileImporter
-      const item = await importFile(filePath);
+      const item = await importFile(filePath, { collectionName: targetCollection });
 
       if (!item || !item.id) {
         Zotero.debug(`[WatchFolder] Import failed for: ${filePath}`);
