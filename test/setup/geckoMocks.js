@@ -137,11 +137,35 @@ globalThis.Services = {
   prompt: {
     BUTTON_POS_0: 1,
     BUTTON_POS_1: 256,
+    BUTTON_POS_2: 65536,
+    BUTTON_POS_0_DEFAULT: 0x01000000,
     BUTTON_TITLE_IS_STRING: 127,
     BUTTON_TITLE_CANCEL: 1,
     confirmEx: vi.fn(() => 0), // default: approve
+    alert: vi.fn(),
   },
 };
+
+// --- Components (XPCOM) ---
+// Minimal stub that lets watchFolder._moveToOSTrash exercise the
+// nsIFile.moveToTrash path. Tests can override Components.classes[...] etc.
+function _makeMockNsIFile() {
+  return {
+    initWithPath: vi.fn(),
+    moveToTrash: vi.fn(),
+  };
+}
+globalThis.Components = {
+  classes: {
+    '@mozilla.org/file/local;1': {
+      createInstance: vi.fn(() => _makeMockNsIFile()),
+    },
+  },
+  interfaces: {
+    nsIFile: {},
+  },
+};
+globalThis._makeMockNsIFile = _makeMockNsIFile;
 
 // --- ChromeUtils ---
 globalThis.ChromeUtils = {

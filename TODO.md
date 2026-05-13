@@ -12,6 +12,6 @@ Phase 1, Phase 2, and Phase 3 features are all implemented. The remaining open i
 - Phase 1: watch folder, auto-import, metadata retrieval, file renaming, first-run flow, post-import actions.
 - Phase 2: collection <-> folder mirroring, item-move sync, folder-to-collection sync, conflict resolution.
 - Phase 3: smart rules engine, duplicate detection (DOI / ISBN / fuzzy title / hash), bulk operations.
-- Trash sync: moving an item to Zotero's trash prompts to also delete the watch-folder file, with a "Don't ask again" option.
+- Two-way deletion sync: 3-button dialog (OS trash / Keep / Permanent) when Zotero items are trashed; auto-bin + popup when watch-folder files are deleted externally.
 - Plugin icons (16/48/96 + source SVG).
-- Vitest unit suite covering the modules above (`npm test`, 224 tests).
+- Vitest unit suite covering the modules above (`npm test`, 236 tests).

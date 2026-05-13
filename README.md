@@ -48,7 +48,9 @@ All preferences live under `extensions.zotero.watchFolder.*` and can be inspecte
 - Metadata retrieval queue with throttling and a `_needs-review` tag for failures.
 - Template-based file renaming with sanitization and a configurable max length.
 - First-run detection: when the watch folder is set for the first time (or changed), the plugin scans existing files and offers `Import All`, `Skip`, or `Cancel`. Imports run in a batch with a progress window.
-- Trash sync: when you move an imported item to Zotero's trash, the plugin asks whether to also delete the source file from the watch folder. A "Don't ask again" checkbox switches to silent delete or silent keep. Controlled by `extensions.zotero.watchFolder.diskDeleteOnTrash` (`ask` / `always` / `never`).
+- Two-way deletion sync (Phase 1):
+  - **Zotero → disk**: when you move an imported item to Zotero's bin, a 3-button dialog asks: `Move to OS trash` (default), `Keep on disk`, or `Delete permanently`. The OS trash (Mac Trash / Windows Recycle Bin / Linux XDG Trash) keeps the file recoverable. "Don't ask again" persists the chosen action via `extensions.zotero.watchFolder.diskDeleteOnTrash` (`ask` / `os_trash` / `permanent` / `never`).
+  - **Disk → Zotero**: when you delete a tracked file from the watch folder, the next scan auto-moves the matching Zotero item to Zotero's bin and shows a popup summarising what changed. The wording adjusts for stored vs linked mode. Controlled by `extensions.zotero.watchFolder.diskDeleteSync` (`auto` / `never`).
 
 **Collection mirroring (Phase 2)**
 
