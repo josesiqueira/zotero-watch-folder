@@ -88,16 +88,25 @@ export class PathMapper {
   sanitizeFolderName(name) {
     if (!name) return '_unnamed';
 
-    return name
+    let sanitized = name
       // Remove characters illegal on Windows/Mac/Linux
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-      // Remove leading/trailing dots (problematic on Windows)
-      .replace(/^\.+/, '_')
-      .replace(/\.+$/, '_')
-      // Replace multiple spaces/underscores with single
+      // Replace multiple spaces/underscores with single space
       .replace(/[\s_]+/g, ' ')
       // Trim whitespace
-      .trim()
+      .trim();
+
+    // Replace leading dots (problematic on Windows) — done after collapse/trim
+    // so the protective underscore survives the [\s_]+ collapse
+    if (sanitized.startsWith('.')) {
+      sanitized = '_' + sanitized.substring(1);
+    }
+    // Replace trailing dots
+    if (sanitized.endsWith('.')) {
+      sanitized = sanitized.substring(0, sanitized.length - 1) + '_';
+    }
+
+    return sanitized
       // Truncate to safe length (255 is max on most filesystems, leave room for path)
       .substring(0, 200)
       // Ensure not empty

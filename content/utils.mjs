@@ -54,9 +54,20 @@ export function sanitizeFilename(filename, maxLength = 150) {
   sanitized = sanitized.replace(/[_\s]+/g, ' ').trim();
   // Truncate if too long (preserve extension)
   if (sanitized.length > maxLength) {
-    const ext = sanitized.split('.').pop();
-    const nameLength = maxLength - ext.length - 1;
-    sanitized = sanitized.substring(0, nameLength) + '.' + ext;
+    const dotIndex = sanitized.lastIndexOf('.');
+    if (dotIndex > 0) {
+      const ext = sanitized.substring(dotIndex); // includes the dot
+      const nameLength = maxLength - ext.length;
+      if (nameLength > 0) {
+        sanitized = sanitized.substring(0, nameLength) + ext;
+      } else {
+        // Extension alone exceeds maxLength — truncate the whole thing
+        sanitized = sanitized.substring(0, maxLength);
+      }
+    } else {
+      // No extension — just truncate
+      sanitized = sanitized.substring(0, maxLength);
+    }
   }
   return sanitized;
 }

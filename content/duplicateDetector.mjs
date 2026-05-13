@@ -733,8 +733,8 @@ export class DuplicateDetector {
     let normalized = title
       // Convert to lowercase
       .toLowerCase()
-      // Remove punctuation (keep alphanumeric and spaces)
-      .replace(/[^\p{L}\p{N}\s]/gu, '')
+      // Replace punctuation with space (so 'foo:bar' becomes 'foo bar', not 'foobar')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       // Collapse multiple spaces
       .replace(/\s+/g, ' ')
       // Trim
