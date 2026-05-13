@@ -4,7 +4,7 @@
  * @module watchFolder
  */
 
-import { getPref, delay, getFileHash } from './utils.mjs';
+import { getPref, setPref, delay, getFileHash } from './utils.mjs';
 import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore } from './trackingStore.mjs';
@@ -85,8 +85,8 @@ export class WatchFolderService {
       // Register Zotero notifier for item events
       this._notifierID = Zotero.Notifier.registerObserver(
         {
-          notify: (event, type, ids, extraData) => {
-            this.handleNotification(event, type, ids, extraData);
+          notify: async (event, type, ids, extraData) => {
+            await this.handleNotification(event, type, ids, extraData);
           }
         },
         ['item'],
@@ -556,7 +556,7 @@ export class WatchFolderService {
    * @param {number[]} ids - Affected object IDs
    * @param {object} extraData - Additional event data
    */
-  handleNotification(event, type, ids, extraData) {
+  async handleNotification(event, type, ids, extraData) {
     if (type !== 'item') {
       return;
     }
@@ -576,8 +576,8 @@ export class WatchFolderService {
           break;
 
         case 'trash':
-          // Optionally handle trashed items (could re-enable import)
           Zotero.debug(`[WatchFolder] Items trashed: ${ids.join(', ')}`);
+          await this._handleZoteroTrash(ids);
           break;
 
         default:
@@ -587,6 +587,131 @@ export class WatchFolderService {
     } catch (e) {
       Zotero.logError(e);
       Zotero.debug(`[WatchFolder] Notification handler error: ${e.message}`);
+    }
+  }
+
+  /**
+   * Handle items being moved to Zotero's trash. Based on the
+   * `diskDeleteOnTrash` preference, optionally delete the corresponding
+   * source files from the watch folder.
+   * - 'never'  : leave the source files alone, but drop the tracking entry
+   * - 'always' : delete the source files silently and drop the tracking entry
+   * - 'ask'    : prompt the user with a single batched confirm dialog
+   *
+   * @param {number[]} ids - Trashed Zotero item IDs
+   */
+  async _handleZoteroTrash(ids) {
+    if (!this._trackingStore || !ids || ids.length === 0) {
+      return;
+    }
+
+    // Collect tracked files for the trashed items
+    const targets = [];
+    for (const id of ids) {
+      const record = this._trackingStore.findByItemID(id);
+      if (!record || !record.path) continue;
+      const exists = await IOUtils.exists(record.path).catch(() => false);
+      if (!exists) {
+        // File already gone — just clear the tracking entry
+        this._trackingStore.removeByItemID(id);
+        continue;
+      }
+      targets.push({ itemID: id, path: record.path });
+    }
+
+    if (targets.length === 0) return;
+
+    const mode = getPref('diskDeleteOnTrash') || 'ask';
+
+    if (mode === 'never') {
+      // Keep the file on disk; drop tracking so the same file can be re-imported later
+      for (const { itemID } of targets) {
+        this._trackingStore.removeByItemID(itemID);
+      }
+      return;
+    }
+
+    let shouldDelete = mode === 'always';
+
+    if (mode === 'ask') {
+      shouldDelete = this._promptDiskDelete(targets);
+    }
+
+    if (shouldDelete) {
+      for (const { itemID, path } of targets) {
+        try {
+          await IOUtils.remove(path);
+          Zotero.debug(`[WatchFolder] Trash sync: removed source file ${path}`);
+        } catch (e) {
+          Zotero.debug(`[WatchFolder] Trash sync: failed to remove ${path}: ${e.message}`);
+        }
+        this._trackingStore.removeByItemID(itemID);
+      }
+    } else {
+      // User declined; still drop tracking since the item no longer exists in Zotero
+      for (const { itemID } of targets) {
+        this._trackingStore.removeByItemID(itemID);
+      }
+    }
+  }
+
+  /**
+   * Show a confirm dialog asking whether to also delete the source files
+   * from the watch folder. Includes a "Don't ask again" checkbox that
+   * updates the `diskDeleteOnTrash` preference accordingly.
+   *
+   * @param {{itemID: number, path: string}[]} targets
+   * @returns {boolean} True if the user chose to delete the files
+   */
+  _promptDiskDelete(targets) {
+    const window = this._pickWindow();
+    if (!window || !Services || !Services.prompt) {
+      // No UI available; default to NOT deleting (safer)
+      return false;
+    }
+
+    const count = targets.length;
+    const title = 'Zotero Watch Folder';
+    const message = count === 1
+      ? `An item was moved to Zotero's trash.\n\nAlso delete the source file from your watch folder?\n\n${targets[0].path}`
+      : `${count} items were moved to Zotero's trash.\n\nAlso delete the source files from your watch folder?`;
+
+    const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING;
+
+    const checkState = { value: false };
+    const result = Services.prompt.confirmEx(
+      window,
+      title,
+      message,
+      flags,
+      'Delete from disk',  // Button 0 → Yes
+      'Keep on disk',      // Button 1 → No
+      null,
+      "Don't ask again",
+      checkState
+    );
+
+    const yes = result === 0;
+    if (checkState.value) {
+      // Persist the user's choice as the new default
+      setPref('diskDeleteOnTrash', yes ? 'always' : 'never');
+    }
+    return yes;
+  }
+
+  /**
+   * Pick a Zotero window to use as a parent for prompt dialogs.
+   * Prefers a tracked main window; falls back to Zotero.getMainWindow().
+   */
+  _pickWindow() {
+    if (this._windows && this._windows.size > 0) {
+      for (const w of this._windows) return w;
+    }
+    try {
+      return Zotero.getMainWindow();
+    } catch (_) {
+      return null;
     }
   }
 
