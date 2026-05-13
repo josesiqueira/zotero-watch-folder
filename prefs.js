@@ -11,6 +11,7 @@ pref("extensions.zotero.watchFolder.importMode", "stored");  // "stored" or "lin
 pref("extensions.zotero.watchFolder.postImportAction", "leave");  // "leave", "delete", "move"
 pref("extensions.zotero.watchFolder.autoRetrieveMetadata", true);  // Auto-fetch PDF metadata
 pref("extensions.zotero.watchFolder.lastWatchedPath", "");  // For first-run detection
+pref("extensions.zotero.watchFolder.diskDeleteOnTrash", "ask");  // "ask", "always", "never" — when an item is trashed in Zotero, what to do with the source file in the watch folder
 
 // File naming settings
 pref("extensions.zotero.watchFolder.renamePattern", "{firstCreator} - {year} - {title}");
