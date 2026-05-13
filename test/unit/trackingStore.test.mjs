@@ -1,7 +1,8 @@
 /**
  * Unit tests for content/trackingStore.mjs
  * Covers: UT-011 (in-memory CRUD), UT-012 (LRU eviction),
- *         UT-013 (getStats), UT-014 (createTrackingRecord defaults)
+ *         UT-013 (getStats), UT-014 (createTrackingRecord defaults),
+ *         UT-014b (TrackingRecord new fields: postImportAction, expectedOnDisk)
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TrackingStore, createTrackingRecord, resetTrackingStore } from '../../content/trackingStore.mjs';
@@ -36,7 +37,7 @@ describe('UT-014: createTrackingRecord — defaults', () => {
     expect(new Date(rec.importDate).toISOString()).toBe(rec.importDate);
   });
 
-  // UT-014b
+  // UT-014c (was UT-014b in older docs — merge defaults)
   it('merges supplied values over defaults', () => {
     const rec = createTrackingRecord({ path: '/x', itemID: 42 });
     expect(rec.path).toBe('/x');
@@ -46,6 +47,42 @@ describe('UT-014: createTrackingRecord — defaults', () => {
     expect(rec.mtime).toBe(0);
     expect(rec.metadataRetrieved).toBe(false);
     expect(rec.renamed).toBe(false);
+  });
+});
+
+// ─── UT-014b ─────────────────────────────────────────────────────────────────
+// New TrackingRecord fields: postImportAction + expectedOnDisk
+
+describe('UT-014b: TrackingRecord new fields (postImportAction, expectedOnDisk)', () => {
+  it('default values: postImportAction="leave" and expectedOnDisk=true when {} is passed', () => {
+    const rec = createTrackingRecord({});
+    expect(rec.postImportAction).toBe('leave');
+    expect(rec.expectedOnDisk).toBe(true);
+  });
+
+  it('preserves explicit values when both fields are supplied', () => {
+    const rec = createTrackingRecord({ postImportAction: 'delete', expectedOnDisk: false });
+    expect(rec.postImportAction).toBe('delete');
+    expect(rec.expectedOnDisk).toBe(false);
+  });
+
+  it('expectedOnDisk: false is retained verbatim (not coerced back to true)', () => {
+    // Spec uses `data.expectedOnDisk !== false` so passing false must stay false.
+    const rec = createTrackingRecord({ expectedOnDisk: false });
+    expect(rec.expectedOnDisk).toBe(false);
+  });
+
+  it('expectedOnDisk: true and undefined both yield true', () => {
+    const recExplicit = createTrackingRecord({ expectedOnDisk: true });
+    const recOmitted = createTrackingRecord({ expectedOnDisk: undefined });
+    expect(recExplicit.expectedOnDisk).toBe(true);
+    expect(recOmitted.expectedOnDisk).toBe(true);
+  });
+
+  it('accepts all three documented postImportAction values', () => {
+    expect(createTrackingRecord({ postImportAction: 'leave' }).postImportAction).toBe('leave');
+    expect(createTrackingRecord({ postImportAction: 'delete' }).postImportAction).toBe('delete');
+    expect(createTrackingRecord({ postImportAction: 'move' }).postImportAction).toBe('move');
   });
 });
 
