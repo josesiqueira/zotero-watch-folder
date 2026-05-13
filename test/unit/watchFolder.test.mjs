@@ -13,6 +13,7 @@ vi.mock('../../content/utils.mjs', () => ({
   setPref: vi.fn(),
   delay: vi.fn(),
   getFileHash: vi.fn(),
+  getOrCreateCollectionPath: vi.fn(),
 }));
 
 vi.mock('../../content/fileScanner.mjs', () => ({
@@ -526,5 +527,212 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
     await service._backfillHashesForExistingItems();
 
     expect(ok.setField).toHaveBeenCalledWith('extra', 'watchfolder-hash:b');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-053: _handleExternalDeletions + _handleFileMoves — distinguishes a
+// file move within the watch folder from a real deletion, and relocates the
+// Zotero item to the new subfolder's collection instead of trashing it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () => {
+  let service;
+  let getPrefMock;
+  let getFileHashMock;
+  let getOrCreateCollectionPathMock;
+  let movedItem;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getFileHashMock = utils.getFileHash;
+    getOrCreateCollectionPathMock = utils.getOrCreateCollectionPath;
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._windows.add({ document: {} });
+
+    // Default prefs for these tests
+    getPrefMock.mockImplementation((k) => {
+      if (k === 'diskDeleteSync') return 'auto';
+      if (k === 'importMode') return 'stored';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'targetCollection') return 'Inbox';
+      return undefined;
+    });
+
+    // The Zotero item that's about to be moved between collections
+    movedItem = {
+      deleted: false,
+      getCollections: vi.fn(() => [5]),  // currently in collection 5
+      removeFromCollection: vi.fn(),
+      addToCollection: vi.fn(),
+      saveTx: vi.fn(async () => {}),
+      getDisplayTitle: vi.fn(() => 'Paper title'),
+      getField: vi.fn(() => ''),
+    };
+    globalThis.Zotero.Items.getAsync = vi.fn(async () => movedItem);
+
+    // Default: every collection lookup returns a fresh "collection" object
+    let nextColID = 100;
+    getOrCreateCollectionPathMock.mockImplementation(async () => ({ id: nextColID++ }));
+
+    // Zotero.Collections — used by _findCollectionByPath
+    globalThis.Zotero.Collections = {
+      ...globalThis.Zotero.Collections,
+      getByLibrary: vi.fn(() => [
+        { id: 5, name: 'Inbox', parentID: null },
+      ]),
+      getByParent: vi.fn(() => []),
+    };
+
+    service._trackingStore = {
+      getAll: vi.fn(() => []),
+      remove: vi.fn(),
+      removeByItemID: vi.fn(),
+      add: vi.fn(),
+      save: vi.fn(async () => {}),
+      hasPath: vi.fn(() => false),
+    };
+
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+  });
+
+  it('matching hash on a candidate path triggers a move, NOT a deletion', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc123', expectedOnDisk: true },
+    ]);
+    getFileHashMock.mockImplementation(async (p) => p === '/watch/sub/paper.pdf' ? 'abc123' : null);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/paper.pdf']),
+      [{ path: '/watch/sub/paper.pdf' }]
+    );
+
+    // The item was NOT moved to the bin
+    expect(movedItem.deleted).toBe(false);
+    // The popup was NOT shown
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
+    // Tracking was updated (remove + add)
+    expect(service._trackingStore.remove).toHaveBeenCalled();
+    expect(service._trackingStore.add).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/watch/sub/paper.pdf', itemID: 42 })
+    );
+  });
+
+  it('moves Zotero item from old auto-collection to new auto-collection', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
+    ]);
+    getFileHashMock.mockImplementation(async (p) => p === '/watch/sub/paper.pdf' ? 'abc' : null);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/paper.pdf']),
+      [{ path: '/watch/sub/paper.pdf' }]
+    );
+
+    // Should have looked up the new collection path "Inbox/sub"
+    expect(getOrCreateCollectionPathMock).toHaveBeenCalledWith('Inbox/sub');
+    // Item should have left the old auto-collection (Inbox = id 5)
+    expect(movedItem.removeFromCollection).toHaveBeenCalledWith(5);
+    // and joined the new one (whatever getOrCreate returned)
+    expect(movedItem.addToCollection).toHaveBeenCalled();
+    expect(movedItem.saveTx).toHaveBeenCalled();
+  });
+
+  it('move within the same collection (just rename) skips the collection swap', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/old.pdf', hash: 'abc', expectedOnDisk: true },
+    ]);
+    getFileHashMock.mockImplementation(async (p) => p === '/watch/new-name.pdf' ? 'abc' : null);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/new-name.pdf']),
+      [{ path: '/watch/new-name.pdf' }]
+    );
+
+    // Both paths map to "Inbox" — no collection re-assignment needed
+    expect(getOrCreateCollectionPathMock).not.toHaveBeenCalled();
+    expect(movedItem.removeFromCollection).not.toHaveBeenCalled();
+    expect(movedItem.addToCollection).not.toHaveBeenCalled();
+    // Tracking still updated
+    expect(service._trackingStore.add).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/watch/new-name.pdf' })
+    );
+  });
+
+  it('no hash-matching file means a real deletion (falls through to bin)', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
+    ]);
+    // The other file on disk has a different hash
+    getFileHashMock.mockImplementation(async () => 'differentHash');
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/unrelated.pdf']),
+      [{ path: '/watch/unrelated.pdf' }]
+    );
+
+    // Should have gone to bin
+    expect(movedItem.deleted).toBe(true);
+    expect(movedItem.saveTx).toHaveBeenCalled();
+    // Popup shown
+    expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
+    // _trackingStore.add should NOT have been called for a move
+    expect(service._trackingStore.add).not.toHaveBeenCalled();
+  });
+
+  it('two missing records + two matching candidates: each claims one', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 1, path: '/watch/a.pdf', hash: 'AAA', expectedOnDisk: true },
+      { itemID: 2, path: '/watch/b.pdf', hash: 'BBB', expectedOnDisk: true },
+    ]);
+    getFileHashMock.mockImplementation(async (p) => {
+      if (p === '/watch/x/a.pdf') return 'AAA';
+      if (p === '/watch/y/b.pdf') return 'BBB';
+      return null;
+    });
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/x/a.pdf', '/watch/y/b.pdf']),
+      [{ path: '/watch/x/a.pdf' }, { path: '/watch/y/b.pdf' }]
+    );
+
+    expect(service._trackingStore.add).toHaveBeenCalledTimes(2);
+    expect(service._trackingStore.add).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/watch/x/a.pdf', itemID: 1 })
+    );
+    expect(service._trackingStore.add).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/watch/y/b.pdf', itemID: 2 })
+    );
+    // Neither item went to the bin
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
+  });
+
+  it('missing record without a hash falls through to deletion (cannot detect move)', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/paper.pdf', hash: '', expectedOnDisk: true },
+    ]);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/paper.pdf']),
+      [{ path: '/watch/sub/paper.pdf' }]
+    );
+
+    expect(movedItem.deleted).toBe(true);
+  });
+
+  it('called without allFiles parameter behaves like the old deletion-only path', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
+    ]);
+
+    await service._handleExternalDeletions(new Set());
+
+    expect(movedItem.deleted).toBe(true);
+    expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
   });
 });

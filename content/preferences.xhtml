@@ -1,8 +1,18 @@
-<vbox id="watch-folder-preferences" 
+<vbox id="watch-folder-preferences"
       xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
       xmlns:html="http://www.w3.org/1999/xhtml"
       style="overflow: auto;"
       onload="if (typeof WatchFolderPrefs !== 'undefined' &amp;&amp; WatchFolderPrefs.onLoad) WatchFolderPrefs.onLoad()">
+
+  <!-- About Section -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-about"/></label>
+    <vbox style="margin: 4px 8px;">
+      <html:p data-l10n-id="watch-folder-pref-about-text" style="margin: 4px 0; line-height: 1.4;"/>
+      <html:p data-l10n-id="watch-folder-pref-about-storage" style="margin: 4px 0; line-height: 1.4;"/>
+      <html:p data-l10n-id="watch-folder-pref-about-trash" style="margin: 4px 0; line-height: 1.4;"/>
+    </vbox>
+  </groupbox>
 
   <!-- Watch Folder Section -->
   <groupbox>
@@ -46,33 +56,10 @@
     </hbox>
   </groupbox>
 
-  <!-- Import Section -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-import"/></label>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-import-mode" control="watch-folder-import-mode"/>
-      <menulist id="watch-folder-import-mode"
-                preference="extensions.zotero.watchFolder.importMode">
-        <menupopup>
-          <menuitem value="stored" data-l10n-id="watch-folder-pref-import-mode-stored"/>
-          <menuitem value="linked" data-l10n-id="watch-folder-pref-import-mode-linked"/>
-        </menupopup>
-      </menulist>
-    </hbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-post-import" control="watch-folder-post-import"/>
-      <menulist id="watch-folder-post-import"
-                preference="extensions.zotero.watchFolder.postImportAction">
-        <menupopup>
-          <menuitem value="leave" data-l10n-id="watch-folder-pref-post-import-leave"/>
-          <menuitem value="delete" data-l10n-id="watch-folder-pref-post-import-delete"/>
-          <menuitem value="move" data-l10n-id="watch-folder-pref-post-import-move"/>
-        </menupopup>
-      </menulist>
-    </hbox>
-  </groupbox>
+  <!-- Import Mode / Post-Import Action removed from the visible UI.
+       They remain functional preferences (extensions.zotero.watchFolder.importMode,
+       extensions.zotero.watchFolder.postImportAction). Defaults — stored + leave —
+       suit nearly every workflow. Change via about:config if you need to. -->
 
   <!-- File Naming Section -->
   <groupbox>

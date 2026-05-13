@@ -4,7 +4,7 @@
  * @module watchFolder
  */
 
-import { getPref, setPref, delay, getFileHash } from './utils.mjs';
+import { getPref, setPref, delay, getFileHash, getOrCreateCollectionPath } from './utils.mjs';
 import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore } from './trackingStore.mjs';
@@ -255,11 +255,15 @@ export class WatchFolderService {
       // Scan for files recursively
       const files = await scanFolderRecursive(watchPath);
 
-      // Detect externally-deleted files (tracked but no longer on disk) and
-      // auto-move the matching Zotero items to the bin. Single batched popup.
+      // Detect externally-deleted files vs file-moves. A "move" is when a
+      // tracked file's path disappears AND an untracked file with the same
+      // content hash appears elsewhere — common case is the user
+      // reorganising the watch folder by dragging a file into a subfolder.
+      // Moves update the tracking record + move the Zotero item to the new
+      // subfolder's collection without ever sending it to the bin.
       try {
         const diskPaths = new Set(files.map(f => f.path));
-        await this._handleExternalDeletions(diskPaths);
+        await this._handleExternalDeletions(diskPaths, files);
       } catch (e) {
         Zotero.debug(`[WatchFolder] External-deletion scan failed: ${e.message}`);
       }
@@ -788,7 +792,7 @@ export class WatchFolderService {
    *
    * @param {Set<string>} diskPaths - Paths currently present in the watch folder
    */
-  async _handleExternalDeletions(diskPaths) {
+  async _handleExternalDeletions(diskPaths, allFiles = null) {
     if (!this._trackingStore) return;
     if ((getPref('diskDeleteSync') || 'auto') === 'never') return;
 
@@ -808,10 +812,60 @@ export class WatchFolderService {
     }
 
     if (missing.length === 0) return;
-    Zotero.debug(`[WatchFolder] Detected ${missing.length} externally-deleted file(s)`);
+
+    // ── Move detection ────────────────────────────────────────────────────
+    // For each missing tracked record, see whether some untracked file on
+    // disk has the same content hash. That signals a rename / drag-into-
+    // subfolder, not a deletion. Update tracking + relocate the Zotero
+    // item to the new path's collection instead of trashing.
+    const moves = [];
+    const trulyMissing = [];
+    if (allFiles && allFiles.length > 0) {
+      const trackedPaths = new Set(records.map(r => r.path));
+      // Candidate "new" files on disk: untracked, not currently being processed.
+      const candidates = allFiles
+        .map(f => f.path)
+        .filter(p => !trackedPaths.has(p) && !this._processingFiles.has(p));
+      // Cache hashes so we don't recompute for each missing record.
+      const hashCache = new Map();
+      const hashOf = async (p) => {
+        if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
+        return hashCache.get(p);
+      };
+
+      for (const record of missing) {
+        if (!record.hash) { trulyMissing.push(record); continue; }
+        let movedTo = null;
+        for (const candidate of candidates) {
+          const h = await hashOf(candidate);
+          if (h && h === record.hash) {
+            movedTo = candidate;
+            break;
+          }
+        }
+        if (movedTo) {
+          moves.push({ record, newPath: movedTo });
+          // Claim this candidate so multiple missing records can't all grab it.
+          const idx = candidates.indexOf(movedTo);
+          if (idx !== -1) candidates.splice(idx, 1);
+        } else {
+          trulyMissing.push(record);
+        }
+      }
+    } else {
+      trulyMissing.push(...missing);
+    }
+
+    if (moves.length > 0) {
+      Zotero.debug(`[WatchFolder] Detected ${moves.length} file move(s)`);
+      await this._handleFileMoves(moves);
+    }
+
+    if (trulyMissing.length === 0) return;
+    Zotero.debug(`[WatchFolder] Detected ${trulyMissing.length} externally-deleted file(s)`);
 
     const trashed = [];
-    for (const record of missing) {
+    for (const record of trulyMissing) {
       try {
         const item = await Zotero.Items.getAsync(record.itemID);
         if (!item) {
@@ -840,6 +894,118 @@ export class WatchFolderService {
 
     if (trashed.length > 0) {
       this._showExternalDeletionPopup(trashed);
+    }
+  }
+
+  /**
+   * Handle one or more files that moved within the watch folder. Updates
+   * the tracking record's path AND moves the Zotero item from its current
+   * watch-folder-mapped collection to the new path's mapped collection.
+   * No bin, no popup, no reimport.
+   *
+   * @param {{record: TrackingRecord, newPath: string}[]} moves
+   */
+  async _handleFileMoves(moves) {
+    if (!moves || moves.length === 0) return;
+    const watchPath = getPref('sourcePath') || '';
+    const baseTarget = getPref('targetCollection') || 'Inbox';
+
+    // Helper: compute the collection path that would be auto-assigned for a file path
+    const collectionPathFor = (filePath) => {
+      let collection = baseTarget;
+      if (watchPath && filePath.startsWith(watchPath)) {
+        let relative = filePath.substring(watchPath.length).replace(/^[/\\]/, '');
+        const parts = relative.split(/[/\\]/);
+        parts.pop(); // drop filename
+        if (parts.length > 0) {
+          collection = baseTarget + '/' + parts.join('/');
+        }
+      }
+      return collection;
+    };
+
+    for (const { record, newPath } of moves) {
+      const oldCollectionPath = collectionPathFor(record.path);
+      const newCollectionPath = collectionPathFor(newPath);
+      Zotero.debug(`[WatchFolder] Move: ${record.path} → ${newPath}`);
+      Zotero.debug(`[WatchFolder] Move: collection ${oldCollectionPath} → ${newCollectionPath}`);
+
+      try {
+        const item = await Zotero.Items.getAsync(record.itemID);
+        if (item && !item.deleted) {
+          // Only touch collections if the auto-mapping actually changed.
+          if (oldCollectionPath !== newCollectionPath) {
+            const newCollection = await getOrCreateCollectionPath(newCollectionPath);
+            if (newCollection) {
+              // Remove from the old auto-mapped collection if currently a member.
+              // Other manually-added collection memberships are left untouched.
+              const oldCollection = await this._findCollectionByPath(oldCollectionPath);
+              const currentColIDs = item.getCollections ? item.getCollections() : [];
+              if (oldCollection && currentColIDs.includes(oldCollection.id)) {
+                item.removeFromCollection(oldCollection.id);
+              }
+              if (!currentColIDs.includes(newCollection.id)) {
+                item.addToCollection(newCollection.id);
+              }
+              await item.saveTx();
+            }
+          }
+        }
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Move: failed to reassign collection for item ${record.itemID}: ${e.message}`);
+      }
+
+      // Update tracking: remove the old record, add a new one at the new path
+      // pointing at the same item. We can't update path in place without a
+      // method on TrackingStore, so we remove by item and re-add.
+      try {
+        if (typeof this._trackingStore.remove === 'function') {
+          this._trackingStore.remove(record.path);
+        } else {
+          this._trackingStore.removeByItemID(record.itemID);
+        }
+        this._trackingStore.add({
+          ...record,
+          path: newPath,
+          importedAt: record.importedAt || Date.now(),
+        });
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Move: tracking update failed: ${e.message}`);
+      }
+    }
+
+    try { await this._trackingStore.save(); } catch (_) {}
+  }
+
+  /**
+   * Look up a Zotero collection by its slash-separated path, e.g.
+   * "Inbox/Research/AI". Returns the leaf collection if every segment
+   * resolves; null if any segment is missing.
+   */
+  async _findCollectionByPath(path) {
+    if (!path) return null;
+    const parts = path.split('/').filter(p => p.trim() !== '');
+    if (parts.length === 0) return null;
+    try {
+      const libraryID = Zotero.Libraries.userLibraryID;
+      let parentID = null;
+      let current = null;
+      for (const name of parts) {
+        let candidates;
+        if (parentID === null) {
+          candidates = Zotero.Collections.getByLibrary(libraryID).filter(c => !c.parentID);
+        } else {
+          candidates = Zotero.Collections.getByParent(parentID, libraryID);
+        }
+        const found = candidates.find(c => c.name === name);
+        if (!found) return null;
+        current = found;
+        parentID = found.id;
+      }
+      return current;
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] _findCollectionByPath error: ${e.message}`);
+      return null;
     }
   }
 
