@@ -3,7 +3,7 @@
  * Covers:
  *   UT-050: WatchFolderService._handleZoteroTrash — Zotero → disk deletion sync
  *   UT-051: WatchFolderService._handleExternalDeletions — disk → Zotero deletion sync
- *   UT-052: WatchFolderService._moveToOSTrash — OS trash + fallback
+ *   UT-052: WatchFolderService._backfillHashesForExistingItems — library-side hash backfill
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -385,5 +385,146 @@ describe('UT-051: WatchFolderService._handleExternalDeletions (Scenario 1)', () 
     const message = globalThis.Services.prompt.alert.mock.calls[0][2];
     expect(message).toMatch(/linked attachments/);
     expect(message).toMatch(/broken file links/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-052: _backfillHashesForExistingItems — stamp hash into Zotero item Extra
+//         so library-wide dedup survives a tracking-store wipe
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
+  let service;
+
+  function makeItem({ extra = '', deleted = false, isAttachment = false, parentID = null } = {}) {
+    const item = {
+      _extra: extra,
+      deleted,
+      getField: vi.fn((f) => f === 'extra' ? item._extra : ''),
+      setField: vi.fn((f, v) => { if (f === 'extra') item._extra = v; }),
+      saveTx: vi.fn(async () => {}),
+      isAttachment: vi.fn(() => isAttachment),
+      parentID,
+    };
+    return item;
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._trackingStore = {
+      getAll: vi.fn(() => []),
+    };
+    globalThis.Zotero.Items.getAsync = vi.fn();
+  });
+
+  it('stamps the hash when Extra is empty', async () => {
+    const item = makeItem({ extra: '' });
+    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, hash: 'abc123', path: '/x.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(item.setField).toHaveBeenCalledWith('extra', 'watchfolder-hash:abc123');
+    expect(item.saveTx).toHaveBeenCalledTimes(1);
+  });
+
+  it('appends the hash on a new line when Extra already has content', async () => {
+    const item = makeItem({ extra: 'tex.bibkey: smith2024\nDOI: 10.x/y' });
+    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, hash: 'def456', path: '/x.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(item.setField).toHaveBeenCalledWith(
+      'extra',
+      'tex.bibkey: smith2024\nDOI: 10.x/y\nwatchfolder-hash:def456'
+    );
+    expect(item.saveTx).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips items whose Extra already contains the same hash', async () => {
+    const item = makeItem({ extra: 'watchfolder-hash:abc123' });
+    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, hash: 'abc123', path: '/x.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(item.setField).not.toHaveBeenCalled();
+    expect(item.saveTx).not.toHaveBeenCalled();
+  });
+
+  it('skips records with missing itemID or missing hash', async () => {
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 0, hash: 'abc' },
+      { itemID: 42, hash: '' },
+      { itemID: null, hash: null },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(globalThis.Zotero.Items.getAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips deleted items and items not found in Zotero', async () => {
+    const deletedItem = makeItem({ deleted: true });
+    globalThis.Zotero.Items.getAsync
+      .mockResolvedValueOnce(deletedItem)   // first call: deleted
+      .mockResolvedValueOnce(null);          // second call: gone
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, hash: 'abc', path: '/x.pdf' },
+      { itemID: 43, hash: 'def', path: '/y.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(deletedItem.setField).not.toHaveBeenCalled();
+    expect(deletedItem.saveTx).not.toHaveBeenCalled();
+  });
+
+  it('for an attachment record, stamps the parent item not the attachment', async () => {
+    const parent = makeItem({ extra: '' });
+    const attachment = makeItem({ isAttachment: true, parentID: 99 });
+    globalThis.Zotero.Items.getAsync
+      .mockImplementationOnce(async (id) => attachment)   // first call: the attachment
+      .mockImplementationOnce(async (id) => parent);       // second call: the parent
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 42, hash: 'xyz', path: '/p.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(parent.setField).toHaveBeenCalledWith('extra', 'watchfolder-hash:xyz');
+    expect(attachment.setField).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when tracking store is empty', async () => {
+    service._trackingStore.getAll = vi.fn(() => []);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(globalThis.Zotero.Items.getAsync).not.toHaveBeenCalled();
+  });
+
+  it('continues processing other records when one record errors', async () => {
+    const ok = makeItem({ extra: '' });
+    globalThis.Zotero.Items.getAsync
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(ok);
+    service._trackingStore.getAll = vi.fn(() => [
+      { itemID: 1, hash: 'a', path: '/a.pdf' },
+      { itemID: 2, hash: 'b', path: '/b.pdf' },
+    ]);
+
+    await service._backfillHashesForExistingItems();
+
+    expect(ok.setField).toHaveBeenCalledWith('extra', 'watchfolder-hash:b');
   });
 });
