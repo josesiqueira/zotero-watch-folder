@@ -5,14 +5,14 @@
  * stored (copied) and linked import modes.
  */
 
-import { getPref, getOrCreateTargetCollection } from './utils.mjs';
+import { getPref, getOrCreateTargetCollection, getOrCreateCollectionPath } from './utils.mjs';
 
 /**
  * Import a file into Zotero
  * @param {string} filePath - Full path to the file
  * @param {Object} options - Import options
  * @param {number} [options.libraryID] - Target library (default: user library)
- * @param {string} [options.collectionName] - Target collection name
+ * @param {string} [options.collectionName] - Target collection name (can be a path)
  * @param {string} [options.importMode] - 'stored' or 'linked'
  * @returns {Promise<Zotero.Item>} - The created attachment item
  */
@@ -32,8 +32,13 @@ export async function importFile(filePath, options = {}) {
   const filename = getFilename(filePath);
   Zotero.debug(`[WatchFolder] Importing file: ${filename} (mode: ${importMode})`);
 
-  // 2. Get or create target collection
-  const collection = await getOrCreateTargetCollection(collectionName, libraryID);
+  // 2. Get or create target collection (supporting paths)
+  let collection;
+  if (collectionName.includes('/')) {
+    collection = await getOrCreateCollectionPath(collectionName, libraryID);
+  } else {
+    collection = await getOrCreateTargetCollection(collectionName, libraryID);
+  }
   const collectionID = collection ? collection.id : null;
   const collections = collectionID ? [collectionID] : [];
 
@@ -98,20 +103,27 @@ export async function handlePostImportAction(filePath, action = null) {
       break;
 
     case 'move':
-      // Move to 'imported' subfolder
+      // Move to watchRoot/imported/, mirroring the subfolder structure
       try {
-        const parentDir = PathUtils.parent(filePath);
-        const importedDir = PathUtils.join(parentDir, 'imported');
+        const watchRoot = getPref('sourcePath');
+        let destPath;
 
-        // Create subfolder if not exists
-        const dirExists = await IOUtils.exists(importedDir);
-        if (!dirExists) {
-          await IOUtils.makeDirectory(importedDir, { createAncestors: true });
-          Zotero.debug(`[WatchFolder] Created 'imported' subfolder: ${importedDir}`);
+        if (watchRoot && filePath.startsWith(watchRoot)) {
+          const importedBaseDir = PathUtils.join(watchRoot, 'imported');
+          const relativePath = filePath.substring(watchRoot.length).replace(/^[/\\]/, '');
+          destPath = PathUtils.join(importedBaseDir, relativePath);
+        } else {
+          // Fallback: put in 'imported' folder next to the file
+          destPath = PathUtils.join(PathUtils.parent(filePath), 'imported', filename);
         }
 
-        // Move the file
-        const destPath = PathUtils.join(importedDir, filename);
+        const destDir = PathUtils.parent(destPath);
+        const dirExists = await IOUtils.exists(destDir);
+        if (!dirExists) {
+          await IOUtils.makeDirectory(destDir, { createAncestors: true });
+          Zotero.debug(`[WatchFolder] Created directory: ${destDir}`);
+        }
+
         await IOUtils.move(filePath, destPath);
         Zotero.debug(`[WatchFolder] Moved file to: ${destPath}`);
       } catch (error) {
@@ -127,14 +139,14 @@ export async function handlePostImportAction(filePath, action = null) {
 
 /**
  * Import multiple files in batch
- * @param {string[]} filePaths - Array of file paths
+ * @param {string[]|Array<{path: string, collection: string}>} files - Array of file paths or objects
  * @param {Object} options - Import options
  * @param {Function} [options.onProgress] - Progress callback (current, total)
  * @param {number} [options.delayBetween] - Delay between imports in ms
  * @param {boolean} [options.handlePostImport] - Whether to handle post-import action
  * @returns {Promise<{success: Zotero.Item[], failed: {path: string, error: string}[]}>}
  */
-export async function importBatch(filePaths, options = {}) {
+export async function importBatch(files, options = {}) {
   const {
     onProgress = () => {},
     delayBetween = 500,
@@ -147,15 +159,17 @@ export async function importBatch(filePaths, options = {}) {
     failed: []
   };
 
-  Zotero.debug(`[WatchFolder] Starting batch import of ${filePaths.length} files`);
+  Zotero.debug(`[WatchFolder] Starting batch import of ${files.length} files`);
 
-  for (let i = 0; i < filePaths.length; i++) {
-    const filePath = filePaths[i];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const filePath = typeof file === 'string' ? file : file.path;
+    const collectionName = typeof file === 'object' ? file.collection : (importOptions.collectionName || getPref('targetCollection') || 'Inbox');
     const filename = getFilename(filePath);
 
     try {
       // Import the file
-      const item = await importFile(filePath, importOptions);
+      const item = await importFile(filePath, { ...importOptions, collectionName });
       results.success.push(item);
 
       // Handle post-import action (only for stored imports, not linked)

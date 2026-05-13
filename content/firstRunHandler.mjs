@@ -6,7 +6,7 @@
  */
 
 import { getPref, setPref } from './utils.mjs';
-import { scanFolder } from './fileScanner.mjs';
+import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
 import { importBatch } from './fileImporter.mjs';
 import { getTrackingStore } from './trackingStore.mjs';
 
@@ -61,7 +61,7 @@ export async function getExistingFilesCount() {
   }
 
   try {
-    const files = await scanFolder(sourcePath);
+    const files = await scanFolderRecursive(sourcePath);
     return { count: files.length, files };
   } catch (error) {
     Zotero.debug(`[WatchFolder] Error scanning for existing files: ${error.message}`);
@@ -149,11 +149,26 @@ export async function importExistingFiles(window, files) {
 
   let cancelled = false;
 
-  // Extract file paths from file objects
-  const filePaths = files.map(f => f.path);
+  const sourcePath = getPref('sourcePath');
+  const baseTarget = getPref('targetCollection') || 'Inbox';
+
+  // Extract file paths and collections from file objects
+  const filesToImport = files.map(f => {
+    let collection = baseTarget;
+    if (f.path.startsWith(sourcePath)) {
+        let relative = f.path.substring(sourcePath.length);
+        if (relative.startsWith('/') || relative.startsWith('\\')) relative = relative.substring(1);
+        const parts = relative.split(/[/\\]/);
+        parts.pop(); // filename
+        if (parts.length > 0) {
+            collection = baseTarget + '/' + parts.join('/');
+        }
+    }
+    return { path: f.path, collection };
+  });
 
   // Import with progress callback
-  const results = await importBatch(filePaths, {
+  const results = await importBatch(filesToImport, {
     onProgress: (current, total) => {
       if (cancelled) return;
       itemProgress.setText(`${current} / ${total}`);

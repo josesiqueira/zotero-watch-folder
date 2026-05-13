@@ -6,6 +6,7 @@ A powerful Zotero 8 plugin that automatically monitors a folder for new files an
 
 ### Phase 1: Auto-Import
 - **Watch Folder Monitoring** - Automatically detect new PDF files in a designated folder
+- **Recursive Subfolder Import** - Automatically scan subfolders and map them to Zotero collections (e.g., `WatchFolder/Research/AI` → `TargetCollection/Research/AI`)
 - **Automatic Metadata Retrieval** - Fetch metadata from online sources for imported PDFs
 - **Smart File Renaming** - Rename files based on metadata using customizable patterns (e.g., `{firstCreator} - {year} - {title}`)
 - **First-Run Detection** - Option to import existing files when first configured
@@ -77,7 +78,7 @@ After installation, configure the plugin in `Edit` → `Settings` → `Watch Fol
 
 ```bash
 # Clone the repository
-git clone https://github.com/josesiqueira/zotero-watch-folder-zotero8.git
+git clone https://github.com/stark1tty/zotero-watch-folder-zotero8.git
 cd zotero-watch-folder-zotero8
 
 # Install dependencies
