@@ -99,6 +99,14 @@ export class WatchFolderService {
       this._initialized = true;
       Zotero.debug('[WatchFolder] Service initialized successfully');
 
+      // One-pass backfill: any tracked item that doesn't yet have its content
+      // hash stamped into Zotero's Extra field gets stamped now. This makes
+      // hash-based dedup survive a future tracking-store wipe. Awaited but
+      // failures are swallowed — backfill is best-effort.
+      this._backfillHashesForExistingItems().catch(e => {
+        Zotero.debug(`[WatchFolder] Backfill error: ${e.message}`);
+      });
+
     } catch (e) {
       Zotero.logError(e);
       Zotero.debug(`[WatchFolder] Initialization error: ${e.message}`);
@@ -449,6 +457,19 @@ export class WatchFolderService {
 
         // Persist tracking data
         await this._trackingStore.save();
+      }
+
+      // Step 4a: Stamp the hash into the Zotero item's Extra field so future
+      // imports of the same content can find this item via library lookup,
+      // even if the local tracking store gets wiped. Failures here are
+      // non-fatal — the import has already succeeded and is tracked locally.
+      if (hash) {
+        try {
+          const detector = getDuplicateDetector();
+          await detector.storeContentHash(item, postImportResult.finalPath || filePath);
+        } catch (stampErr) {
+          Zotero.debug(`[WatchFolder] Failed to stamp content hash on item ${itemID}: ${stampErr.message}`);
+        }
       }
 
       // Step 4b: Process with smart rules (if enabled)
@@ -857,6 +878,63 @@ export class WatchFolderService {
       Services.prompt.alert(window, 'Zotero Watch Folder', message);
     } catch (e) {
       Zotero.debug(`[WatchFolder] External-deletion popup failed: ${e.message}`);
+    }
+  }
+
+  /**
+   * One-pass backfill: ensure every tracked item has its file hash stamped
+   * into the Zotero item's Extra field. Items that already carry the stamp
+   * are skipped. This makes dedup survive a tracking-store wipe — even
+   * without local tracking, future imports of the same content will find
+   * the existing Zotero item via library hash lookup.
+   *
+   * Safe to call repeatedly (idempotent on already-stamped items).
+   */
+  async _backfillHashesForExistingItems() {
+    if (!this._trackingStore) return;
+    const records = this._trackingStore.getAll();
+    if (records.length === 0) return;
+
+    let stamped = 0;
+    let skipped = 0;
+    for (const record of records) {
+      if (!record.itemID || !record.hash) {
+        skipped++;
+        continue;
+      }
+      try {
+        const item = await Zotero.Items.getAsync(record.itemID);
+        if (!item || item.deleted) {
+          skipped++;
+          continue;
+        }
+        // For attachments, stamp the parent item (where the duplicate detector looks)
+        let target = item;
+        if (item.isAttachment && item.isAttachment() && item.parentID) {
+          target = await Zotero.Items.getAsync(item.parentID);
+          if (!target) { skipped++; continue; }
+        }
+        const existingExtra = target.getField('extra') || '';
+        if (existingExtra.includes(`watchfolder-hash:${record.hash}`)) {
+          skipped++;
+          continue;
+        }
+        const newExtra = existingExtra
+          ? `${existingExtra}\nwatchfolder-hash:${record.hash}`
+          : `watchfolder-hash:${record.hash}`;
+        target.setField('extra', newExtra);
+        await target.saveTx();
+        stamped++;
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Backfill error for itemID ${record.itemID}: ${e.message}`);
+        skipped++;
+      }
+    }
+
+    if (stamped > 0) {
+      Zotero.debug(`[WatchFolder] Backfill: stamped ${stamped} item(s), skipped ${skipped}`);
+    } else {
+      Zotero.debug(`[WatchFolder] Backfill: no items needed stamping (skipped ${skipped})`);
     }
   }
 

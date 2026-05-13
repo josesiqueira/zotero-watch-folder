@@ -112,7 +112,7 @@ function _initDefaultPrefs() {
   _set("duplicateMatchISBN",     true);
   _set("duplicateMatchTitle",    true);
   _set("duplicateTitleThreshold",85);   // stored as int, 0.85 * 100
-  _set("duplicateMatchHash",     false);
+  _set("duplicateMatchHash",     true);
   _set("duplicateAction",        "skip");
   _set("smartRulesEnabled",      false);
   _set("smartRules",             "[]");

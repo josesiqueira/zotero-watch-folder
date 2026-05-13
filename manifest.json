@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero Watch Folder",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Automatically import PDFs from a watched folder into Zotero with metadata retrieval and file organization.",
   "author": "Jose Siqueira",
   "icons": {
