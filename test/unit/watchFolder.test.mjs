@@ -861,3 +861,258 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-054: folder-rename detection (B2). Detects when a user renamed a
+// subfolder on disk and renames the matching Zotero subcollection in place
+// (same key, new name) rather than leaving an empty Zotero collection behind.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
+  let service;
+  let getPrefMock;
+  let getFileHashMock;
+
+  /**
+   * In-memory tracking-store stub keyed by localPath (files) and
+   * zoteroCollectionKey (collections). Mirrors enough of the real API for
+   * the B2 code to operate end-to-end.
+   */
+  function makeStore(initialFiles = [], initialCollections = []) {
+    const files = new Map(initialFiles.map(f => [f.localPath, f]));
+    const collections = new Map(initialCollections.map(c => [c.zoteroCollectionKey, c]));
+    return {
+      _files: files,
+      _collections: collections,
+      getAllOfType: vi.fn((t) => {
+        if (t === 'file') return [...files.values()];
+        if (t === 'collection') return [...collections.values()];
+        return [];
+      }),
+      getCollectionRecord: vi.fn((key) => collections.get(key) || null),
+      removeCollectionRecord: vi.fn((key) => collections.delete(key)),
+      remove: vi.fn((path) => files.delete(path)),
+      removeByAttachmentKey: vi.fn(),
+      update: vi.fn(),
+      add: vi.fn((rec) => {
+        if (rec.type === 'file') files.set(rec.localPath, rec);
+        else if (rec.type === 'collection') collections.set(rec.zoteroCollectionKey, rec);
+      }),
+      hasPath: vi.fn((p) => files.has(p)),
+      save: vi.fn(async () => {}),
+    };
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getFileHashMock = utils.getFileHash;
+
+    const cp = await import('../../content/canonicalPath.mjs');
+    cp.resolveSyncRoot.mockResolvedValue({
+      collection: { id: 1, key: 'ROOT1' },
+      libraryID: 1,
+    });
+
+    getPrefMock.mockImplementation((k) => {
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'mode') return 'mode1';
+      return undefined;
+    });
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+  });
+
+  it('renames a Zotero collection when its on-disk folder name changes and ≥1 child file hash matches', async () => {
+    // Tracked: Methods/ collection containing one file paper.pdf
+    service._trackingStore = makeStore(
+      [{
+        type: 'file',
+        localPath: 'Methods/paper.pdf',
+        canonicalLocalPath: 'Methods/paper.pdf',
+        lastSyncedHash: 'H1',
+        zoteroAttachmentKey: 'AK1',
+        canonicalCollectionKey: 'COL_METHODS',
+        collectionMembershipKeys: ['COL_METHODS'],
+        state: 'clean',
+      }],
+      [{
+        type: 'collection',
+        localPath: 'Methods',
+        zoteroCollectionKey: 'COL_METHODS',
+        parentCollectionKey: null,
+        state: 'clean',
+      }],
+    );
+
+    // Stub Zotero.Collections.getByLibraryAndKeyAsync to return a collection
+    // we can rename.
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    // Files on disk: Methods/ is gone; Procedures/paper.pdf exists.
+    const scannedFiles = [{ path: '/watch/Procedures/paper.pdf' }];
+    getFileHashMock.mockImplementation(async (p) =>
+      p === '/watch/Procedures/paper.pdf' ? 'H1' : null);
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    expect(fakeCollection.name).toBe('Procedures');
+    expect(fakeCollection.saveTx).toHaveBeenCalledTimes(1);
+
+    // Tracking record was rewritten to the new path.
+    const renamed = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(renamed).not.toBe(null);
+    expect(renamed.localPath).toBe('Procedures');
+
+    // Descendant file record was rewritten too.
+    expect(service._trackingStore._files.has('Methods/paper.pdf')).toBe(false);
+    const renamedFile = service._trackingStore._files.get('Procedures/paper.pdf');
+    expect(renamedFile).toBeTruthy();
+    expect(renamedFile.canonicalLocalPath).toBe('Procedures/paper.pdf');
+  });
+
+  it('does NOT rename when there are no tracked files under the missing folder (no hash anchor)', async () => {
+    service._trackingStore = makeStore(
+      [], // no files
+      [{
+        type: 'collection',
+        localPath: 'Methods',
+        zoteroCollectionKey: 'COL_METHODS',
+        parentCollectionKey: null,
+        state: 'clean',
+      }],
+    );
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    const scannedFiles = [{ path: '/watch/Procedures/orphan.pdf' }];
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    expect(fakeCollection.saveTx).not.toHaveBeenCalled();
+    const stillThere = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(stillThere.localPath).toBe('Methods');
+  });
+
+  it('does NOT rename when no on-disk dir has matching file hashes', async () => {
+    service._trackingStore = makeStore(
+      [{
+        type: 'file',
+        localPath: 'Methods/paper.pdf',
+        lastSyncedHash: 'H1',
+        zoteroAttachmentKey: 'AK1',
+        state: 'clean',
+      }],
+      [{
+        type: 'collection',
+        localPath: 'Methods',
+        zoteroCollectionKey: 'COL_METHODS',
+        parentCollectionKey: null,
+        state: 'clean',
+      }],
+    );
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    // On-disk file with a completely different hash.
+    const scannedFiles = [{ path: '/watch/Procedures/different.pdf' }];
+    getFileHashMock.mockImplementation(async () => 'H_DIFFERENT');
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    expect(fakeCollection.saveTx).not.toHaveBeenCalled();
+  });
+
+  it('no-op when the folder still exists on disk', async () => {
+    service._trackingStore = makeStore(
+      [{
+        type: 'file',
+        localPath: 'Methods/paper.pdf',
+        lastSyncedHash: 'H1',
+        zoteroAttachmentKey: 'AK1',
+        state: 'clean',
+      }],
+      [{
+        type: 'collection',
+        localPath: 'Methods',
+        zoteroCollectionKey: 'COL_METHODS',
+        parentCollectionKey: null,
+        state: 'clean',
+      }],
+    );
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    // Folder still there on disk.
+    const scannedFiles = [{ path: '/watch/Methods/paper.pdf' }];
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    expect(fakeCollection.saveTx).not.toHaveBeenCalled();
+  });
+
+  it('renaming a parent folder recursively updates all descendant records', async () => {
+    service._trackingStore = makeStore(
+      [
+        {
+          type: 'file',
+          localPath: 'Methods/AI/paper.pdf',
+          canonicalLocalPath: 'Methods/AI/paper.pdf',
+          lastSyncedHash: 'H_AI',
+          zoteroAttachmentKey: 'AK_AI',
+          state: 'clean',
+        },
+      ],
+      [
+        {
+          type: 'collection',
+          localPath: 'Methods',
+          zoteroCollectionKey: 'COL_METHODS',
+          parentCollectionKey: null,
+          state: 'clean',
+        },
+        {
+          type: 'collection',
+          localPath: 'Methods/AI',
+          zoteroCollectionKey: 'COL_AI',
+          parentCollectionKey: 'COL_METHODS',
+          state: 'clean',
+        },
+      ],
+    );
+    const methodsCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    const aiCollection = { id: 101, key: 'COL_AI', name: 'AI', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async (libID, key) =>
+      key === 'COL_METHODS' ? methodsCollection : (key === 'COL_AI' ? aiCollection : null));
+
+    // User renamed Methods/ → Procedures/. AI/ child is automatically at
+    // Procedures/AI on disk.
+    const scannedFiles = [{ path: '/watch/Procedures/AI/paper.pdf' }];
+    getFileHashMock.mockImplementation(async (p) =>
+      p === '/watch/Procedures/AI/paper.pdf' ? 'H_AI' : null);
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    // Methods collection renamed to Procedures, AI collection NOT renamed
+    // (its name didn't change — only its containing path did).
+    expect(methodsCollection.name).toBe('Procedures');
+    expect(aiCollection.name).toBe('AI');
+
+    // Tracking records: shallowest (Methods) processed first, sweeps
+    // descendants. AI's localPath rewritten to Procedures/AI by the
+    // parent's recursive sweep — no per-child rename needed.
+    const methodsRec = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(methodsRec.localPath).toBe('Procedures');
+    const aiRec = service._trackingStore.getCollectionRecord('COL_AI');
+    expect(aiRec.localPath).toBe('Procedures/AI');
+
+    const aiFile = service._trackingStore._files.get('Procedures/AI/paper.pdf');
+    expect(aiFile).toBeTruthy();
+    expect(aiFile.canonicalLocalPath).toBe('Procedures/AI/paper.pdf');
+    expect(service._trackingStore._files.has('Methods/AI/paper.pdf')).toBe(false);
+  });
+});

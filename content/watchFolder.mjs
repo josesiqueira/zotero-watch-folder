@@ -7,7 +7,7 @@
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
 import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
-import { TrackingStore, createFileRecord, STATE } from './trackingStore.mjs';
+import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
@@ -267,6 +267,17 @@ export class WatchFolderService {
       // Scan for files recursively
       const files = await scanFolderRecursive(watchPath);
 
+      // ── Detect folder renames BEFORE per-file logic ──────────────────
+      // If the user renamed a subfolder on disk, rename the corresponding
+      // Zotero subcollection (same key, new name) and update descendant
+      // tracking records so per-file move detection sees a consistent
+      // state on the very same scan.
+      try {
+        await this._detectFolderRenames(files, watchPath);
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Folder-rename detection failed: ${e.message}`);
+      }
+
       // Detect externally-deleted files vs file-moves. A "move" is when a
       // tracked file's path disappears AND an untracked file with the same
       // content hash appears elsewhere — common case is the user
@@ -385,6 +396,14 @@ export class WatchFolderService {
         return;
       }
       const canonicalCollectionKey = targetCollection.key;
+
+      // Ensure a `collection` tracking record exists for every Zotero
+      // subcollection between sync root and the target. Without these
+      // records, B2 folder-rename detection has nothing to compare
+      // against on subsequent scans.
+      if (this._trackingStore && relativeDir !== '') {
+        await this._ensureCollectionRecordsForPath(relativeDir, targetCollection);
+      }
 
       // Step 3: Hash + dedup pre-check via tracking store.
       const hash = await getFileHash(filePath);
@@ -552,6 +571,271 @@ export class WatchFolderService {
       Zotero.debug(`[WatchFolder] Error processing file ${filePath}: ${e.message}`);
     } finally {
       this._processingFiles.delete(filePath);
+    }
+  }
+
+  /**
+   * Walk from sync root down to `targetCollection` along `relativeDir`,
+   * creating a `collection` tracking record for any segment that doesn't
+   * yet have one. Called from _processNewFile so B2 (folder-rename
+   * detection) has data to work with.
+   *
+   * @private
+   * @param {string} relativeDir - Forward-slash relative path, e.g. "Methods/AI".
+   * @param {object} leafCollection - The Zotero.Collection at the leaf of relativeDir.
+   */
+  async _ensureCollectionRecordsForPath(relativeDir, leafCollection) {
+    const segments = relativeDir.split('/').filter(s => s !== '');
+    if (segments.length === 0) return;
+
+    // Walk from the leaf upward, collecting (collection, segmentPath) pairs.
+    // We then iterate top-down to insert records with parent linkage.
+    const chain = [];
+    let cursor = leafCollection;
+    let depth = segments.length;
+    while (cursor && depth > 0) {
+      chain.unshift({
+        collection: cursor,
+        path: segments.slice(0, depth).join('/'),
+      });
+      depth--;
+      if (!cursor.parentID) break;
+      cursor = Zotero.Collections.get(cursor.parentID);
+    }
+
+    for (const { collection, path } of chain) {
+      const existing = this._trackingStore.getCollectionRecord(collection.key);
+      if (existing) continue;
+      let parentKey = null;
+      if (collection.parentID) {
+        const parent = Zotero.Collections.get(collection.parentID);
+        if (parent && parent.key !== collection.key) {
+          parentKey = parent.key;
+        }
+      }
+      this._trackingStore.add(createCollectionRecord({
+        localPath: path,
+        zoteroCollectionKey: collection.key,
+        parentCollectionKey: parentKey,
+        state: STATE.CLEAN,
+      }));
+      Zotero.debug(`[WatchFolder] Tracked new collection record: ${path} (key=${collection.key})`);
+    }
+  }
+
+  /**
+   * Detect folder renames on disk (e.g. user renamed Methods/ → Procedures/)
+   * and rename the corresponding Zotero collection instead of letting
+   * per-file move-detection leave an empty Zotero subcollection behind.
+   *
+   * Approach:
+   *   1. Build an on-disk dir set from the scanned files (plus intermediate
+   *      dirs and a dir→file-paths map).
+   *   2. For each tracked `collection` record whose `localPath` directory
+   *      is no longer in that set, hunt for a candidate replacement: an
+   *      on-disk dir that's NOT yet tracked as a collection AND contains
+   *      ≥1 file whose hash matches a tracked file previously under the
+   *      missing collection's path.
+   *   3. On match: rename the Zotero collection, recursively update
+   *      every descendant file + collection tracking record so their
+   *      localPath reflects the new directory tree.
+   *
+   * Must run BEFORE `_handleExternalDeletions` in the scan cycle so the
+   * per-file move detection sees a consistent collection name and skips
+   * the per-file collection-swap work.
+   *
+   * @private
+   * @param {Array<{path: string}>} scannedFiles
+   * @param {string} watchPath
+   */
+  async _detectFolderRenames(scannedFiles, watchPath) {
+    if (!this._trackingStore || !watchPath) return;
+    const collectionRecords = this._trackingStore.getAllOfType('collection');
+    if (collectionRecords.length === 0) return;
+
+    // ── 1. Build on-disk dir state ──────────────────────────────────────
+    const onDiskDirs = new Set(['']);
+    const dirToFilePaths = new Map();
+    for (const fileInfo of scannedFiles) {
+      const rel = relativePath(fileInfo.path, watchPath);
+      if (rel == null || rel === '') continue;
+      const parts = rel.split('/');
+      parts.pop(); // drop filename
+      const dir = parts.join('/');
+      // Add this dir + all ancestor dirs.
+      for (let i = 1; i <= parts.length; i++) {
+        onDiskDirs.add(parts.slice(0, i).join('/'));
+      }
+      if (!dirToFilePaths.has(dir)) dirToFilePaths.set(dir, []);
+      dirToFilePaths.get(dir).push(fileInfo.path);
+    }
+
+    // ── 2. Find missing collection records ──────────────────────────────
+    const missing = collectionRecords.filter(r =>
+      r.localPath && !onDiskDirs.has(r.localPath));
+    if (missing.length === 0) return;
+
+    // Sort shallowest first so a parent rename is processed before its
+    // children — child records get rewritten by the parent's recursive
+    // descendant update and won't need a per-child rename.
+    missing.sort((a, b) => a.localPath.split('/').length - b.localPath.split('/').length);
+
+    const hashCache = new Map();
+    const hashOf = async (p) => {
+      if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
+      return hashCache.get(p);
+    };
+
+    // Index scanned files by their sync-root-relative path so candidate
+    // matching can do O(1) tail lookups.
+    const scannedRelByDir = new Map(); // candDir → [{rel, absPath}, …]
+    for (const fileInfo of scannedFiles) {
+      const rel = relativePath(fileInfo.path, watchPath);
+      if (rel == null || rel === '') continue;
+      const parts = rel.split('/');
+      parts.pop();
+      // For every ancestor dir (incl. immediate parent), index this file.
+      for (let i = 1; i <= parts.length; i++) {
+        const dir = parts.slice(0, i).join('/');
+        if (!scannedRelByDir.has(dir)) scannedRelByDir.set(dir, []);
+        scannedRelByDir.get(dir).push({ rel, absPath: fileInfo.path });
+      }
+    }
+
+    // ── 3. For each missing record, find a candidate ─────────────────────
+    //
+    // Matching is *tail-aware*: a candidate dir is only a valid rename
+    // target if files in the old subtree map to files in the candidate's
+    // subtree at the SAME relative tail (i.e. the inner structure matches).
+    // This is what stops a nested-child candidate (Procedures/AI) from
+    // beating a true parent candidate (Procedures) when the renamed
+    // folder contains subfolders.
+    for (const collRecord of missing) {
+      // Skip if a prior iteration's recursive descendant sweep already
+      // updated this record.
+      if (!this._trackingStore.getCollectionRecord(collRecord.zoteroCollectionKey)) continue;
+      const oldPath = collRecord.localPath;
+      const oldPrefix = oldPath + '/';
+
+      // Re-fetch tracked files each iteration — earlier rename sweeps may
+      // have rewritten paths.
+      const trackedFilesNow = this._trackingStore.getAllOfType('file');
+      const trackedShape = new Map(); // hash → tail under oldPath
+      for (const f of trackedFilesNow) {
+        if (!f.lastSyncedHash) continue;
+        let tail;
+        if (f.localPath === oldPath) tail = '';
+        else if (f.localPath.startsWith(oldPrefix)) tail = f.localPath.slice(oldPrefix.length);
+        else continue;
+        trackedShape.set(f.lastSyncedHash, tail);
+      }
+      if (trackedShape.size === 0) {
+        Zotero.debug(`[WatchFolder] Folder ${oldPath} missing but no tracked file hashes under it — skip`);
+        continue;
+      }
+
+      const trackedDirs = new Set(
+        this._trackingStore.getAllOfType('collection').map(r => r.localPath),
+      );
+      const candidateDirs = [...onDiskDirs].filter(d =>
+        d !== '' && !trackedDirs.has(d));
+
+      let best = null;
+      let bestScore = 0;
+      for (const candDir of candidateDirs) {
+        const candPrefix = candDir + '/';
+        const candEntries = scannedRelByDir.get(candDir) || [];
+        let score = 0;
+        for (const { rel, absPath } of candEntries) {
+          let candTail;
+          if (rel === candDir) candTail = '';
+          else if (rel.startsWith(candPrefix)) candTail = rel.slice(candPrefix.length);
+          else continue;
+          const h = await hashOf(absPath);
+          if (h && trackedShape.get(h) === candTail) score++;
+        }
+        if (score > bestScore) {
+          best = candDir;
+          bestScore = score;
+        }
+      }
+
+      if (best && bestScore >= 1) {
+        Zotero.debug(`[WatchFolder] Folder rename detected: ${oldPath} → ${best} (matched files=${bestScore})`);
+        await this._renameTrackedCollection(collRecord, best);
+      }
+    }
+
+    try { await this._trackingStore.save(); } catch (_) {}
+  }
+
+  /**
+   * Apply a detected folder rename: rename the Zotero collection (same
+   * key, new name), then sweep descendant file + collection tracking
+   * records to update their localPath to the new prefix.
+   *
+   * @private
+   */
+  async _renameTrackedCollection(oldRecord, newPath) {
+    const oldPath = oldRecord.localPath;
+    const newName = newPath.split('/').pop();
+    try {
+      const syncRoot = await resolveSyncRoot().catch(() => null);
+      const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
+      const collection = await Zotero.Collections.getByLibraryAndKeyAsync(
+        libraryID, oldRecord.zoteroCollectionKey);
+      if (!collection) {
+        Zotero.debug(`[WatchFolder] Rename: Zotero collection ${oldRecord.zoteroCollectionKey} not found`);
+        return;
+      }
+      if (collection.name !== newName) {
+        collection.name = newName;
+        await collection.saveTx();
+      }
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] Rename: Zotero collection rename failed: ${e.message}`);
+      return;
+    }
+
+    // Update the collection tracking record itself.
+    this._trackingStore.removeCollectionRecord(oldRecord.zoteroCollectionKey);
+    this._trackingStore.add(createCollectionRecord({
+      ...oldRecord,
+      localPath: newPath,
+    }));
+
+    // Recursively update descendants. Iterate snapshots because we mutate
+    // the store while looping.
+    const oldPrefix = oldPath + '/';
+    const newPrefix = newPath + '/';
+
+    const files = this._trackingStore.getAllOfType('file').slice();
+    for (const f of files) {
+      if (f.localPath === oldPath) {
+        const updated = { ...f, localPath: newPath, canonicalLocalPath: newPath };
+        this._trackingStore.remove(f.localPath);
+        this._trackingStore.add(updated);
+      } else if (f.localPath.startsWith(oldPrefix)) {
+        const tail = f.localPath.slice(oldPrefix.length);
+        const newLocal = newPrefix + tail;
+        const updated = { ...f, localPath: newLocal, canonicalLocalPath: newLocal };
+        this._trackingStore.remove(f.localPath);
+        this._trackingStore.add(updated);
+      }
+    }
+
+    const cols = this._trackingStore.getAllOfType('collection').slice();
+    for (const c of cols) {
+      if (c.zoteroCollectionKey === oldRecord.zoteroCollectionKey) continue; // already handled
+      if (c.localPath.startsWith(oldPrefix)) {
+        const tail = c.localPath.slice(oldPrefix.length);
+        const newLocal = newPrefix + tail;
+        this._trackingStore.removeCollectionRecord(c.zoteroCollectionKey);
+        this._trackingStore.add(createCollectionRecord({
+          ...c,
+          localPath: newLocal,
+        }));
+      }
     }
   }
 
