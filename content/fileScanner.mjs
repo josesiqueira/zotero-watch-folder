@@ -8,6 +8,20 @@
 import { isAllowedFileType, delay } from './utils.mjs';
 
 /**
+ * Directory names the recursive scanner skips entirely. These are reserved
+ * for the plugin's own bookkeeping and must never be imported as content:
+ *
+ *   - 'imported'           : `postImportAction: 'move'` parks copies here
+ *                            after import; descending into it would create
+ *                            an infinite re-import loop.
+ *   - '.zotero-watch-trash': v2.2 (Mode 3) plugin-trash directory. Defined
+ *                            now as a forward-compat reservation so v2.0
+ *                            installs don't accidentally walk into a
+ *                            user-created folder of that name.
+ */
+export const SKIP_DIRNAMES = Object.freeze(new Set(['imported', '.zotero-watch-trash']));
+
+/**
  * Scan a folder and return list of files matching allowed types
  * @param {string} folderPath - Path to scan
  * @returns {Promise<Array<{path: string, mtime: number, size: number}>>}
@@ -115,9 +129,9 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
                 const info = await IOUtils.stat(childPath);
 
                 if (info.type === 'directory') {
-                    // Skip the 'imported' folder to avoid re-processing moved files
-                    if (PathUtils.filename(childPath) === 'imported') {
-                        Zotero.debug(`[Watch Folder] scanFolderRecursive: Skipping 'imported' folder: ${childPath}`);
+                    const dirName = PathUtils.filename(childPath);
+                    if (SKIP_DIRNAMES.has(dirName)) {
+                        Zotero.debug(`[Watch Folder] scanFolderRecursive: Skipping reserved folder '${dirName}': ${childPath}`);
                         continue;
                     }
                     // Recursively scan subdirectories

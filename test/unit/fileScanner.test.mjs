@@ -1,18 +1,22 @@
 /**
- * Unit tests covering UT-037 through UT-041:
+ * Unit tests for fileScanner + adjacent helpers.
+ *
+ * v2 cleanup: removed UT-038 (FolderWatcher) and UT-041 (CollectionWatcher)
+ * because folderWatcher.mjs and collectionWatcher.mjs were Phase 2 modules
+ * deleted in Phase E. v2.1 will rebuild equivalent collection / folder
+ * watchers under the new sync-root architecture; tests against those
+ * land then.
+ *
+ * Surviving sections:
  *   UT-037: hasFileChanged (fileScanner.mjs)
- *   UT-038: FolderWatcher._detectChanges (folderWatcher.mjs)
  *   UT-039: isSupportedFileType / filterSupportedFiles (fileImporter.mjs)
  *   UT-040: BulkOperations._hasGoodMetadata (bulkOperations.mjs)
- *   UT-041: CollectionWatcher._handleCollectionItemEvent (collectionWatcher.mjs)
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { hasFileChanged } from '../../content/fileScanner.mjs';
-import { FolderWatcher } from '../../content/folderWatcher.mjs';
 import { isSupportedFileType, filterSupportedFiles } from '../../content/fileImporter.mjs';
 import { BulkOperations } from '../../content/bulkOperations.mjs';
-import { CollectionWatcher } from '../../content/collectionWatcher.mjs';
 
 // ─── UT-037: hasFileChanged ──────────────────────────────────────────────────
 
@@ -43,92 +47,7 @@ describe('hasFileChanged', () => {
   });
 });
 
-// ─── UT-038: FolderWatcher._detectChanges ────────────────────────────────────
-
-describe('FolderWatcher._detectChanges', () => {
-  let watcher;
-  let syncService;
-
-  beforeEach(() => {
-    // Minimal stub for syncService — _detectChanges does not call it
-    syncService = {
-      isSyncing: false,
-      mirrorPath: '/mirror'
-    };
-    watcher = new FolderWatcher(syncService);
-    vi.clearAllMocks();
-  });
-
-  // UT-038a: new file → file_created
-  it('UT-038a: detects file_created when a file appears that was not in lastScan', () => {
-    watcher._lastScan = new Map();
-    const currentState = new Map([
-      ['/a/f.pdf', { type: 'regular', mtime: 1, size: 10 }]
-    ]);
-    const changes = watcher._detectChanges(currentState);
-    expect(changes.length).toBe(1);
-    expect(changes[0].type).toBe('file_created');
-    expect(changes[0].path).toBe('/a/f.pdf');
-  });
-
-  // UT-038b: file in lastScan but not current → file_deleted
-  it('UT-038b: detects file_deleted when a file disappears from lastScan', () => {
-    watcher._lastScan = new Map([
-      ['/a/f.pdf', { type: 'regular', mtime: 1, size: 10 }]
-    ]);
-    const changes = watcher._detectChanges(new Map());
-    expect(changes.length).toBe(1);
-    expect(changes[0].type).toBe('file_deleted');
-    expect(changes[0].path).toBe('/a/f.pdf');
-  });
-
-  // UT-038c: mtime changed → file_modified
-  it('UT-038c: detects file_modified when mtime changes', () => {
-    watcher._lastScan = new Map([
-      ['/a/f.pdf', { type: 'regular', mtime: 1, size: 10 }]
-    ]);
-    const currentState = new Map([
-      ['/a/f.pdf', { type: 'regular', mtime: 2, size: 10 }]
-    ]);
-    const changes = watcher._detectChanges(currentState);
-    expect(changes.length).toBe(1);
-    expect(changes[0].type).toBe('file_modified');
-  });
-
-  // UT-038d: new directory → folder_created
-  it('UT-038d: detects folder_created when a directory appears', () => {
-    watcher._lastScan = new Map();
-    const currentState = new Map([
-      ['/a/dir', { type: 'directory', mtime: 1, size: 0 }]
-    ]);
-    const changes = watcher._detectChanges(currentState);
-    expect(changes.length).toBe(1);
-    expect(changes[0].type).toBe('folder_created');
-  });
-
-  // UT-038e: directory removed → folder_deleted
-  it('UT-038e: detects folder_deleted when a directory disappears', () => {
-    watcher._lastScan = new Map([
-      ['/a/dir', { type: 'directory', mtime: 1, size: 0 }]
-    ]);
-    const changes = watcher._detectChanges(new Map());
-    expect(changes.length).toBe(1);
-    expect(changes[0].type).toBe('folder_deleted');
-  });
-
-  // UT-038f: folder changes sorted before file changes
-  it('UT-038f: sorts folder changes before file changes', () => {
-    watcher._lastScan = new Map();
-    const currentState = new Map([
-      ['/a/file.pdf', { type: 'regular', mtime: 1, size: 5 }],
-      ['/a/newdir',   { type: 'directory', mtime: 1, size: 0 }]
-    ]);
-    const changes = watcher._detectChanges(currentState);
-    // Folder change should come first
-    expect(changes[0].type).toBe('folder_created');
-    expect(changes[1].type).toBe('file_created');
-  });
-});
+// UT-038 (FolderWatcher) removed — folderWatcher.mjs deleted in Phase E.
 
 // ─── UT-039: isSupportedFileType / filterSupportedFiles ──────────────────────
 
@@ -231,48 +150,5 @@ describe('BulkOperations._hasGoodMetadata', () => {
   });
 });
 
-// ─── UT-041: CollectionWatcher._handleCollectionItemEvent ────────────────────
-
-describe('CollectionWatcher._handleCollectionItemEvent', () => {
-  let syncService;
-  let watcher;
-
-  beforeEach(() => {
-    syncService = {
-      isSyncing: false,
-      handleItemAddedToCollection: vi.fn(async () => {}),
-      handleItemRemovedFromCollection: vi.fn(async () => {})
-    };
-    watcher = new CollectionWatcher(syncService);
-    vi.clearAllMocks();
-  });
-
-  // UT-041a: ['5-10'] + 'add' → handleItemAddedToCollection(10, 5)
-  it('UT-041a: calls handleItemAddedToCollection(itemID, collectionID) on add event', async () => {
-    await watcher._handleCollectionItemEvent('add', ['5-10'], {});
-    expect(syncService.handleItemAddedToCollection).toHaveBeenCalledTimes(1);
-    expect(syncService.handleItemAddedToCollection).toHaveBeenCalledWith(10, 5);
-  });
-
-  // UT-041b: ['5-10'] + 'remove' → handleItemRemovedFromCollection(10, 5)
-  it('UT-041b: calls handleItemRemovedFromCollection(itemID, collectionID) on remove event', async () => {
-    await watcher._handleCollectionItemEvent('remove', ['5-10'], {});
-    expect(syncService.handleItemRemovedFromCollection).toHaveBeenCalledTimes(1);
-    expect(syncService.handleItemRemovedFromCollection).toHaveBeenCalledWith(10, 5);
-  });
-
-  // UT-041c: invalid ID format → no call, debug emitted
-  it('UT-041c: does not call sync service for invalid composite ID, emits debug', async () => {
-    await watcher._handleCollectionItemEvent('add', ['invalid'], {});
-    expect(syncService.handleItemAddedToCollection).not.toHaveBeenCalled();
-    expect(Zotero.debug).toHaveBeenCalledWith(expect.stringContaining('Invalid collection-item ID'));
-  });
-
-  // UT-041d: multiple valid IDs → multiple separate calls
-  it('UT-041d: makes separate calls for each valid composite ID', async () => {
-    await watcher._handleCollectionItemEvent('add', ['5-10', '6-20'], {});
-    expect(syncService.handleItemAddedToCollection).toHaveBeenCalledTimes(2);
-    expect(syncService.handleItemAddedToCollection).toHaveBeenCalledWith(10, 5);
-    expect(syncService.handleItemAddedToCollection).toHaveBeenCalledWith(20, 6);
-  });
-});
+// UT-041 (CollectionWatcher) removed — collectionWatcher.mjs deleted in
+// Phase E. v2.1 will rebuild a sync-root-aware replacement.

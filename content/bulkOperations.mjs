@@ -363,40 +363,11 @@ export class BulkOperations {
     };
   }
 
-  /**
-   * Reorganize all items in the library using the current naming pattern
-   * @param {BulkOperationOptions} [options={}] - Operation options
-   * @returns {Promise<BulkOperationResult>} Operation results
-   */
-  async reorganizeAllItems(options = {}) {
-    const { dryRun = false, pattern = null, ...restOptions } = options;
-
-    Zotero.debug(`[WatchFolder] Starting reorganize all items (dryRun: ${dryRun})`);
-
-    // Get all items with attachments
-    const items = await this.getItemsWithAttachments();
-    Zotero.debug(`[WatchFolder] Found ${items.length} items with attachments`);
-
-    if (items.length === 0) {
-      return {
-        processed: 0,
-        success: 0,
-        failed: 0,
-        skipped: 0,
-        results: []
-      };
-    }
-
-    // Process each item
-    const result = await this._processBatch(
-      items,
-      (item) => this.reorganizeItem(item, { dryRun, pattern }),
-      restOptions
-    );
-
-    Zotero.debug(`[WatchFolder] Reorganize complete: ${result.success} success, ${result.failed} failed, ${result.skipped} skipped`);
-    return result;
-  }
+  // reorganizeAllItems removed in Phase E. It walked the entire Zotero
+  // library and renamed every attachment — incompatible with the v2
+  // sync-root model where the plugin scopes its writes to one collection
+  // subtree. If a sync-root-scoped reorganizer is needed later it should
+  // enumerate via collectionKeyToRelativePath, not getItemsWithAttachments.
 
   // ============================================================
   // Metadata Operations
@@ -726,15 +697,8 @@ export function resetBulkOperations() {
 // Convenience Functions
 // ============================================================
 
-/**
- * Reorganize all items in the library using the current naming pattern
- * @param {BulkOperationOptions} [options={}] - Operation options
- * @returns {Promise<BulkOperationResult>} Operation results
- */
-export async function reorganizeAll(options = {}) {
-  const bulkOps = getBulkOperations();
-  return bulkOps.reorganizeAllItems(options);
-}
+// reorganizeAll() removed in Phase E along with reorganizeAllItems —
+// library-wide rename is incompatible with the v2 sync-root model.
 
 /**
  * Retry metadata retrieval for all failed items
