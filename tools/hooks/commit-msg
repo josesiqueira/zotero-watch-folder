@@ -1,0 +1,42 @@
+#!/bin/sh
+# commit-msg: strip Co-Authored-By trailers attributing AI assistants.
+#
+# Why: GitHub indexes Co-Authored-By trailers as repository contributors,
+# so a single PR from a contributor whose tool emits the trailer can pin
+# a Claude/Copilot avatar onto this repo's contributors page indefinitely
+# (cleaning that up later requires a force-push to main). This hook
+# scrubs the trailer at commit time so it never enters history.
+#
+# Conservative: only strips trailers whose VALUE clearly identifies an AI
+# bot. Human co-authors with legitimate trailers are untouched.
+#
+# Patterns matched:
+#   Co-Authored-By: Claude ...
+#   Co-Authored-By: Copilot ...
+#   Co-authored-by: GitHub Copilot ...
+#   Co-Authored-By: Cursor ...
+#   Co-Authored-By: Codeium ...
+#   Co-Authored-By: Cody ...
+#   Co-Authored-By: Aider ...
+#   Co-Authored-By: <anyone> <noreply@anthropic.com>
+#   Co-Authored-By: <anyone> <NNNN+Copilot@users.noreply.github.com>
+#
+# Portable to BSD sed (macOS) and GNU sed (Linux) via -i.bak + rm pattern.
+
+set -e
+msg_file="$1"
+
+# 1) Match by leading bot name in the value.
+sed -i.bak -E \
+  '/^[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]+(Claude|Copilot|GitHub Copilot|Cursor|Codeium|Cody|Aider)([[:space:]<]|$)/d' \
+  "$msg_file"
+
+# 2) Match by known AI-bot email addresses.
+sed -i.bak -E \
+  '/^[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]+[^<]*<(noreply@anthropic\.com|[0-9]+\+Copilot@users\.noreply\.github\.com)>/d' \
+  "$msg_file"
+
+# Collapse any 3+ consecutive blank lines down to a single blank line.
+sed -i.bak -E '/^$/{N;/^\n$/D}' "$msg_file"
+
+rm -f "${msg_file}.bak"
