@@ -1,10 +1,18 @@
 /**
  * Unit tests for content/utils.mjs
  * Covers: UT-001 (sanitizeFilename basic), UT-002 (sanitizeFilename truncation),
- *         UT-003 (isAllowedFileType), UT-004 (delay)
+ *         UT-003 (isAllowedFileType), UT-004 (delay),
+ *         UT-005 (relativePath — v2 helper),
+ *         UT-006 (HASH_CHUNK_SIZE — v2 export)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { sanitizeFilename, isAllowedFileType, delay } from '../../content/utils.mjs';
+import {
+  sanitizeFilename,
+  isAllowedFileType,
+  delay,
+  relativePath,
+  HASH_CHUNK_SIZE,
+} from '../../content/utils.mjs';
 
 // ─── UT-001 ──────────────────────────────────────────────────────────────────
 
@@ -159,5 +167,61 @@ describe('UT-004: delay — timing', () => {
     vi.advanceTimersByTime(1);
     await p;
     expect(resolved).toBe(true);
+  });
+});
+
+// ─── UT-005 ──────────────────────────────────────────────────────────────────
+// New in v2: relativePath helper — used to compute the part of a local path
+// under a configured sync-root watch folder.
+
+describe('UT-005: relativePath — sync-root relative path helper', () => {
+  it('returns the path after the root for a nested file', () => {
+    expect(relativePath('/watch/Methods/paper.pdf', '/watch')).toBe('Methods/paper.pdf');
+  });
+
+  it('returns "" when the absolute path equals the root', () => {
+    expect(relativePath('/watch', '/watch')).toBe('');
+  });
+
+  it('returns "" when both paths end with a slash and are equal-modulo-trailing-slash', () => {
+    expect(relativePath('/watch', '/watch/')).toBe('');
+  });
+
+  it('returns null when the absolute path is NOT under the root', () => {
+    expect(relativePath('/elsewhere/paper.pdf', '/watch')).toBe(null);
+  });
+
+  it('returns null for a path that shares a prefix but isn\'t a child (sibling)', () => {
+    // '/watcher' starts with '/watch' but is not a child of '/watch'.
+    expect(relativePath('/watcher/paper.pdf', '/watch')).toBe(null);
+  });
+
+  it('normalises Windows-style backslashes to forward slashes', () => {
+    expect(relativePath('C:\\watch\\Methods\\paper.pdf', 'C:\\watch'))
+      .toBe('Methods/paper.pdf');
+  });
+
+  it('returns null on non-string inputs', () => {
+    expect(relativePath(null, '/watch')).toBe(null);
+    expect(relativePath('/watch/x', undefined)).toBe(null);
+    expect(relativePath(42, '/watch')).toBe(null);
+  });
+
+  it('returns top-level filename when file is directly under root', () => {
+    expect(relativePath('/watch/paper.pdf', '/watch')).toBe('paper.pdf');
+  });
+});
+
+// ─── UT-006 ──────────────────────────────────────────────────────────────────
+// HASH_CHUNK_SIZE was lifted out of getFileHash so the duplicate detector
+// can import it instead of duplicating the literal.
+
+describe('UT-006: HASH_CHUNK_SIZE export', () => {
+  it('equals 1 MB (1024 * 1024)', () => {
+    expect(HASH_CHUNK_SIZE).toBe(1024 * 1024);
+  });
+
+  it('is a named export', () => {
+    expect(typeof HASH_CHUNK_SIZE).toBe('number');
   });
 });

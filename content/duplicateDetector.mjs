@@ -13,7 +13,7 @@
  * @module duplicateDetector
  */
 
-import { getPref } from './utils.mjs';
+import { getPref, HASH_CHUNK_SIZE } from './utils.mjs';
 
 // Tag added to items imported despite being duplicates
 const DUPLICATE_TAG = '_duplicate';
@@ -24,8 +24,12 @@ const DEFAULT_TITLE_THRESHOLD = 0.85;
 // Maximum cache size for title cache (LRU eviction)
 const MAX_TITLE_CACHE_SIZE = 10000;
 
-// Hash chunk size - MUST match utils.mjs getFileHash (1MB)
-const HASH_CHUNK_SIZE = 1024 * 1024;
+// Guard against silent drift if the constant is ever changed without thinking
+// through the implications: the hash stamped into Zotero's Extra field on import
+// must match the hash recomputed on subsequent imports or dedup breaks.
+if (HASH_CHUNK_SIZE !== 1024 * 1024) {
+  throw new Error(`[WatchFolder] HASH_CHUNK_SIZE invariant violated: ${HASH_CHUNK_SIZE}`);
+}
 
 /**
  * Result from duplicate detection
