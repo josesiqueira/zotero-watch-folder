@@ -124,6 +124,10 @@
         if (!chosen) return;
         setPref('syncRootCollectionKey', chosen.key);
         setPref('syncRootLibraryID', libraryID);
+        // Mark the C1 first-run nudge handled — the user has completed
+        // the minimum-viable setup. The full Phase C1 wizard will
+        // eventually own this too.
+        setPref('setupCompleted', true);
         refreshSyncRootDisplay();
         Zotero.debug(`[Watch Folder] Sync root set to ${chosen.label} (key=${chosen.key})`);
     }
