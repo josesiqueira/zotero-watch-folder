@@ -48,11 +48,22 @@
                   style="width: 200px;"/>
     </hbox>
 
+    <!-- Sync root collection (v2 — replaces the v1 targetCollection name).
+         Files from the watch folder land in this Zotero collection. The
+         button opens a picker over the user library's collections. -->
     <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-target-collection" control="watch-folder-target-collection"/>
-      <html:input id="watch-folder-target-collection" type="text"
-                  preference="extensions.zotero.watchFolder.targetCollection"
-                  style="width: 200px;"/>
+      <label data-l10n-id="watch-folder-pref-sync-root" control="watch-folder-sync-root-display"/>
+      <html:input id="watch-folder-sync-root-display" type="text" style="flex: 1;" readonly="true"/>
+      <button id="watch-folder-sync-root-btn" data-l10n-id="watch-folder-pref-sync-root-change"
+              oncommand="WatchFolderPrefs.pickSyncRoot()"/>
+    </hbox>
+
+    <!-- Sync mode display. v2.0 ships only Mode 1; Mode 2 and Mode 3 are
+         declared in the pref schema but not active. Hidden behind
+         about:config until v2.1 / v2.2 ship the behaviour. -->
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-mode" control="watch-folder-mode-display"/>
+      <html:input id="watch-folder-mode-display" type="text" style="width: 280px;" readonly="true"/>
     </hbox>
   </groupbox>
 

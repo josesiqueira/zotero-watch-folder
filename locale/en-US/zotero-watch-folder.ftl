@@ -21,7 +21,9 @@ watch-folder-pref-poll-interval = Poll interval:
 watch-folder-pref-poll-interval-suffix = seconds
 watch-folder-pref-file-types = File types to watch:
 watch-folder-pref-file-types-desc = Comma-separated extensions (e.g., pdf,epub,djvu)
-watch-folder-pref-target-collection = Target collection:
+watch-folder-pref-sync-root = Zotero sync root:
+watch-folder-pref-sync-root-change = Change…
+watch-folder-pref-mode = Sync mode:
 
 # Import settings
 watch-folder-pref-import-mode = Import mode:
