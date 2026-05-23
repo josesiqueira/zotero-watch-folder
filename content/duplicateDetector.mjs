@@ -291,56 +291,40 @@ export class DuplicateDetector {
    * @param {string} [filePath] - File path for hash-based detection
    * @returns {Promise<DuplicateResult>} Detection result
    */
-  async checkDuplicate(metadata, filePath = null) {
-    // Return not duplicate if checking is disabled
+  /**
+   * v2 priority order (per spec §"Duplicate and collision rules" and
+   * updates_22_05_26.md):
+   *
+   *   1. Content hash — DEFINITIVE. Same content always = duplicate.
+   *      Promoted to first because hash never lies. Runs at every stage.
+   *   2. DOI / ISBN / Title — semantic matchers. Only run post-metadata
+   *      because pre-import we don't have these fields. A match here
+   *      without a hash match is a "possible duplicate reference":
+   *      import + tag `_needs-review` (the metadata retriever owns that
+   *      flow today; this method just reports the result).
+   *
+   * Filename collisions (same name, different hash) are NOT a duplicate
+   * signal in v2 — they're handled by the importer/renamer with a
+   * suffix-on-conflict policy, not here.
+   *
+   * @param {Object} metadata
+   * @param {string} [filePath]
+   * @param {{stage?: 'pre-import'|'post-metadata'}} [options]
+   * @returns {Promise<DuplicateResult>}
+   */
+  async checkDuplicate(metadata, filePath = null, options = {}) {
     if (!this._enabled) {
-      return {
-        isDuplicate: false,
-        confidence: 0,
-        reason: 'Duplicate checking disabled'
-      };
+      return { isDuplicate: false, confidence: 0, reason: 'Duplicate checking disabled' };
     }
-
     if (!this._initialized) {
       await this.init();
     }
 
+    const hasMetadata = !!(metadata && (metadata.DOI || metadata.ISBN || metadata.title));
+    const stage = options.stage || (hasMetadata ? 'post-metadata' : 'pre-import');
+
     try {
-      // 1. Check by DOI (highest priority, exact match)
-      if (this._matchDOI && metadata && metadata.DOI) {
-        const doiResult = await this.findByDOI(metadata.DOI);
-        if (doiResult) {
-          return {
-            isDuplicate: true,
-            confidence: 1.0,
-            reason: `DOI match: ${metadata.DOI}`,
-            existingItem: doiResult
-          };
-        }
-      }
-
-      // 2. Check by ISBN (high priority, exact match)
-      if (this._matchISBN && metadata && metadata.ISBN) {
-        const isbnResult = await this.findByISBN(metadata.ISBN);
-        if (isbnResult) {
-          return {
-            isDuplicate: true,
-            confidence: 1.0,
-            reason: `ISBN match: ${metadata.ISBN}`,
-            existingItem: isbnResult
-          };
-        }
-      }
-
-      // 3. Check by title similarity (medium priority, fuzzy match)
-      if (this._matchTitle && metadata && metadata.title) {
-        const titleResult = await this.findByTitle(metadata.title);
-        if (titleResult) {
-          return titleResult;
-        }
-      }
-
-      // 4. Check by content hash (lowest priority, expensive)
+      // 1. CONTENT HASH — definitive, runs at every stage.
       if (this._matchHash && filePath) {
         const hashResult = await this.findByHash(filePath);
         if (hashResult) {
@@ -348,26 +332,48 @@ export class DuplicateDetector {
             isDuplicate: true,
             confidence: 1.0,
             reason: 'Content hash match',
-            existingItem: hashResult
+            existingItem: hashResult,
           };
         }
       }
 
-      // No duplicate found
-      return {
-        isDuplicate: false,
-        confidence: 0,
-        reason: 'No duplicate found'
-      };
+      // 2-4. Metadata-based checks — only at post-metadata stage. At
+      //      pre-import we typically have no metadata yet; running them
+      //      anyway is a no-op but wastes time on the title cache build.
+      if (stage === 'post-metadata' && metadata) {
+        if (this._matchDOI && metadata.DOI) {
+          const doiResult = await this.findByDOI(metadata.DOI);
+          if (doiResult) {
+            return {
+              isDuplicate: true,
+              confidence: 1.0,
+              reason: `DOI match: ${metadata.DOI}`,
+              existingItem: doiResult,
+            };
+          }
+        }
+        if (this._matchISBN && metadata.ISBN) {
+          const isbnResult = await this.findByISBN(metadata.ISBN);
+          if (isbnResult) {
+            return {
+              isDuplicate: true,
+              confidence: 1.0,
+              reason: `ISBN match: ${metadata.ISBN}`,
+              existingItem: isbnResult,
+            };
+          }
+        }
+        if (this._matchTitle && metadata.title) {
+          const titleResult = await this.findByTitle(metadata.title);
+          if (titleResult) return titleResult;
+        }
+      }
 
+      return { isDuplicate: false, confidence: 0, reason: 'No duplicate found' };
     } catch (error) {
       Zotero.debug(`[WatchFolder] Duplicate check error: ${error.message}`);
-      // On error, default to not duplicate to avoid blocking imports
-      return {
-        isDuplicate: false,
-        confidence: 0,
-        reason: `Error during check: ${error.message}`
-      };
+      // On error, default to not-duplicate so imports aren't blocked.
+      return { isDuplicate: false, confidence: 0, reason: `Error during check: ${error.message}` };
     }
   }
 

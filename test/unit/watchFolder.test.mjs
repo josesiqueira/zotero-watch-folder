@@ -36,6 +36,31 @@ vi.mock('../../content/canonicalPath.mjs', () => ({
   },
 }));
 
+vi.mock('../../content/fileMissing.mjs', () => {
+  const STATE = {
+    MISSING: 'missing', PAUSED: 'paused', PENDING_HYDRATION: 'pending-hydration',
+  };
+  const MISSING_CLASSIFICATION = Object.freeze({
+    STILL_EXISTS: 'still-exists',
+    USER_DELETED: 'user-deleted',
+    DRIVE_DISCONNECTED: 'drive-disconnected',
+    PERMISSION_DENIED: 'permission-denied',
+    CLOUD_PLACEHOLDER: 'cloud-placeholder',
+  });
+  return {
+    isWatchRootAvailable: vi.fn(async () => true),
+    classifyMissingFile: vi.fn(async () => MISSING_CLASSIFICATION.USER_DELETED),
+    MISSING_CLASSIFICATION,
+    STATE_FOR_CLASSIFICATION: Object.freeze({
+      [MISSING_CLASSIFICATION.STILL_EXISTS]: null,
+      [MISSING_CLASSIFICATION.USER_DELETED]: STATE.MISSING,
+      [MISSING_CLASSIFICATION.DRIVE_DISCONNECTED]: STATE.PAUSED,
+      [MISSING_CLASSIFICATION.PERMISSION_DENIED]: STATE.PAUSED,
+      [MISSING_CLASSIFICATION.CLOUD_PLACEHOLDER]: STATE.PENDING_HYDRATION,
+    }),
+  };
+});
+
 vi.mock('../../content/fileScanner.mjs', () => ({
   scanFolder: vi.fn(),
   scanFolderRecursive: vi.fn(),

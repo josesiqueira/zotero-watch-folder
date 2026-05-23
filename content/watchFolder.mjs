@@ -17,6 +17,12 @@ import {
   collectionKeyToRelativePath,
   SyncRootMissingError,
 } from './canonicalPath.mjs';
+import {
+  classifyMissingFile,
+  isWatchRootAvailable,
+  MISSING_CLASSIFICATION,
+  STATE_FOR_CLASSIFICATION,
+} from './fileMissing.mjs';
 
 /**
  * Main service class for watch folder functionality
@@ -827,6 +833,25 @@ export class WatchFolderService {
     if (!this._trackingStore) return;
     if ((getPref('diskDeleteSync') || 'auto') === 'never') return;
 
+    // Whole-mount sanity check: if the watch root itself is unreachable
+    // (USB unplugged, network share gone, cloud client logged out), every
+    // tracked file would naively look "missing". Pause sync globally
+    // instead of mass-tagging.
+    const watchPath = getPref('sourcePath') || '';
+    if (watchPath) {
+      const rootAvailable = await isWatchRootAvailable(watchPath);
+      if (!rootAvailable) {
+        Zotero.debug('[WatchFolder] Watch root unavailable — pausing external-deletion scan');
+        for (const r of this._trackingStore.getAllOfType('file')) {
+          if (r.state !== STATE.PAUSED) {
+            this._trackingStore.update(r.localPath, { state: STATE.PAUSED });
+          }
+        }
+        try { await this._trackingStore.save(); } catch (_) {}
+        return;
+      }
+    }
+
     // v2 schema: enumerate FILE records only (collection + tombstone
     // records have their own paths and are handled elsewhere).
     const records = this._trackingStore.getAllOfType('file');
@@ -840,14 +865,32 @@ export class WatchFolderService {
       if (!record.localPath || !record.zoteroAttachmentKey) continue;
       if (diskPaths.has(record.localPath)) continue;
 
-      // Race-safe double-check.
+      // Race-safe double-check + classify why the file is missing. The
+      // classifier distinguishes "drive disconnected" / "permission denied"
+      // / "cloud placeholder" from "user actually deleted it".
       const exists = await IOUtils.exists(record.localPath).catch(() => false);
       if (exists) continue;
 
+      const classification = await classifyMissingFile(record.localPath);
+      if (classification === MISSING_CLASSIFICATION.STILL_EXISTS) continue;
+      if (classification === MISSING_CLASSIFICATION.DRIVE_DISCONNECTED
+          || classification === MISSING_CLASSIFICATION.PERMISSION_DENIED
+          || classification === MISSING_CLASSIFICATION.CLOUD_PLACEHOLDER) {
+        const newState = STATE_FOR_CLASSIFICATION[classification];
+        if (record.state !== newState) {
+          this._trackingStore.update(record.localPath, { state: newState });
+        }
+        continue;
+      }
+
+      // USER_DELETED → fall through to move-detection / deletion path.
       missing.push(record);
     }
 
-    if (missing.length === 0) return;
+    if (missing.length === 0) {
+      try { await this._trackingStore.save(); } catch (_) {}
+      return;
+    }
 
     // ── Move detection ────────────────────────────────────────────────────
     // For each missing tracked record, see whether some untracked file on
