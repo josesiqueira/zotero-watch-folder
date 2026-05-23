@@ -24,8 +24,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../content/utils.mjs', () => ({
   getPref: vi.fn(),
+  // Legacy mock entries retained so v1-shape tests still see vi.fn() refs.
+  // The real utils.mjs no longer exports these — they were superseded by
+  // canonicalPath.mjs in v2 — but several tests still reference them. New
+  // v2-shape tests should mock canonicalPath instead.
   getOrCreateTargetCollection: vi.fn(),
   getOrCreateCollectionPath: vi.fn(),
+}));
+
+vi.mock('../../content/canonicalPath.mjs', () => ({
+  resolveSyncRoot: vi.fn(async () => null),
+  relativePathToCollection: vi.fn(async () => null),
 }));
 
 // ─── UT-053 ──────────────────────────────────────────────────────────────────
@@ -287,22 +296,19 @@ describe('UT-058: filterSupportedFiles — array filtering', () => {
 
 // ─── UT-059 ──────────────────────────────────────────────────────────────────
 
-describe('UT-059: importFile — stored vs linked import modes', () => {
+describe('UT-059: importFile — stored vs linked import modes (v2 API: collection object)', () => {
   let getPrefMock;
-  let getOrCreateTargetCollectionMock;
   let importFile;
+  const fakeCollection = { id: 99, key: 'COL99', libraryID: 1 };
 
   beforeEach(async () => {
     vi.resetAllMocks();
     const utils = await import('../../content/utils.mjs');
     getPrefMock = utils.getPref;
-    getOrCreateTargetCollectionMock = utils.getOrCreateTargetCollection;
     const mod = await import('../../content/fileImporter.mjs');
     importFile = mod.importFile;
 
     globalThis.IOUtils.exists = vi.fn(async () => true);
-
-    getOrCreateTargetCollectionMock.mockResolvedValue({ id: 99 });
 
     globalThis.Zotero.Attachments.importFromFile = vi.fn(async () => ({ id: 1001 }));
     globalThis.Zotero.Attachments.linkFromFile = vi.fn(async () => ({ id: 1002 }));
@@ -310,13 +316,9 @@ describe('UT-059: importFile — stored vs linked import modes', () => {
 
   // UT-059a
   it("stored mode calls Zotero.Attachments.importFromFile with expected args", async () => {
-    getPrefMock.mockImplementation((k) => {
-      if (k === 'targetCollection') return 'Inbox';
-      if (k === 'importMode') return 'stored';
-      return undefined;
-    });
+    getPrefMock.mockImplementation((k) => k === 'importMode' ? 'stored' : undefined);
 
-    const item = await importFile('/watch/paper.pdf');
+    const item = await importFile('/watch/paper.pdf', { collection: fakeCollection });
 
     expect(item).toEqual({ id: 1001 });
     expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledTimes(1);
@@ -330,13 +332,9 @@ describe('UT-059: importFile — stored vs linked import modes', () => {
 
   // UT-059b
   it('linked mode calls Zotero.Attachments.linkFromFile with expected args', async () => {
-    getPrefMock.mockImplementation((k) => {
-      if (k === 'targetCollection') return 'Inbox';
-      if (k === 'importMode') return 'linked';
-      return undefined;
-    });
+    getPrefMock.mockImplementation((k) => k === 'importMode' ? 'linked' : undefined);
 
-    const item = await importFile('/watch/paper.pdf');
+    const item = await importFile('/watch/paper.pdf', { collection: fakeCollection });
 
     expect(item).toEqual({ id: 1002 });
     expect(globalThis.Zotero.Attachments.linkFromFile).toHaveBeenCalledTimes(1);
@@ -376,30 +374,31 @@ describe('UT-064: importBatch — empty files array', () => {
 
 // ─── UT-065 ──────────────────────────────────────────────────────────────────
 
-describe('UT-065: importBatch — mixed string / {path, collection} entries', () => {
+describe('UT-065: importBatch — mixed string / {path, collection} entries (v2 API)', () => {
   let getPrefMock;
-  let getOrCreateTargetCollectionMock;
+  let relativePathToCollectionMock;
   let importBatch;
+  const defaultCollection = { id: 10, key: 'INBOX', name: 'Inbox', libraryID: 1 };
+  const researchCollection = { id: 20, key: 'RES', name: 'Research', libraryID: 1 };
 
   beforeEach(async () => {
     vi.resetAllMocks();
     const utils = await import('../../content/utils.mjs');
     getPrefMock = utils.getPref;
-    getOrCreateTargetCollectionMock = utils.getOrCreateTargetCollection;
+    const cp = await import('../../content/canonicalPath.mjs');
+    relativePathToCollectionMock = cp.relativePathToCollection;
     const mod = await import('../../content/fileImporter.mjs');
     importBatch = mod.importBatch;
 
     getPrefMock.mockImplementation((k) => {
-      if (k === 'targetCollection') return 'Inbox';
-      if (k === 'importMode') return 'linked'; // linked => skips post-import IO
+      if (k === 'importMode') return 'linked';
       if (k === 'postImportAction') return 'leave';
       return undefined;
     });
 
-    getOrCreateTargetCollectionMock.mockImplementation(async (name) => ({
-      id: name === 'Inbox' ? 10 : 20,
-      name,
-    }));
+    // String "collection" entries get resolved via canonicalPath.
+    relativePathToCollectionMock.mockImplementation(async (name) =>
+      name === 'Research' ? researchCollection : null);
 
     globalThis.IOUtils.exists = vi.fn(async () => true);
     globalThis.Zotero.Attachments.linkFromFile = vi.fn(async ({ file }) => ({
@@ -410,28 +409,31 @@ describe('UT-065: importBatch — mixed string / {path, collection} entries', ()
   });
 
   // UT-065a
-  it('handles strings (using default collection) and objects (using per-entry collection)', async () => {
+  it('handles strings (using default collection from options) and per-entry string collections (resolved via canonicalPath)', async () => {
     const files = [
       '/watch/a.pdf',
       { path: '/watch/b.pdf', collection: 'Research' },
     ];
-    const result = await importBatch(files, { delayBetween: 0, importMode: 'linked' });
+    const result = await importBatch(files, {
+      delayBetween: 0,
+      importMode: 'linked',
+      collection: defaultCollection,
+    });
 
     expect(result.success).toHaveLength(2);
     expect(result.failed).toEqual([]);
 
-    // String entry => default collection (Inbox => id 10)
+    // String entry => default collection from importOptions (Inbox => id 10)
     expect(globalThis.Zotero.Attachments.linkFromFile).toHaveBeenNthCalledWith(1, {
       file: '/watch/a.pdf',
       collections: [10],
     });
-    // Object entry => per-entry collection (Research => id 20)
+    // Object entry with string collection => resolved via canonicalPath (Research => id 20)
     expect(globalThis.Zotero.Attachments.linkFromFile).toHaveBeenNthCalledWith(2, {
       file: '/watch/b.pdf',
       collections: [20],
     });
-    expect(getOrCreateTargetCollectionMock).toHaveBeenCalledWith('Inbox', 1);
-    expect(getOrCreateTargetCollectionMock).toHaveBeenCalledWith('Research', 1);
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Research', { createIfMissing: true });
   });
 });
 
@@ -710,46 +712,42 @@ describe('UT-071: importFile — file does not exist', () => {
 
 // ─── UT-072 ──────────────────────────────────────────────────────────────────
 
-describe('UT-072: importFile — nested collection path', () => {
+describe('UT-072: importFile — falls back to sync root when no collection is passed', () => {
   let getPrefMock;
-  let getOrCreateTargetCollectionMock;
-  let getOrCreateCollectionPathMock;
+  let resolveSyncRootMock;
   let importFile;
+  const syncRootCollection = { id: 777, key: 'ROOT1', name: 'Inbox', libraryID: 2 };
 
   beforeEach(async () => {
     vi.resetAllMocks();
     const utils = await import('../../content/utils.mjs');
     getPrefMock = utils.getPref;
-    getOrCreateTargetCollectionMock = utils.getOrCreateTargetCollection;
-    getOrCreateCollectionPathMock = utils.getOrCreateCollectionPath;
+    const cp = await import('../../content/canonicalPath.mjs');
+    resolveSyncRootMock = cp.resolveSyncRoot;
     const mod = await import('../../content/fileImporter.mjs');
     importFile = mod.importFile;
 
-    getPrefMock.mockImplementation((k) => {
-      if (k === 'importMode') return 'stored';
-      return undefined;
-    });
+    getPrefMock.mockImplementation((k) => k === 'importMode' ? 'stored' : undefined);
 
-    getOrCreateCollectionPathMock.mockResolvedValue({ id: 555 });
+    resolveSyncRootMock.mockResolvedValue({
+      collection: syncRootCollection,
+      libraryID: 2,
+    });
 
     globalThis.IOUtils.exists = vi.fn(async () => true);
     globalThis.Zotero.Attachments.importFromFile = vi.fn(async () => ({ id: 2001 }));
   });
 
   // UT-072a
-  it('uses getOrCreateCollectionPath when collectionName contains "/" and forwards the resulting collection id', async () => {
-    const item = await importFile('/watch/paper.pdf', {
-      collectionName: 'Inbox/Research/AI',
-    });
+  it('imports into the sync-root collection when caller passes no collection', async () => {
+    const item = await importFile('/watch/paper.pdf');
 
     expect(item).toEqual({ id: 2001 });
-    expect(getOrCreateCollectionPathMock).toHaveBeenCalledTimes(1);
-    expect(getOrCreateCollectionPathMock).toHaveBeenCalledWith('Inbox/Research/AI', 1);
-    expect(getOrCreateTargetCollectionMock).not.toHaveBeenCalled();
+    expect(resolveSyncRootMock).toHaveBeenCalledTimes(1);
     expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledWith({
       file: '/watch/paper.pdf',
-      libraryID: 1,
-      collections: [555],
+      libraryID: 2,
+      collections: [777],
     });
   });
 });

@@ -13,7 +13,27 @@ vi.mock('../../content/utils.mjs', () => ({
   setPref: vi.fn(),
   delay: vi.fn(),
   getFileHash: vi.fn(),
-  getOrCreateCollectionPath: vi.fn(),
+  // v2 utils — used by watchFolder for sync-root-relative path computation.
+  relativePath: vi.fn((abs, root) => {
+    if (typeof abs !== 'string' || typeof root !== 'string') return null;
+    const a = abs.replace(/\\/g, '/');
+    let r = root.replace(/\\/g, '/');
+    if (r.endsWith('/')) r = r.slice(0, -1);
+    if (a === r) return '';
+    const prefix = r + '/';
+    if (!a.startsWith(prefix)) return null;
+    return a.slice(prefix.length);
+  }),
+  HASH_CHUNK_SIZE: 1024 * 1024,
+}));
+
+vi.mock('../../content/canonicalPath.mjs', () => ({
+  resolveSyncRoot: vi.fn(async () => null),
+  relativePathToCollection: vi.fn(async () => null),
+  collectionKeyToRelativePath: vi.fn(async () => null),
+  SyncRootMissingError: class SyncRootMissingError extends Error {
+    constructor(m) { super(m); this.name = 'SyncRootMissingError'; }
+  },
 }));
 
 vi.mock('../../content/fileScanner.mjs', () => ({
@@ -26,17 +46,40 @@ vi.mock('../../content/fileImporter.mjs', () => ({
   handlePostImportAction: vi.fn(),
 }));
 
-vi.mock('../../content/trackingStore.mjs', () => ({
-  TrackingStore: vi.fn(function () {
-    return {
-      init: vi.fn(),
-      findByItemID: vi.fn(),
-      removeByItemID: vi.fn(),
-      getAll: vi.fn(() => []),
-      save: vi.fn(),
-    };
-  }),
-}));
+vi.mock('../../content/trackingStore.mjs', () => {
+  const STATE = Object.freeze({
+    CLEAN: 'clean', DIRTY: 'dirty', PENDING: 'pending', MISSING: 'missing',
+    PAUSED: 'paused', RECOVERABLE: 'recoverable',
+    OUT_OF_SCOPE_SUPPRESSED: 'out-of-scope-suppressed',
+    CONFLICT_BLOCKED: 'conflict-blocked', CONFLICT_REFUSED: 'conflict-refused',
+    PENDING_ZOTERO_FILE: 'pending-zotero-file', EXTERNAL_EDIT: 'external-edit',
+    PENDING_HYDRATION: 'pending-hydration', MISSING_FILE: 'missing-file',
+  });
+  return {
+    TrackingStore: vi.fn(function () {
+      return {
+        init: vi.fn(),
+        getAllOfType: vi.fn(() => []),
+        getByLocalPath: vi.fn(),
+        getByAttachmentKey: vi.fn(),
+        getCollectionRecord: vi.fn(),
+        findByHash: vi.fn(),
+        add: vi.fn(),
+        update: vi.fn(),
+        remove: vi.fn(() => true),
+        removeByAttachmentKey: vi.fn(() => true),
+        addTombstone: vi.fn(),
+        clear: vi.fn(),
+        getAll: vi.fn(() => []),
+        save: vi.fn(),
+      };
+    }),
+    createFileRecord: (data) => ({ type: 'file', ...data }),
+    createCollectionRecord: (data) => ({ type: 'collection', ...data }),
+    createTombstoneRecord: (data) => ({ type: 'tombstone', ...data }),
+    STATE,
+  };
+});
 
 vi.mock('../../content/fileRenamer.mjs', () => ({
   renameAttachment: vi.fn(),
@@ -55,7 +98,70 @@ vi.mock('../../content/duplicateDetector.mjs', () => ({
 // UT-050: _handleZoteroTrash — Zotero item trashed → optionally delete disk file
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('UT-050: WatchFolderService._handleZoteroTrash (3-button dialog)', () => {
+// UT-050 + UT-051 below cover the v1 trash-propagation paths. In v2 Mode 1
+// those paths are gated to be no-ops (`watchFolder.mjs` returns early when
+// `getPref('mode') === 'mode1'`), so the v1 test bodies — which exercise the
+// 3-button dialog, OS-trash invocation, and Zotero-side bin moves — no longer
+// apply. v2.1's Phase B4 work will rewrite the gated bodies to use the v2
+// tracking-store schema + the safe-delete predicate; we'll rewrite these
+// tests against that target then. For now the gate itself is verified by
+// `WatchFolderService — Mode 1 deletion gates` below.
+
+describe('WatchFolderService — Mode 1 deletion gates', () => {
+  let service;
+  let getPrefMock;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getPrefMock.mockImplementation((k) => k === 'mode' ? 'mode1' : undefined);
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._trackingStore = {
+      getAllOfType: vi.fn(() => []),
+      getByAttachmentKey: vi.fn(),
+      removeByAttachmentKey: vi.fn(() => true),
+      update: vi.fn(),
+      save: vi.fn(),
+    };
+  });
+
+  it('_handleZoteroTrash early-returns in Mode 1 (no IO, no tracking touches)', async () => {
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+
+    await service._handleZoteroTrash([42, 43]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(service._trackingStore.removeByAttachmentKey).not.toHaveBeenCalled();
+    expect(service._trackingStore.save).not.toHaveBeenCalled();
+  });
+
+  it('handleNotification swallows trash events in Mode 1', async () => {
+    const spy = vi.spyOn(service, '_handleZoteroTrash');
+    await service.handleNotification('trash', 'item', [42], {});
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('_handleExternalDeletions marks tracked files state=missing in Mode 1 (no Zotero side effect)', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', localPath: '/watch/gone.pdf', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'H1', state: 'clean' },
+    ] : []);
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn();
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/gone.pdf', { state: 'missing' });
+    // Mode 1 must NOT trash the Zotero attachment.
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
+    expect(service._trackingStore.removeByAttachmentKey).not.toHaveBeenCalled();
+  });
+});
+
+describe.skip('UT-050: WatchFolderService._handleZoteroTrash (3-button dialog) — v1 schema, deferred to v2.1', () => {
   let service;
   let getPrefMock;
   let setPrefMock;
@@ -243,7 +349,7 @@ describe('UT-050: WatchFolderService._handleZoteroTrash (3-button dialog)', () =
 // UT-051: _handleExternalDeletions — disk file gone → Zotero item → bin + popup
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('UT-051: WatchFolderService._handleExternalDeletions (Scenario 1)', () => {
+describe.skip('UT-051: WatchFolderService._handleExternalDeletions trash branch — v1 schema, deferred to v2.1', () => {
   let service;
   let getPrefMock;
   let fakeItem;
@@ -394,7 +500,7 @@ describe('UT-051: WatchFolderService._handleExternalDeletions (Scenario 1)', () 
 //         so library-wide dedup survives a tracking-store wipe
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
+describe('UT-052: WatchFolderService._backfillHashesForExistingItems (v2 schema)', () => {
   let service;
 
   function makeItem({ extra = '', deleted = false, isAttachment = false, parentID = null } = {}) {
@@ -412,19 +518,23 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    const cp = await import('../../content/canonicalPath.mjs');
+    cp.resolveSyncRoot.mockResolvedValue({ collection: { id: 1, key: 'ROOT1' }, libraryID: 1 });
+
     const mod = await import('../../content/watchFolder.mjs');
     service = new mod.WatchFolderService();
     service._trackingStore = {
-      getAll: vi.fn(() => []),
+      getAllOfType: vi.fn(() => []),
     };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn();
     globalThis.Zotero.Items.getAsync = vi.fn();
   });
 
   it('stamps the hash when Extra is empty', async () => {
     const item = makeItem({ extra: '' });
-    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, hash: 'abc123', path: '/x.pdf' },
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(item);
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: 'abc123', localPath: '/x.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -435,9 +545,9 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
 
   it('appends the hash on a new line when Extra already has content', async () => {
     const item = makeItem({ extra: 'tex.bibkey: smith2024\nDOI: 10.x/y' });
-    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, hash: 'def456', path: '/x.pdf' },
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(item);
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: 'def456', localPath: '/x.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -451,9 +561,9 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
 
   it('skips items whose Extra already contains the same hash', async () => {
     const item = makeItem({ extra: 'watchfolder-hash:abc123' });
-    globalThis.Zotero.Items.getAsync.mockResolvedValue(item);
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, hash: 'abc123', path: '/x.pdf' },
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(item);
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: 'abc123', localPath: '/x.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -462,26 +572,26 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
     expect(item.saveTx).not.toHaveBeenCalled();
   });
 
-  it('skips records with missing itemID or missing hash', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 0, hash: 'abc' },
-      { itemID: 42, hash: '' },
-      { itemID: null, hash: null },
+  it('skips records with missing attachmentKey or missing hash', async () => {
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: '', lastSyncedHash: 'abc' },
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: '' },
+      { type: 'file', zoteroAttachmentKey: null, lastSyncedHash: null },
     ]);
 
     await service._backfillHashesForExistingItems();
 
-    expect(globalThis.Zotero.Items.getAsync).not.toHaveBeenCalled();
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
   });
 
   it('skips deleted items and items not found in Zotero', async () => {
     const deletedItem = makeItem({ deleted: true });
-    globalThis.Zotero.Items.getAsync
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync
       .mockResolvedValueOnce(deletedItem)   // first call: deleted
       .mockResolvedValueOnce(null);          // second call: gone
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, hash: 'abc', path: '/x.pdf' },
-      { itemID: 43, hash: 'def', path: '/y.pdf' },
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: 'abc', localPath: '/x.pdf' },
+      { type: 'file', zoteroAttachmentKey: 'AK43', lastSyncedHash: 'def', localPath: '/y.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -493,11 +603,10 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
   it('for an attachment record, stamps the parent item not the attachment', async () => {
     const parent = makeItem({ extra: '' });
     const attachment = makeItem({ isAttachment: true, parentID: 99 });
-    globalThis.Zotero.Items.getAsync
-      .mockImplementationOnce(async (id) => attachment)   // first call: the attachment
-      .mockImplementationOnce(async (id) => parent);       // second call: the parent
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, hash: 'xyz', path: '/p.pdf' },
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValueOnce(attachment);
+    globalThis.Zotero.Items.getAsync.mockResolvedValueOnce(parent);
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK42', lastSyncedHash: 'xyz', localPath: '/p.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -506,8 +615,8 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
     expect(attachment.setField).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when tracking store is empty', async () => {
-    service._trackingStore.getAll = vi.fn(() => []);
+  it('is a no-op when tracking store has no file records', async () => {
+    service._trackingStore.getAllOfType = vi.fn(() => []);
 
     await service._backfillHashesForExistingItems();
 
@@ -516,12 +625,12 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
 
   it('continues processing other records when one record errors', async () => {
     const ok = makeItem({ extra: '' });
-    globalThis.Zotero.Items.getAsync
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(ok);
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 1, hash: 'a', path: '/a.pdf' },
-      { itemID: 2, hash: 'b', path: '/b.pdf' },
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'a', localPath: '/a.pdf' },
+      { type: 'file', zoteroAttachmentKey: 'AK2', lastSyncedHash: 'b', localPath: '/b.pdf' },
     ]);
 
     await service._backfillHashesForExistingItems();
@@ -536,12 +645,13 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems', () => {
 // Zotero item to the new subfolder's collection instead of trashing it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () => {
+describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2 schema, Mode 1', () => {
   let service;
   let getPrefMock;
   let getFileHashMock;
-  let getOrCreateCollectionPathMock;
+  let relativePathToCollectionMock;
   let movedItem;
+  const INBOX = { id: 5, key: 'INBOX', name: 'Inbox', libraryID: 1 };
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -549,51 +659,48 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
     const utils = await import('../../content/utils.mjs');
     getPrefMock = utils.getPref;
     getFileHashMock = utils.getFileHash;
-    getOrCreateCollectionPathMock = utils.getOrCreateCollectionPath;
+
+    const cp = await import('../../content/canonicalPath.mjs');
+    relativePathToCollectionMock = cp.relativePathToCollection;
+    cp.resolveSyncRoot.mockResolvedValue({ collection: INBOX, libraryID: 1 });
 
     const mod = await import('../../content/watchFolder.mjs');
     service = new mod.WatchFolderService();
     service._windows.add({ document: {} });
 
-    // Default prefs for these tests
     getPrefMock.mockImplementation((k) => {
       if (k === 'diskDeleteSync') return 'auto';
-      if (k === 'importMode') return 'stored';
+      if (k === 'mode') return 'mode1';  // important: tests live in Mode 1
       if (k === 'sourcePath') return '/watch';
-      if (k === 'targetCollection') return 'Inbox';
       return undefined;
     });
 
-    // The Zotero item that's about to be moved between collections
+    // The Zotero item that gets reassigned when its file moves between
+    // sync-root subfolders.
     movedItem = {
       deleted: false,
-      getCollections: vi.fn(() => [5]),  // currently in collection 5
+      getCollections: vi.fn(() => [5]),
       removeFromCollection: vi.fn(),
       addToCollection: vi.fn(),
       saveTx: vi.fn(async () => {}),
       getDisplayTitle: vi.fn(() => 'Paper title'),
       getField: vi.fn(() => ''),
     };
-    globalThis.Zotero.Items.getAsync = vi.fn(async () => movedItem);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => movedItem);
 
-    // Default: every collection lookup returns a fresh "collection" object
+    // Default: every relativePathToCollection call returns a fresh collection.
     let nextColID = 100;
-    getOrCreateCollectionPathMock.mockImplementation(async () => ({ id: nextColID++ }));
-
-    // Zotero.Collections — used by _findCollectionByPath
-    globalThis.Zotero.Collections = {
-      ...globalThis.Zotero.Collections,
-      getByLibrary: vi.fn(() => [
-        { id: 5, name: 'Inbox', parentID: null },
-      ]),
-      getByParent: vi.fn(() => []),
-    };
+    relativePathToCollectionMock.mockImplementation(async (relPath, opts) => {
+      if (relPath === '') return INBOX;
+      return { id: nextColID++, key: `COL${relPath}`, name: relPath.split('/').pop(), libraryID: 1 };
+    });
 
     service._trackingStore = {
-      getAll: vi.fn(() => []),
-      remove: vi.fn(),
-      removeByItemID: vi.fn(),
+      getAllOfType: vi.fn(() => []),
+      remove: vi.fn(() => true),
+      removeByAttachmentKey: vi.fn(() => true),
       add: vi.fn(),
+      update: vi.fn(),
       save: vi.fn(async () => {}),
       hasPath: vi.fn(() => false),
     };
@@ -602,9 +709,9 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
   });
 
   it('matching hash on a candidate path triggers a move, NOT a deletion', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc123', expectedOnDisk: true },
-    ]);
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/paper.pdf', lastSyncedHash: 'abc123', state: 'clean', canonicalCollectionKey: 'INBOX' },
+    ] : []);
     getFileHashMock.mockImplementation(async (p) => p === '/watch/sub/paper.pdf' ? 'abc123' : null);
 
     await service._handleExternalDeletions(
@@ -612,21 +719,18 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
       [{ path: '/watch/sub/paper.pdf' }]
     );
 
-    // The item was NOT moved to the bin
     expect(movedItem.deleted).toBe(false);
-    // The popup was NOT shown
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
-    // Tracking was updated (remove + add)
-    expect(service._trackingStore.remove).toHaveBeenCalled();
+    expect(service._trackingStore.remove).toHaveBeenCalledWith('/watch/paper.pdf');
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/watch/sub/paper.pdf', itemID: 42 })
+      expect.objectContaining({ localPath: '/watch/sub/paper.pdf', zoteroAttachmentKey: 'AK42' })
     );
   });
 
   it('moves Zotero item from old auto-collection to new auto-collection', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
-    ]);
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/paper.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
     getFileHashMock.mockImplementation(async (p) => p === '/watch/sub/paper.pdf' ? 'abc' : null);
 
     await service._handleExternalDeletions(
@@ -634,19 +738,17 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
       [{ path: '/watch/sub/paper.pdf' }]
     );
 
-    // Should have looked up the new collection path "Inbox/sub"
-    expect(getOrCreateCollectionPathMock).toHaveBeenCalledWith('Inbox/sub');
-    // Item should have left the old auto-collection (Inbox = id 5)
+    // Should have asked canonicalPath to resolve "sub" under the sync root.
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('sub', { createIfMissing: true });
     expect(movedItem.removeFromCollection).toHaveBeenCalledWith(5);
-    // and joined the new one (whatever getOrCreate returned)
     expect(movedItem.addToCollection).toHaveBeenCalled();
     expect(movedItem.saveTx).toHaveBeenCalled();
   });
 
-  it('move within the same collection (just rename) skips the collection swap', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/old.pdf', hash: 'abc', expectedOnDisk: true },
-    ]);
+  it('move within the same sync-root level (just rename) skips the collection swap', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/old.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
     getFileHashMock.mockImplementation(async (p) => p === '/watch/new-name.pdf' ? 'abc' : null);
 
     await service._handleExternalDeletions(
@@ -654,21 +756,18 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
       [{ path: '/watch/new-name.pdf' }]
     );
 
-    // Both paths map to "Inbox" — no collection re-assignment needed
-    expect(getOrCreateCollectionPathMock).not.toHaveBeenCalled();
+    // Both paths sit at the sync-root level — no collection re-assignment.
     expect(movedItem.removeFromCollection).not.toHaveBeenCalled();
     expect(movedItem.addToCollection).not.toHaveBeenCalled();
-    // Tracking still updated
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/watch/new-name.pdf' })
+      expect.objectContaining({ localPath: '/watch/new-name.pdf' })
     );
   });
 
-  it('no hash-matching file means a real deletion (falls through to bin)', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
-    ]);
-    // The other file on disk has a different hash
+  it('no hash-matching file in Mode 1 → record marked state=missing, NOT trashed', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/paper.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
     getFileHashMock.mockImplementation(async () => 'differentHash');
 
     await service._handleExternalDeletions(
@@ -676,20 +775,19 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
       [{ path: '/watch/unrelated.pdf' }]
     );
 
-    // Should have gone to bin
-    expect(movedItem.deleted).toBe(true);
-    expect(movedItem.saveTx).toHaveBeenCalled();
-    // Popup shown
-    expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
-    // _trackingStore.add should NOT have been called for a move
+    // Mode 1: no Zotero side effect; tracking record state flipped to "missing".
+    expect(movedItem.deleted).toBe(false);
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
     expect(service._trackingStore.add).not.toHaveBeenCalled();
   });
 
   it('two missing records + two matching candidates: each claims one', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 1, path: '/watch/a.pdf', hash: 'AAA', expectedOnDisk: true },
-      { itemID: 2, path: '/watch/b.pdf', hash: 'BBB', expectedOnDisk: true },
-    ]);
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK1', localPath: '/watch/a.pdf', lastSyncedHash: 'AAA', state: 'clean' },
+      { type: 'file', zoteroAttachmentKey: 'AK2', localPath: '/watch/b.pdf', lastSyncedHash: 'BBB', state: 'clean' },
+    ] : []);
     getFileHashMock.mockImplementation(async (p) => {
       if (p === '/watch/x/a.pdf') return 'AAA';
       if (p === '/watch/y/b.pdf') return 'BBB';
@@ -703,36 +801,38 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder)', () =
 
     expect(service._trackingStore.add).toHaveBeenCalledTimes(2);
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/watch/x/a.pdf', itemID: 1 })
+      expect.objectContaining({ localPath: '/watch/x/a.pdf', zoteroAttachmentKey: 'AK1' })
     );
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ path: '/watch/y/b.pdf', itemID: 2 })
+      expect.objectContaining({ localPath: '/watch/y/b.pdf', zoteroAttachmentKey: 'AK2' })
     );
-    // Neither item went to the bin
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
   });
 
-  it('missing record without a hash falls through to deletion (cannot detect move)', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/paper.pdf', hash: '', expectedOnDisk: true },
-    ]);
+  it('missing record without a hash falls through to deletion path (Mode 1: just marked missing)', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/paper.pdf', lastSyncedHash: null, state: 'clean' },
+    ] : []);
 
     await service._handleExternalDeletions(
       new Set(['/watch/sub/paper.pdf']),
       [{ path: '/watch/sub/paper.pdf' }]
     );
 
-    expect(movedItem.deleted).toBe(true);
+    // Can't detect a move without a hash → fall through to the deletion
+    // branch, which in Mode 1 just flips state=missing.
+    expect(movedItem.deleted).toBe(false);
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
   });
 
-  it('called without allFiles parameter behaves like the old deletion-only path', async () => {
-    service._trackingStore.getAll = vi.fn(() => [
-      { itemID: 42, path: '/watch/paper.pdf', hash: 'abc', expectedOnDisk: true },
-    ]);
+  it('called without allFiles parameter: deletion-only path (Mode 1 marks missing)', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/paper.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
 
     await service._handleExternalDeletions(new Set());
 
-    expect(movedItem.deleted).toBe(true);
-    expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
+    expect(movedItem.deleted).toBe(false);
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
   });
 });

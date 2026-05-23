@@ -1,27 +1,33 @@
 /**
  * File Importer Module for Zotero Watch Folder Plugin
  *
- * Handles importing files into Zotero as attachments with support for
- * stored (copied) and linked import modes.
+ * Imports files into Zotero as attachments under a pre-resolved Zotero
+ * collection. v2: the caller (usually WatchFolderService._processNewFile)
+ * resolves the target collection via `canonicalPath.relativePathToCollection`
+ * before invoking the importer; the importer no longer takes a string
+ * collection path.
+ *
+ * @module fileImporter
  */
 
-import { getPref, getOrCreateTargetCollection, getOrCreateCollectionPath } from './utils.mjs';
+import { getPref } from './utils.mjs';
+import { resolveSyncRoot, relativePathToCollection } from './canonicalPath.mjs';
 
 /**
- * Import a file into Zotero
- * @param {string} filePath - Full path to the file
- * @param {Object} options - Import options
- * @param {number} [options.libraryID] - Target library (default: user library)
- * @param {string} [options.collectionName] - Target collection name (can be a path)
- * @param {string} [options.importMode] - 'stored' or 'linked'
- * @returns {Promise<Zotero.Item>} - The created attachment item
+ * Import a file into Zotero.
+ *
+ * @param {string} filePath - Absolute path to the file on disk.
+ * @param {Object} [options]
+ * @param {object} [options.collection] - A resolved Zotero.Collection where
+ *   the attachment should land. Required for v2 normal operation. If omitted,
+ *   falls back to the configured sync root.
+ * @param {number} [options.libraryID] - Override the library. Defaults to
+ *   the sync root's libraryID, or user library if no sync root configured.
+ * @param {string} [options.importMode] - 'stored' (default) or 'linked'.
+ * @returns {Promise<Zotero.Item>} The created attachment item.
  */
 export async function importFile(filePath, options = {}) {
-  const {
-    libraryID = Zotero.Libraries.userLibraryID,
-    collectionName = getPref('targetCollection') || 'Inbox',
-    importMode = getPref('importMode') || 'stored'
-  } = options;
+  const importMode = options.importMode || getPref('importMode') || 'stored';
 
   // 1. Verify file exists
   const fileExists = await IOUtils.exists(filePath);
@@ -32,33 +38,37 @@ export async function importFile(filePath, options = {}) {
   const filename = getFilename(filePath);
   Zotero.debug(`[WatchFolder] Importing file: ${filename} (mode: ${importMode})`);
 
-  // 2. Get or create target collection (supporting paths)
-  let collection;
-  if (collectionName.includes('/')) {
-    collection = await getOrCreateCollectionPath(collectionName, libraryID);
+  // 2. Resolve target collection. Caller normally passes one; if not, fall
+  //    back to the configured sync root so we never silently drop files
+  //    into library root (which is dangerous per spec Rule 4).
+  let collection = options.collection;
+  let libraryID = options.libraryID;
+  if (!collection) {
+    const syncRoot = await resolveSyncRoot();
+    if (syncRoot) {
+      collection = syncRoot.collection;
+      libraryID = libraryID ?? syncRoot.libraryID;
+    }
   } else {
-    collection = await getOrCreateTargetCollection(collectionName, libraryID);
+    libraryID = libraryID ?? collection.libraryID;
   }
-  const collectionID = collection ? collection.id : null;
-  const collections = collectionID ? [collectionID] : [];
+  libraryID = libraryID ?? Zotero.Libraries.userLibraryID;
+  const collections = collection ? [collection.id] : [];
 
   // 3. Import based on mode
   let item;
-
   try {
     if (importMode === 'linked') {
-      // Import as linked file (file stays in original location)
       item = await Zotero.Attachments.linkFromFile({
         file: filePath,
-        collections: collections
+        collections,
       });
       Zotero.debug(`[WatchFolder] Created linked attachment for: ${filename}`);
     } else {
-      // Default: Import as stored copy (file copied to Zotero storage)
       item = await Zotero.Attachments.importFromFile({
         file: filePath,
-        libraryID: libraryID,
-        collections: collections
+        libraryID,
+        collections,
       });
       Zotero.debug(`[WatchFolder] Created stored attachment for: ${filename}`);
     }
@@ -67,22 +77,21 @@ export async function importFile(filePath, options = {}) {
     throw new Error(`Failed to import file: ${importError.message}`);
   }
 
-  // 4. Verify item was created
   if (!item) {
     throw new Error(`Import returned no item for: ${filename}`);
   }
-
-  // 5. Return the created item
   return item;
 }
 
 /**
- * Handle post-import action (leave, delete, or move file)
- * @param {string} filePath - Original file path
- * @param {string} action - 'leave', 'delete', or 'move'
+ * Handle the post-import disposition of the source file. Identical to v1
+ * semantics — the action ('leave', 'delete', 'move') doesn't change in v2;
+ * only the bookkeeping around it (tracking record shape) does.
+ *
+ * @param {string} filePath - Original source path on disk.
+ * @param {string} [action] - 'leave' | 'delete' | 'move'. Reads pref if omitted.
  * @returns {Promise<{action: string, finalPath: string|null}>}
- *   action: the action actually taken ('leave' | 'delete' | 'move')
- *   finalPath: where the file now lives on disk, or null if it was deleted
+ *   finalPath: where the file lives after the action, or null if deleted.
  */
 export async function handlePostImportAction(filePath, action = null) {
   const actionToTake = action || getPref('postImportAction') || 'leave';
@@ -90,12 +99,10 @@ export async function handlePostImportAction(filePath, action = null) {
 
   switch (actionToTake) {
     case 'leave':
-      // Do nothing - file stays in place
       Zotero.debug(`[WatchFolder] Leaving file in place: ${filename}`);
       return { action: 'leave', finalPath: filePath };
 
     case 'delete':
-      // Delete the source file
       try {
         await IOUtils.remove(filePath);
         Zotero.debug(`[WatchFolder] Deleted source file: ${filename}`);
@@ -105,28 +112,24 @@ export async function handlePostImportAction(filePath, action = null) {
         throw error;
       }
 
-    case 'move':
-      // Move to watchRoot/imported/, mirroring the subfolder structure
+    case 'move': {
       try {
         const watchRoot = getPref('sourcePath');
         let destPath;
-
         if (watchRoot && filePath.startsWith(watchRoot)) {
           const importedBaseDir = PathUtils.join(watchRoot, 'imported');
-          const relativePath = filePath.substring(watchRoot.length).replace(/^[/\\]/, '');
-          destPath = PathUtils.join(importedBaseDir, relativePath);
+          const rel = filePath.substring(watchRoot.length).replace(/^[/\\]/, '');
+          destPath = PathUtils.join(importedBaseDir, rel);
         } else {
-          // Fallback: put in 'imported' folder next to the file
+          // Fallback: 'imported/' folder next to the file.
           destPath = PathUtils.join(PathUtils.parent(filePath), 'imported', filename);
         }
-
         const destDir = PathUtils.parent(destPath);
         const dirExists = await IOUtils.exists(destDir);
         if (!dirExists) {
           await IOUtils.makeDirectory(destDir, { createAncestors: true });
           Zotero.debug(`[WatchFolder] Created directory: ${destDir}`);
         }
-
         await IOUtils.move(filePath, destPath);
         Zotero.debug(`[WatchFolder] Moved file to: ${destPath}`);
         return { action: 'move', finalPath: destPath };
@@ -134,6 +137,7 @@ export async function handlePostImportAction(filePath, action = null) {
         Zotero.logError(`[WatchFolder] Failed to move file ${filename}: ${error.message}`);
         throw error;
       }
+    }
 
     default:
       Zotero.debug(`[WatchFolder] Unknown post-import action: ${actionToTake}, leaving file in place`);
@@ -142,13 +146,21 @@ export async function handlePostImportAction(filePath, action = null) {
 }
 
 /**
- * Import multiple files in batch
- * @param {string[]|Array<{path: string, collection: string}>} files - Array of file paths or objects
- * @param {Object} options - Import options
- * @param {Function} [options.onProgress] - Progress callback (current, total)
- * @param {number} [options.delayBetween] - Delay between imports in ms
- * @param {boolean} [options.handlePostImport] - Whether to handle post-import action
- * @returns {Promise<{success: Zotero.Item[], failed: {path: string, error: string}[]}>}
+ * Import multiple files in batch. v2 API: per-file `collection` is either a
+ * resolved Zotero.Collection object OR a forward-slash-joined relative path
+ * under the sync root (which we resolve on demand). The mixed API exists so
+ * the v2 first-run baseline (Phase B5) can pass relative-path strings while
+ * Phase B1 callers can pass Collection objects directly.
+ *
+ * @param {Array<string|{path: string, collection?: object|string}>} files
+ * @param {Object} [options]
+ * @param {Function} [options.onProgress] - (current, total) callback.
+ * @param {number} [options.delayBetween] - Inter-import delay in ms.
+ * @param {boolean} [options.handlePostImport] - Whether to invoke
+ *   handlePostImportAction on each import.
+ * @param {object} [options.collection] - Default Zotero.Collection for files
+ *   passed as bare path strings.
+ * @returns {Promise<{success: object[], failed: Array<{path:string,error:string}>}>}
  */
 export async function importBatch(files, options = {}) {
   const {
@@ -158,104 +170,89 @@ export async function importBatch(files, options = {}) {
     ...importOptions
   } = options;
 
-  const results = {
-    success: [],
-    failed: []
-  };
-
+  const results = { success: [], failed: [] };
   Zotero.debug(`[WatchFolder] Starting batch import of ${files.length} files`);
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const filePath = typeof file === 'string' ? file : file.path;
-    const collectionName = typeof file === 'object' ? file.collection : (importOptions.collectionName || getPref('targetCollection') || 'Inbox');
     const filename = getFilename(filePath);
 
+    // Resolve per-file collection. Accepted forms:
+    //   - Zotero.Collection object → use as-is
+    //   - string → treat as relative path under sync root, resolve+create
+    //   - undefined → fall back to importOptions.collection
+    let perFileCollection = (typeof file === 'object' ? file.collection : undefined);
+    if (typeof perFileCollection === 'string') {
+      perFileCollection = await relativePathToCollection(perFileCollection, { createIfMissing: true });
+    }
+    const collection = perFileCollection ?? importOptions.collection;
+
     try {
-      // Import the file
-      const item = await importFile(filePath, { ...importOptions, collectionName });
+      const item = await importFile(filePath, { ...importOptions, collection });
       results.success.push(item);
 
-      // Handle post-import action (only for stored imports, not linked)
       if (handlePostImport) {
         const importMode = importOptions.importMode || getPref('importMode') || 'stored';
-        // Only handle post-import for stored copies (linked files should stay in place)
         if (importMode === 'stored') {
           try {
             await handlePostImportAction(filePath);
           } catch (postImportError) {
-            // Log but don't fail the import if post-import action fails
             Zotero.logError(`[WatchFolder] Post-import action failed for ${filename}: ${postImportError.message}`);
           }
         }
       }
-
       Zotero.debug(`[WatchFolder] Successfully imported: ${filename} (${i + 1}/${files.length})`);
     } catch (error) {
-      results.failed.push({
-        path: filePath,
-        error: error.message
-      });
+      results.failed.push({ path: filePath, error: error.message });
       Zotero.logError(`[WatchFolder] Import failed for ${filePath}: ${error.message}`);
     }
 
-    // Report progress
     onProgress(i + 1, files.length);
-
-    // Delay between imports to avoid overwhelming Zotero
     if (i < files.length - 1 && delayBetween > 0) {
       await new Promise(r => setTimeout(r, delayBetween));
     }
   }
 
   Zotero.debug(`[WatchFolder] Batch import complete: ${results.success.length} succeeded, ${results.failed.length} failed`);
-
   return results;
 }
 
-/**
- * Get the filename from a path
- * @param {string} filePath
- * @returns {string}
- */
 function getFilename(filePath) {
   return PathUtils.filename(filePath);
 }
 
 /**
- * Check if a file type is supported for import
- * @param {string} filePath - Path to the file
- * @returns {boolean} - Whether the file type is supported
+ * Check whether a file extension is in Zotero's importable set.
+ * @param {string} filePath
+ * @returns {boolean}
  */
 export function isSupportedFileType(filePath) {
   const filename = getFilename(filePath);
   const extension = filename.split('.').pop()?.toLowerCase();
-
-  // Common document types supported by Zotero
   const supportedExtensions = [
-    'pdf',          // PDF documents
-    'epub',         // E-books
-    'html', 'htm',  // Web pages
-    'txt',          // Plain text
-    'rtf',          // Rich text
-    'doc', 'docx',  // Word documents
-    'odt',          // OpenDocument text
-    'ppt', 'pptx',  // PowerPoint
-    'xls', 'xlsx',  // Excel
-    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',  // Images
-    'mp3', 'wav', 'ogg',  // Audio
-    'mp4', 'webm', 'avi', 'mov',  // Video
-    'zip', 'tar', 'gz',  // Archives
-    'json', 'xml', 'csv'  // Data files
+    'pdf',
+    'epub',
+    'html', 'htm',
+    'txt',
+    'rtf',
+    'doc', 'docx',
+    'odt',
+    'ppt', 'pptx',
+    'xls', 'xlsx',
+    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',
+    'mp3', 'wav', 'ogg',
+    'mp4', 'webm', 'avi', 'mov',
+    'zip', 'tar', 'gz',
+    'json', 'xml', 'csv',
   ];
-
   return supportedExtensions.includes(extension);
 }
 
 /**
- * Filter an array of file paths to only include supported types
- * @param {string[]} filePaths - Array of file paths
- * @returns {string[]} - Filtered array of supported file paths
+ * Filter to only files Zotero can import.
+ * @param {string[]} filePaths
+ * @returns {string[]}
  */
 export function filterSupportedFiles(filePaths) {
   return filePaths.filter(isSupportedFileType);
