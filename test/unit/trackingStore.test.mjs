@@ -1,260 +1,430 @@
 /**
- * Unit tests for content/trackingStore.mjs
- * Covers: UT-011 (in-memory CRUD), UT-012 (LRU eviction),
- *         UT-013 (getStats), UT-014 (createTrackingRecord defaults),
- *         UT-014b (TrackingRecord new fields: postImportAction, expectedOnDisk)
+ * Unit tests for content/trackingStore.mjs (v2 schema).
+ *
+ * Covers:
+ *   UT-101 record factories (file / collection / tombstone defaults + overrides)
+ *   UT-102 legacy createTrackingRecord alias
+ *   UT-103 file-record CRUD (add / get / update / remove / hasPath)
+ *   UT-104 key-based lookup (getByAttachmentKey, findByHash)
+ *   UT-105 collection records (add / get / remove)
+ *   UT-106 tombstone records (append-only)
+ *   UT-107 getAllOfType / getAll
+ *   UT-108 LRU eviction applies only to file records
+ *   UT-109 persistence: save dirty / load v2 / refuse v1 / flush unconditional
+ *   UT-110 state enum exported
  */
-import { describe, it, expect, beforeEach } from 'vitest';
-import { TrackingStore, createTrackingRecord, resetTrackingStore } from '../../content/trackingStore.mjs';
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import {
+  TrackingStore,
+  createFileRecord,
+  createCollectionRecord,
+  createTombstoneRecord,
+  createTrackingRecord,
+  resetTrackingStore,
+  STATE,
+} from '../../content/trackingStore.mjs';
 
 /**
- * Helper: create an already-initialised TrackingStore without touching disk.
- * We set internal state directly to bypass init() which requires Zotero.DataDirectory.
+ * Make an initialised store without touching disk. `init()` would try to
+ * resolve `Zotero.DataDirectory.dir` and load from disk; tests that need
+ * persistence behaviour exercise `load()` / `save()` directly with a stub
+ * dataFile path.
  */
-function makeStore(maxEntries = 5000) {
-  const store = new TrackingStore(maxEntries);
+function makeStore(maxFiles = 5000) {
+  const store = new TrackingStore(maxFiles);
   store._initialized = true;
-  store.records = new Map();
   return store;
 }
 
-// ─── UT-014 ──────────────────────────────────────────────────────────────────
-// Tested first because other tests use createTrackingRecord
+// ─── UT-101 ────────────────────────────────────────────────────────────────
 
-describe('UT-014: createTrackingRecord — defaults', () => {
-  // UT-014a
-  it('provides defaults for all fields when called with {}', () => {
-    const rec = createTrackingRecord({});
-    expect(rec.path).toBe('');
-    expect(rec.hash).toBe('');
-    expect(rec.mtime).toBe(0);
-    expect(rec.size).toBe(0);
-    expect(rec.itemID).toBe(0);
-    expect(rec.metadataRetrieved).toBe(false);
-    expect(rec.renamed).toBe(false);
-    // importDate is a valid ISO string
-    expect(() => new Date(rec.importDate).toISOString()).not.toThrow();
+describe('UT-101: record factories', () => {
+  it('createFileRecord supplies all required defaults', () => {
+    const rec = createFileRecord({});
+    expect(rec.type).toBe('file');
+    expect(rec.localPath).toBe('');
+    expect(rec.canonicalLocalPath).toBe('');
+    expect(rec.lastSyncedHash).toBe(null);
+    expect(rec.lastSyncedSize).toBe(0);
+    expect(rec.lastSyncedMtime).toBe(0);
+    expect(rec.zoteroItemKey).toBe(null);
+    expect(rec.zoteroAttachmentKey).toBe('');
+    expect(rec.canonicalCollectionKey).toBe(null);
+    expect(rec.collectionMembershipKeys).toEqual([]);
+    expect(rec.state).toBe(STATE.CLEAN);
     expect(new Date(rec.importDate).toISOString()).toBe(rec.importDate);
   });
 
-  // UT-014c (was UT-014b in older docs — merge defaults)
-  it('merges supplied values over defaults', () => {
-    const rec = createTrackingRecord({ path: '/x', itemID: 42 });
-    expect(rec.path).toBe('/x');
-    expect(rec.itemID).toBe(42);
-    // Remaining fields retain defaults
-    expect(rec.hash).toBe('');
-    expect(rec.mtime).toBe(0);
-    expect(rec.metadataRetrieved).toBe(false);
-    expect(rec.renamed).toBe(false);
+  it('createFileRecord defaults canonicalLocalPath to localPath when omitted', () => {
+    const rec = createFileRecord({ localPath: 'Methods/paper.pdf' });
+    expect(rec.canonicalLocalPath).toBe('Methods/paper.pdf');
+  });
+
+  it('createFileRecord seeds collectionMembershipKeys from canonicalCollectionKey', () => {
+    const rec = createFileRecord({ canonicalCollectionKey: 'ABC123' });
+    expect(rec.collectionMembershipKeys).toEqual(['ABC123']);
+  });
+
+  it('createFileRecord copies collectionMembershipKeys (no shared reference)', () => {
+    const keys = ['A', 'B'];
+    const rec = createFileRecord({ collectionMembershipKeys: keys });
+    keys.push('C');
+    expect(rec.collectionMembershipKeys).toEqual(['A', 'B']);
+  });
+
+  it('createCollectionRecord defaults', () => {
+    const rec = createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'COL1' });
+    expect(rec.type).toBe('collection');
+    expect(rec.localPath).toBe('Methods');
+    expect(rec.zoteroCollectionKey).toBe('COL1');
+    expect(rec.parentCollectionKey).toBe(null);
+    expect(rec.state).toBe(STATE.CLEAN);
+  });
+
+  it('createTombstoneRecord defaults', () => {
+    const rec = createTombstoneRecord({ localPath: 'paper.pdf' });
+    expect(rec.type).toBe('tombstone');
+    expect(rec.objectType).toBe('file');
+    expect(rec.deletedFrom).toBe('zotero');
+    expect(rec.state).toBe(STATE.RECOVERABLE);
+    expect(new Date(rec.deletedAt).toISOString()).toBe(rec.deletedAt);
   });
 });
 
-// ─── UT-014b ─────────────────────────────────────────────────────────────────
-// New TrackingRecord fields: postImportAction + expectedOnDisk
+// ─── UT-102 ────────────────────────────────────────────────────────────────
 
-describe('UT-014b: TrackingRecord new fields (postImportAction, expectedOnDisk)', () => {
-  it('default values: postImportAction="leave" and expectedOnDisk=true when {} is passed', () => {
-    const rec = createTrackingRecord({});
-    expect(rec.postImportAction).toBe('leave');
-    expect(rec.expectedOnDisk).toBe(true);
-  });
-
-  it('preserves explicit values when both fields are supplied', () => {
-    const rec = createTrackingRecord({ postImportAction: 'delete', expectedOnDisk: false });
-    expect(rec.postImportAction).toBe('delete');
-    expect(rec.expectedOnDisk).toBe(false);
-  });
-
-  it('expectedOnDisk: false is retained verbatim (not coerced back to true)', () => {
-    // Spec uses `data.expectedOnDisk !== false` so passing false must stay false.
-    const rec = createTrackingRecord({ expectedOnDisk: false });
-    expect(rec.expectedOnDisk).toBe(false);
-  });
-
-  it('expectedOnDisk: true and undefined both yield true', () => {
-    const recExplicit = createTrackingRecord({ expectedOnDisk: true });
-    const recOmitted = createTrackingRecord({ expectedOnDisk: undefined });
-    expect(recExplicit.expectedOnDisk).toBe(true);
-    expect(recOmitted.expectedOnDisk).toBe(true);
-  });
-
-  it('accepts all three documented postImportAction values', () => {
-    expect(createTrackingRecord({ postImportAction: 'leave' }).postImportAction).toBe('leave');
-    expect(createTrackingRecord({ postImportAction: 'delete' }).postImportAction).toBe('delete');
-    expect(createTrackingRecord({ postImportAction: 'move' }).postImportAction).toBe('move');
+describe('UT-102: legacy createTrackingRecord alias', () => {
+  it('produces a file record', () => {
+    const rec = createTrackingRecord({ localPath: 'a.pdf' });
+    expect(rec.type).toBe('file');
+    expect(rec.localPath).toBe('a.pdf');
   });
 });
 
-// ─── UT-011 ──────────────────────────────────────────────────────────────────
+// ─── UT-103 ────────────────────────────────────────────────────────────────
 
-describe('UT-011: TrackingStore — in-memory CRUD operations', () => {
+describe('UT-103: TrackingStore — file-record CRUD', () => {
   let store;
-
   beforeEach(() => {
     resetTrackingStore();
     store = makeStore();
   });
 
-  // UT-011a — createTrackingRecord returns valid record (covered in UT-014, referenced here)
-  it('createTrackingRecord({path,hash}) has valid importDate ISO string', () => {
-    const rec = createTrackingRecord({ path: '/a', hash: 'abc' });
-    expect(rec.path).toBe('/a');
-    expect(rec.hash).toBe('abc');
-    expect(typeof rec.importDate).toBe('string');
-    expect(new Date(rec.importDate).toISOString()).toBe(rec.importDate);
+  it('add() + hasPath() + getByLocalPath()', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    expect(store.hasPath('a.pdf')).toBe(true);
+    const rec = store.getByLocalPath('a.pdf');
+    expect(rec).not.toBeNull();
+    expect(rec.zoteroAttachmentKey).toBe('AK1');
   });
 
-  // UT-011b
-  it('add() then hasPath() returns true', () => {
-    store.add({ path: '/a', hash: 'x', itemID: 1 });
-    expect(store.hasPath('/a')).toBe(true);
-  });
-
-  // UT-011c
-  it('adding the same path twice keeps size at 1', () => {
-    store.add({ path: '/a', hash: 'x' });
-    store.add({ path: '/a', hash: 'y' });
+  it('adding the same localPath twice keeps size at 1 (LRU move-to-end)', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', lastSyncedHash: 'h1' }));
+    store.add(createFileRecord({ localPath: 'a.pdf', lastSyncedHash: 'h2' }));
     expect(store.size).toBe(1);
+    expect(store.getByLocalPath('a.pdf').lastSyncedHash).toBe('h2');
   });
 
-  // UT-011d
-  it('get() returns the record after add()', () => {
-    const rec = { path: '/a', hash: 'abc', itemID: 5 };
-    store.add(rec);
-    const fetched = store.get('/a');
-    expect(fetched).not.toBeNull();
-    expect(fetched.path).toBe('/a');
-    expect(fetched.hash).toBe('abc');
+  it('getByLocalPath returns null for unknown path', () => {
+    expect(store.getByLocalPath('nope')).toBe(null);
   });
 
-  // UT-011e
-  it('get() returns null for a path that was never added', () => {
-    expect(store.get('/notexists')).toBeNull();
+  it('update() applies partial changes', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', state: STATE.PENDING }));
+    store.update('a.pdf', { state: STATE.CLEAN });
+    expect(store.getByLocalPath('a.pdf').state).toBe(STATE.CLEAN);
   });
 
-  // UT-011f
-  it('remove() returns true and record is gone', () => {
-    store.add({ path: '/a' });
-    const result = store.remove('/a');
-    expect(result).toBe(true);
-    expect(store.hasPath('/a')).toBe(false);
+  it('update() no-ops for unknown path', () => {
+    expect(() => store.update('nope', { state: STATE.CLEAN })).not.toThrow();
   });
 
-  // UT-011g
-  it('remove() returns false for non-existent path', () => {
-    expect(store.remove('/notexists')).toBe(false);
+  it('remove() returns true and clears the record', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    expect(store.remove('a.pdf')).toBe(true);
+    expect(store.hasPath('a.pdf')).toBe(false);
   });
 
-  // UT-011h
-  it('update() modifies an existing record', () => {
-    store.add({ path: '/a', hash: 'x', metadataRetrieved: false });
-    store.update('/a', { metadataRetrieved: true });
-    expect(store.get('/a').metadataRetrieved).toBe(true);
+  it('remove() returns false for unknown path', () => {
+    expect(store.remove('nope')).toBe(false);
   });
 
-  // UT-011i
-  it('update() silently no-ops for non-existent path', () => {
-    expect(() => store.update('/notexists', { metadataRetrieved: true })).not.toThrow();
-  });
-
-  // UT-011j
-  it('hasHash() returns true after adding record with that hash', () => {
-    store.add({ path: '/a', hash: 'abc' });
-    expect(store.hasHash('abc')).toBe(true);
-  });
-
-  // UT-011k
-  it('findByHash() returns the matching record', () => {
-    store.add({ path: '/a', hash: 'abc' });
-    const found = store.findByHash('abc');
-    expect(found).not.toBeNull();
-    expect(found.path).toBe('/a');
-  });
-
-  // UT-011l
-  it('findByItemID() returns the matching record', () => {
-    store.add({ path: '/a', hash: 'abc', itemID: 1 });
-    const found = store.findByItemID(1);
-    expect(found).not.toBeNull();
-    expect(found.path).toBe('/a');
-  });
-
-  // UT-011m
-  it('removeByItemID() returns true and record is gone', () => {
-    store.add({ path: '/a', hash: 'abc', itemID: 1 });
-    const result = store.removeByItemID(1);
-    expect(result).toBe(true);
-    expect(store.hasPath('/a')).toBe(false);
-  });
-
-  // UT-011n
-  it('getPendingMetadata() returns records with metadataRetrieved=false and itemID set', () => {
-    store.add({ path: '/a', hash: 'x', itemID: 1, metadataRetrieved: false });
-    store.add({ path: '/b', hash: 'y', itemID: 2, metadataRetrieved: true });
-    const pending = store.getPendingMetadata();
-    expect(pending).toHaveLength(1);
-    expect(pending[0].path).toBe('/a');
-  });
-
-  // UT-011o
-  it('getPendingRename() returns records with metadataRetrieved=true, renamed=false, itemID set', () => {
-    store.add({ path: '/a', hash: 'x', itemID: 1, metadataRetrieved: true, renamed: false });
-    store.add({ path: '/b', hash: 'y', itemID: 2, metadataRetrieved: true, renamed: true });
-    store.add({ path: '/c', hash: 'z', itemID: 3, metadataRetrieved: false, renamed: false });
-    const pending = store.getPendingRename();
-    expect(pending).toHaveLength(1);
-    expect(pending[0].path).toBe('/a');
+  it('clear() empties all collections', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'C1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf' }));
+    store.clear();
+    expect(store.size).toBe(0);
+    expect(store.getAllOfType('collection')).toHaveLength(0);
+    expect(store.getAllOfType('tombstone')).toHaveLength(0);
   });
 });
 
-// ─── UT-012 ──────────────────────────────────────────────────────────────────
+// ─── UT-104 ────────────────────────────────────────────────────────────────
 
-describe('UT-012: TrackingStore — LRU eviction', () => {
-  it('evicts the oldest entry when maxEntries is exceeded', () => {
+describe('UT-104: TrackingStore — key-based lookup', () => {
+  let store;
+  beforeEach(() => { resetTrackingStore(); store = makeStore(); });
+
+  it('getByAttachmentKey returns the matching file record', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.add(createFileRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK2' }));
+    const rec = store.getByAttachmentKey('AK2');
+    expect(rec).not.toBeNull();
+    expect(rec.localPath).toBe('b.pdf');
+  });
+
+  it('getByAttachmentKey returns null when no key supplied or no match', () => {
+    expect(store.getByAttachmentKey('')).toBe(null);
+    expect(store.getByAttachmentKey('AK-unknown')).toBe(null);
+  });
+
+  it('findByHash returns file records only — tombstones are excluded', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', lastSyncedHash: 'H1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf', originalHash: 'H1' }));
+    const rec = store.findByHash('H1');
+    expect(rec).not.toBeNull();
+    expect(rec.type).toBe('file');
+    expect(rec.localPath).toBe('a.pdf');
+  });
+
+  it('findByHash returns null for unknown hash', () => {
+    expect(store.findByHash('NOPE')).toBe(null);
+  });
+
+  it('removeByAttachmentKey removes by key and updates indexes', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'H1' }));
+    expect(store.removeByAttachmentKey('AK1')).toBe(true);
+    expect(store.getByLocalPath('a.pdf')).toBe(null);
+    expect(store.getByAttachmentKey('AK1')).toBe(null);
+    expect(store.findByHash('H1')).toBe(null);
+  });
+
+  it('indexes are maintained after update()', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'H1' }));
+    store.update('a.pdf', { lastSyncedHash: 'H2' });
+    expect(store.findByHash('H1')).toBe(null);
+    expect(store.findByHash('H2')?.localPath).toBe('a.pdf');
+  });
+});
+
+// ─── UT-105 ────────────────────────────────────────────────────────────────
+
+describe('UT-105: TrackingStore — collection records', () => {
+  let store;
+  beforeEach(() => { resetTrackingStore(); store = makeStore(); });
+
+  it('addCollection then getCollectionRecord', () => {
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'COL1' }));
+    const rec = store.getCollectionRecord('COL1');
+    expect(rec).not.toBeNull();
+    expect(rec.type).toBe('collection');
+    expect(rec.localPath).toBe('Methods');
+  });
+
+  it('getCollectionRecord returns null for unknown key', () => {
+    expect(store.getCollectionRecord('NOPE')).toBe(null);
+  });
+
+  it('removeCollectionRecord clears the record', () => {
+    store.add(createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' }));
+    expect(store.removeCollectionRecord('COL1')).toBe(true);
+    expect(store.getCollectionRecord('COL1')).toBe(null);
+  });
+
+  it('collection records do NOT affect file-record size counter', () => {
+    store.add(createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' }));
+    expect(store.size).toBe(0); // size counts files only
+  });
+});
+
+// ─── UT-106 ────────────────────────────────────────────────────────────────
+
+describe('UT-106: TrackingStore — tombstone records', () => {
+  let store;
+  beforeEach(() => { resetTrackingStore(); store = makeStore(); });
+
+  it('addTombstone appends and does not deduplicate', () => {
+    store.addTombstone(createTombstoneRecord({ localPath: 'a.pdf', deletedFrom: 'zotero' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'a.pdf', deletedFrom: 'local' }));
+    expect(store.getAllOfType('tombstone')).toHaveLength(2);
+  });
+
+  it('non-tombstone object handed to addTombstone is rejected (logged + skipped)', () => {
+    store.addTombstone({ type: 'file', localPath: 'oops' });
+    expect(store.getAllOfType('tombstone')).toHaveLength(0);
+  });
+
+  it('add() dispatches a tombstone-typed record to addTombstone', () => {
+    store.add(createTombstoneRecord({ localPath: 'a.pdf' }));
+    expect(store.getAllOfType('tombstone')).toHaveLength(1);
+  });
+});
+
+// ─── UT-107 ────────────────────────────────────────────────────────────────
+
+describe('UT-107: TrackingStore — getAllOfType and getAll', () => {
+  let store;
+  beforeEach(() => { resetTrackingStore(); store = makeStore(); });
+
+  it('getAllOfType returns only records of the requested type', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    store.add(createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf' }));
+    expect(store.getAllOfType('file')).toHaveLength(1);
+    expect(store.getAllOfType('collection')).toHaveLength(1);
+    expect(store.getAllOfType('tombstone')).toHaveLength(1);
+    expect(store.getAllOfType('unknown')).toEqual([]);
+  });
+
+  it('getAll concatenates all three primary collections', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    store.add(createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf' }));
+    expect(store.getAll()).toHaveLength(3);
+  });
+
+  it('add() with unknown type is rejected', () => {
+    store.add({ type: 'weirdo', localPath: 'x' });
+    expect(store.getAll()).toHaveLength(0);
+  });
+});
+
+// ─── UT-108 ────────────────────────────────────────────────────────────────
+
+describe('UT-108: TrackingStore — LRU eviction (file records only)', () => {
+  it('evicts the oldest file when maxFiles is exceeded', () => {
     const store = makeStore(3);
-
-    store.add({ path: '/first', hash: 'h1' });
-    store.add({ path: '/second', hash: 'h2' });
-    store.add({ path: '/third', hash: 'h3' });
+    store.add(createFileRecord({ localPath: 'a' }));
+    store.add(createFileRecord({ localPath: 'b' }));
+    store.add(createFileRecord({ localPath: 'c' }));
     expect(store.size).toBe(3);
-
-    // Adding a 4th entry should evict '/first' (oldest)
-    store.add({ path: '/fourth', hash: 'h4' });
+    store.add(createFileRecord({ localPath: 'd' }));
     expect(store.size).toBe(3);
-    expect(store.hasPath('/first')).toBe(false);
-    expect(store.hasPath('/second')).toBe(true);
-    expect(store.hasPath('/third')).toBe(true);
-    expect(store.hasPath('/fourth')).toBe(true);
+    expect(store.hasPath('a')).toBe(false);
+    expect(store.hasPath('b')).toBe(true);
+    expect(store.hasPath('c')).toBe(true);
+    expect(store.hasPath('d')).toBe(true);
+  });
+
+  it('LRU eviction does NOT touch collection or tombstone records', () => {
+    const store = makeStore(1);
+    store.add(createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'gone.pdf' }));
+    store.add(createFileRecord({ localPath: 'a' }));
+    store.add(createFileRecord({ localPath: 'b' }));
+    expect(store.size).toBe(1); // files: only 'b' (a evicted)
+    expect(store.getAllOfType('collection')).toHaveLength(1);
+    expect(store.getAllOfType('tombstone')).toHaveLength(1);
   });
 });
 
-// ─── UT-013 ──────────────────────────────────────────────────────────────────
+// ─── UT-109 ────────────────────────────────────────────────────────────────
 
-describe('UT-013: TrackingStore.getStats — statistics calculation', () => {
-  it('returns correct counts for a mixed set of records', () => {
-    const store = makeStore();
-
-    // Record 1: has metadata + renamed
-    store.add({ path: '/a', hash: 'h1', itemID: 1, metadataRetrieved: true, renamed: true });
-    // Record 2: has metadata, not renamed
-    store.add({ path: '/b', hash: 'h2', itemID: 2, metadataRetrieved: true, renamed: false });
-    // Record 3: no metadata (pending), has itemID
-    store.add({ path: '/c', hash: 'h3', itemID: 3, metadataRetrieved: false, renamed: false });
-
-    const stats = store.getStats();
-    expect(stats.total).toBe(3);
-    expect(stats.withMetadata).toBe(2);
-    expect(stats.renamed).toBe(1);
-    expect(stats.pending).toBe(1);
+describe('UT-109: TrackingStore — persistence', () => {
+  beforeEach(() => {
+    resetTrackingStore();
+    // Reset IO mocks for predictable behaviour.
+    globalThis.IOUtils.writeJSON.mockClear();
+    globalThis.IOUtils.readJSON.mockClear();
+    globalThis.IOUtils.exists.mockClear();
   });
 
-  it('returns all zeros when store is empty', () => {
+  it('save() writes a v2 envelope and clears the dirty flag', async () => {
     const store = makeStore();
-    const stats = store.getStats();
-    expect(stats.total).toBe(0);
-    expect(stats.withMetadata).toBe(0);
-    expect(stats.renamed).toBe(0);
-    expect(stats.pending).toBe(0);
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    expect(store.isDirty).toBe(true);
+    await store.save();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    const [path, data] = globalThis.IOUtils.writeJSON.mock.calls[0];
+    expect(path).toBe('/fake/tracking.json');
+    expect(data.version).toBe(2);
+    expect(data.files).toHaveLength(1);
+    expect(data.files[0].localPath).toBe('a.pdf');
+    expect(store.isDirty).toBe(false);
+  });
+
+  it('save() is a no-op when not dirty', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    await store.save();
+    expect(globalThis.IOUtils.writeJSON).not.toHaveBeenCalled();
+  });
+
+  it('flush() saves unconditionally even if not dirty', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.save();
+    globalThis.IOUtils.writeJSON.mockClear();
+    await store.flush();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it('load() refuses to load a v1 file (returns empty)', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 1,
+      records: [{ path: '/x', hash: 'abc' }],
+    });
+    await store.load();
+    expect(store.size).toBe(0);
+    expect(store.getAll()).toHaveLength(0);
+  });
+
+  it('load() reads a v2 envelope back into typed records', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [createFileRecord({ localPath: 'a.pdf', lastSyncedHash: 'H1', zoteroAttachmentKey: 'AK1' })],
+      collections: [createCollectionRecord({ localPath: 'M', zoteroCollectionKey: 'COL1' })],
+      tombstones: [createTombstoneRecord({ localPath: 'b.pdf' })],
+    });
+    await store.load();
+    expect(store.getByLocalPath('a.pdf')?.lastSyncedHash).toBe('H1');
+    expect(store.getCollectionRecord('COL1')?.localPath).toBe('M');
+    expect(store.getAllOfType('tombstone')).toHaveLength(1);
+    // Indexes rebuilt:
+    expect(store.findByHash('H1')?.localPath).toBe('a.pdf');
+    expect(store.getByAttachmentKey('AK1')?.localPath).toBe('a.pdf');
+  });
+
+  it('load() with no file on disk leaves the store empty', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(false);
+    await store.load();
+    expect(store.size).toBe(0);
+    expect(globalThis.IOUtils.readJSON).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-110 ────────────────────────────────────────────────────────────────
+
+describe('UT-110: STATE enum', () => {
+  it('exposes all documented values', () => {
+    expect(STATE.CLEAN).toBe('clean');
+    expect(STATE.PENDING).toBe('pending');
+    expect(STATE.MISSING).toBe('missing');
+    expect(STATE.PAUSED).toBe('paused');
+    expect(STATE.RECOVERABLE).toBe('recoverable');
+    expect(STATE.OUT_OF_SCOPE_SUPPRESSED).toBe('out-of-scope-suppressed');
+    expect(STATE.CONFLICT_BLOCKED).toBe('conflict-blocked');
+    expect(STATE.CONFLICT_REFUSED).toBe('conflict-refused');
+    expect(STATE.PENDING_ZOTERO_FILE).toBe('pending-zotero-file');
+    expect(STATE.EXTERNAL_EDIT).toBe('external-edit');
+    expect(STATE.PENDING_HYDRATION).toBe('pending-hydration');
+    expect(STATE.MISSING_FILE).toBe('missing-file');
+  });
+
+  it('is frozen (immutable)', () => {
+    expect(Object.isFrozen(STATE)).toBe(true);
   });
 });

@@ -7,6 +7,14 @@
 export const PREF_PREFIX = 'extensions.zotero.watchFolder.';
 
 /**
+ * Chunk size used by getFileHash. Exposed as a named export so the duplicate
+ * detector (and any future caller) can import the same constant rather than
+ * duplicating the literal. Divergence would silently break dedup for files
+ * larger than the chunk.
+ */
+export const HASH_CHUNK_SIZE = 1024 * 1024;
+
+/**
  * Get a preference value
  * @param {string} key - Preference key (without prefix)
  * @returns {*} The preference value
@@ -79,10 +87,8 @@ export function sanitizeFilename(filename, maxLength = 150) {
  * @returns {Promise<string|null>} Hex hash string or null on error
  */
 export async function getFileHash(filePath) {
-  // Read first 1MB for hashing (performance)
-  const CHUNK_SIZE = 1024 * 1024;
   try {
-    const data = await IOUtils.read(filePath, { maxBytes: CHUNK_SIZE });
+    const data = await IOUtils.read(filePath, { maxBytes: HASH_CHUNK_SIZE });
     // Simple hash using crypto
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -103,94 +109,24 @@ export function delay(ms) {
 }
 
 /**
- * Get or create the target collection
- * @param {string} collectionName - Name of the collection
- * @param {number} [libraryID] - Library ID (defaults to user library)
- * @returns {Promise<Zotero.Collection|null>} The collection object or null if creation fails
+ * Compute the path of an absolute path relative to a root.
+ * Returns a forward-slash joined string with no leading slash.
+ * Returns "" when the two paths are equal (root itself).
+ * Returns null when absolutePath is not under root.
+ *
+ * @param {string} absolutePath
+ * @param {string} root
+ * @returns {string|null}
  */
-export async function getOrCreateTargetCollection(collectionName, libraryID = Zotero.Libraries.userLibraryID) {
-  // If no collection name provided, return null (no target collection)
-  if (!collectionName || collectionName.trim() === '') {
-    return null;
-  }
-
-  try {
-    // Search for existing collection
-    const collections = Zotero.Collections.getByLibrary(libraryID);
-    if (collections && collections.length > 0) {
-      for (const collection of collections) {
-        if (collection.name === collectionName) {
-          return collection;
-        }
-      }
-    }
-
-    // Create new collection
-    const collection = new Zotero.Collection();
-    collection.libraryID = libraryID;
-    collection.name = collectionName;
-    await collection.saveTx();
-
-    Zotero.debug(`[WatchFolder] Created collection: ${collectionName}`);
-    return collection;
-  } catch (e) {
-    Zotero.logError(`[WatchFolder] Failed to get/create collection "${collectionName}": ${e.message}`);
-    return null;
-  }
-}
-
-/**
- * Get or create a path of nested collections
- * @param {string} path - Slash-separated collection path (e.g. "Inbox/Subfolder")
- * @param {number} [libraryID] - Library ID
- * @returns {Promise<Zotero.Collection|null>} The leaf collection
- */
-export async function getOrCreateCollectionPath(path, libraryID = Zotero.Libraries.userLibraryID) {
-  Zotero.debug(`[WatchFolder] Attempting to get/create collection path: ${path}`);
-  if (!path || path.trim() === '') return null;
-
-  const parts = path.split('/').filter(p => p.trim() !== '');
-  let parentID = null; // null = root level
-  let currentCollection = null;
-
-  for (const name of parts) {
-    try {
-      Zotero.debug(`[WatchFolder] Looking for collection: "${name}" under parent: ${parentID || 'root'}`);
-
-      // For root level use getByLibrary (getByParent(false) is unreliable);
-      // for nested levels use getByParent with the numeric parent ID
-      let candidates;
-      if (parentID === null) {
-        candidates = Zotero.Collections.getByLibrary(libraryID).filter(col => !col.parentID);
-      } else {
-        candidates = Zotero.Collections.getByParent(parentID, libraryID);
-      }
-
-      const found = candidates.find(col => col.name === name);
-
-      if (found) {
-        Zotero.debug(`[WatchFolder] Found existing collection: "${name}" (ID: ${found.id})`);
-        currentCollection = found;
-        parentID = found.id;
-      } else {
-        Zotero.debug(`[WatchFolder] Collection "${name}" not found, creating it...`);
-        const col = new Zotero.Collection();
-        col.libraryID = libraryID;
-        col.name = name;
-        // Only set parentID for non-root — setting it to null/false clears libraryID internally
-        if (parentID !== null) {
-          col.parentID = parentID;
-        }
-        await col.saveTx();
-        currentCollection = col;
-        parentID = col.id;
-        Zotero.debug(`[WatchFolder] Successfully created collection: "${name}" (ID: ${parentID})`);
-      }
-    } catch (e) {
-      Zotero.logError(`[WatchFolder] CRITICAL ERROR in getOrCreateCollectionPath for "${name}": ${e.message}`);
-      return null;
-    }
-  }
-
-  return currentCollection;
+export function relativePath(absolutePath, root) {
+  if (typeof absolutePath !== 'string' || typeof root !== 'string') return null;
+  // Normalize backslashes (Windows) to forward slashes; strip trailing slash on root.
+  const norm = (s) => s.replace(/\\/g, '/');
+  const a = norm(absolutePath);
+  let r = norm(root);
+  if (r.endsWith('/')) r = r.slice(0, -1);
+  if (a === r) return '';
+  const prefix = r + '/';
+  if (!a.startsWith(prefix)) return null;
+  return a.slice(prefix.length);
 }

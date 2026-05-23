@@ -78,8 +78,10 @@ async function shutdown({ id, version, resourceURI, rootURI }, reason) {
 function uninstall(data, reason) {}
 
 // ---------------------------------------------------------------------------
-// Default preferences  (mirrors prefs.js but using the Services API so it
-// works regardless of where the file is located in the XPI).
+// Default preferences  (canonical source of defaults at runtime — `prefs.js`
+// at the XPI root is NOT auto-loaded by Zotero). MUST stay in sync with
+// `prefs.js` — every `_set(...)` line below has a matching `pref(...)` line
+// there, and vice versa.
 // ---------------------------------------------------------------------------
 function _initDefaultPrefs() {
   const branch = Services.prefs.getDefaultBranch("extensions.zotero.watchFolder.");
@@ -93,20 +95,30 @@ function _initDefaultPrefs() {
     } catch (_) {}
   }
 
+  // Core watch settings
   _set("enabled",                false);
   _set("sourcePath",             "");
   _set("pollInterval",           5);
-  _set("targetCollection",       "Inbox");
   _set("fileTypes",              "pdf");
   _set("importMode",             "stored");
   _set("postImportAction",       "leave");
   _set("autoRetrieveMetadata",   true);
-  _set("lastWatchedPath",        "");
-  _set("diskDeleteOnTrash",      "ask");  // "ask" | "os_trash" | "permanent" | "never"
-  _set("diskDeleteSync",         "auto"); // "auto" | "never"
+  _set("diskDeleteOnTrash",      "ask");  // "ask" | "os_trash" | "permanent" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
+  _set("diskDeleteSync",         "auto"); // "auto" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
+
+  // v2.0 sync model — sync root + mode
+  _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured.
+  _set("syncRootLibraryID",      1);       // Default = user library. Forward-compat for group libraries.
+  _set("mode",                   "mode1"); // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
+  _set("setupCompleted",         false);   // Gates whether the normal poll loop runs; setup wizard runs until true.
+  _set("localTrashFolderName",   ".zotero-watch-trash"); // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
+
+  // File naming settings
   _set("renamePattern",          "{firstCreator} - {year} - {title}");
   _set("maxFilenameLength",      150);
   _set("autoRename",             true);
+
+  // Duplicate detection
   _set("duplicateCheck",         true);
   _set("duplicateMatchDOI",      true);
   _set("duplicateMatchISBN",     true);
@@ -114,14 +126,12 @@ function _initDefaultPrefs() {
   _set("duplicateTitleThreshold",85);   // stored as int, 0.85 * 100
   _set("duplicateMatchHash",     true);
   _set("duplicateAction",        "skip");
+
+  // Smart rules (Phase 3)
   _set("smartRulesEnabled",      false);
   _set("smartRules",             "[]");
+
+  // Performance
   _set("adaptivePolling",        true);
   _set("maxConcurrentMetadata",  2);
-  _set("collectionSyncEnabled",  false);
-  _set("mirrorPath",             "");
-  _set("mirrorRootCollection",   "");
-  _set("mirrorPollInterval",     10);
-  _set("bidirectionalSync",      false);
-  _set("conflictResolution",     "last");
 }
