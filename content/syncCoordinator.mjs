@@ -28,6 +28,7 @@
 
 import { getPref } from './utils.mjs';
 import * as collectionWatcher from './collectionWatcher.mjs';
+import * as itemAddHandler from './itemAddHandler.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import * as folderEventDetector from './folderEventDetector.mjs';
 import * as baseline from './baseline.mjs';
@@ -109,6 +110,9 @@ export class SyncCoordinator {
     // MirrorActions to mirrorExecutor.execute() per A4. itemMembershipHandler
     // is invoked from inside collectionWatcher for collection-item events.
     collectionWatcher.start(this);
+    // A8 fix: subscribe to item-add events so late-attached PDFs (added
+    // to a parent already in the sync root) get copied locally.
+    itemAddHandler.start(this);
     this._running = true;
     Zotero.debug(`[WatchFolder] SyncCoordinator: started in ${mode}`);
   }
@@ -117,6 +121,8 @@ export class SyncCoordinator {
     if (!this._running) return;
     try { collectionWatcher.stop(); }
     catch (e) { Zotero.logError(`[WatchFolder] SyncCoordinator.stop collectionWatcher: ${e?.message ?? e}`); }
+    try { itemAddHandler.stop(); }
+    catch (e) { Zotero.logError(`[WatchFolder] SyncCoordinator.stop itemAddHandler: ${e?.message ?? e}`); }
     this._running = false;
     Zotero.debug('[WatchFolder] SyncCoordinator: stopped');
   }
@@ -147,6 +153,7 @@ export class SyncCoordinator {
   destroy() {
     try {
       try { collectionWatcher.stop(); } catch (_e) { /* best effort */ }
+      try { itemAddHandler.stop(); } catch (_e) { /* best effort */ }
       try { mirrorExecutor.reset(); } catch (_e) { /* best effort */ }
       this._running = false;
       this._initialized = false;

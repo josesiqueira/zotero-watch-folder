@@ -30,9 +30,11 @@
  * @module collectionWatcher
  */
 
-import { collectionKeyToRelativePath, isSpecialCollection } from './canonicalPath.mjs';
+import { collectionKeyToRelativePath, isSpecialCollection, resolveSyncRoot } from './canonicalPath.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { handleCollectionItemEvent } from './itemMembershipHandler.mjs';
+import * as baseline from './baseline.mjs';
+import { getPref } from './utils.mjs';
 
 /**
  * @typedef {Object} MirrorAction
@@ -157,6 +159,14 @@ async function _handleAdd(collection, relPath) {
   // session (i.e., the prefs picker just made it). Nothing to mkdir for the
   // sync root because the watch-folder root already exists on disk.
   if (relPath === '') return;
+  // If the freshly-added collection already has child items / subcollections
+  // (e.g. a populated tree was moved into sync root), route through the
+  // adopt-into-scope baseline so existing attachments get copied to disk
+  // — not just an empty mkdir (review finding A4).
+  if (_collectionHasContent(collection)) {
+    await _adoptIntoScope(collection);
+    return;
+  }
   await _emit({
     type: 'createFolder',
     payload: {
@@ -166,6 +176,19 @@ async function _handleAdd(collection, relPath) {
       name: collection.name,
     },
   });
+}
+
+function _collectionHasContent(collection) {
+  try {
+    const items = (typeof collection.getChildItems === 'function')
+      ? (collection.getChildItems(false, false) || [])
+      : [];
+    if (items.length > 0) return true;
+    const children = (typeof Zotero.Collections.getByParent === 'function')
+      ? (Zotero.Collections.getByParent(collection.id, collection.libraryID) || [])
+      : [];
+    return children.length > 0;
+  } catch (_e) { return false; }
 }
 
 async function _handleModify(collection, currentRelPath) {
@@ -178,17 +201,11 @@ async function _handleModify(collection, currentRelPath) {
   if (!record) {
     // Untracked: looks like Zotero just took ownership of a collection
     // that's now under our sync root (e.g., user moved an existing
-    // collection INTO the sync root). Treat as create.
+    // collection INTO the sync root). Adopt the whole subtree —
+    // mkdir the folders + copy any existing attachment files so the
+    // local view matches Zotero (review finding A4).
     if (currentRelPath === '') return;
-    await _emit({
-      type: 'createFolder',
-      payload: {
-        collectionKey: collection.key,
-        parentCollectionKey: _parentKeyOf(collection),
-        relativePath: currentRelPath,
-        name: collection.name,
-      },
-    });
+    await _adoptIntoScope(collection);
     return;
   }
   if (record.localPath === currentRelPath) return; // no-op modify
@@ -219,6 +236,37 @@ async function _handleDelete(id, extraData) {
       oldRelativePath: record.localPath,
     },
   });
+}
+
+/**
+ * A collection just appeared (or moved) into the sync root with
+ * existing content. mkdir the directory tree on disk AND copy any
+ * existing Zotero attachments to their canonical local paths. Uses
+ * `baseline.adoptCollectionSubtree` so behavior matches the install-
+ * time B.2 + B.6 path.
+ */
+async function _adoptIntoScope(collection) {
+  if (!_store) return;
+  let syncRoot;
+  try { syncRoot = await resolveSyncRoot(); }
+  catch (e) {
+    Zotero.logError(`[WatchFolder] collectionWatcher adopt: ${e?.message ?? e}`);
+    return;
+  }
+  if (!syncRoot) return;
+  const watchRoot = getPref('sourcePath');
+  if (!watchRoot) return;
+  try {
+    const result = await baseline.adoptCollectionSubtree({
+      rootCollection: collection,
+      syncRoot,
+      watchRoot,
+      store: _store,
+    });
+    Zotero.debug(`[WatchFolder] collectionWatcher: adopted ${collection.key} into scope (copies=${result.copies} mkdirs=${result.mkdirs} errors=${result.errors})`);
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] collectionWatcher adopt failed: ${e?.message ?? e}`);
+  }
 }
 
 function _parentKeyOf(collection) {

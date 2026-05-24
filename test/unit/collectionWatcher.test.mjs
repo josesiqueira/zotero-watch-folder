@@ -22,9 +22,13 @@ vi.mock('../../content/mirrorExecutor.mjs', () => ({
 vi.mock('../../content/itemMembershipHandler.mjs', () => ({
   handleCollectionItemEvent: vi.fn(async () => {}),
 }));
+vi.mock('../../content/baseline.mjs', () => ({
+  adoptCollectionSubtree: vi.fn(async () => ({ ok: true, copies: 0, mkdirs: 0, errors: 0 })),
+}));
 
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import { handleCollectionItemEvent } from '../../content/itemMembershipHandler.mjs';
+import * as baseline from '../../content/baseline.mjs';
 import { start, stop, _isRegistered } from '../../content/collectionWatcher.mjs';
 
 // ─── Test fixtures ─────────────────────────────────────────────────────────
@@ -160,6 +164,29 @@ describe('UT-302: collection add → createFolder under sync root', () => {
   });
 });
 
+// ─── UT-310 (A4 fix) ───────────────────────────────────────────────────────
+
+describe('UT-310: add on a populated collection → adopt-into-scope', () => {
+  it('routes through baseline when the new collection already has child items', async () => {
+    const sub = {
+      id: 200, key: 'SUB1', name: 'Methods', libraryID: 1, parentID: 100,
+      // Pretend the collection has one item — triggers the content-has check.
+      getChildItems: () => [{ key: 'I1' }],
+    };
+    makeCollectionRegistry([SYNC_ROOT, sub]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1, sourcePath: '/watch' });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    await getObs().notify('add', 'collection', [200], {});
+
+    expect(baseline.adoptCollectionSubtree).toHaveBeenCalledTimes(1);
+    expect(baseline.adoptCollectionSubtree.mock.calls[0][0].rootCollection.key).toBe('SUB1');
+    // Plain createFolder NOT emitted — baseline owns mkdir + copies.
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
 // ─── UT-303 ────────────────────────────────────────────────────────────────
 
 describe('UT-303: collection add → ignored when out-of-scope', () => {
@@ -268,19 +295,22 @@ describe('UT-306: collection modify with no path change → no emit', () => {
 
 // ─── UT-307 ────────────────────────────────────────────────────────────────
 
-describe('UT-307: modify on untracked under-root collection → createFolder', () => {
-  it('treats as adopt-into-scope when no tracking record exists', async () => {
+describe('UT-307: modify on untracked under-root collection → adopt-into-scope', () => {
+  it('routes through baseline.adoptCollectionSubtree (does NOT emit createFolder)', async () => {
     const sub = { id: 200, key: 'SUB1', name: 'Methods', libraryID: 1, parentID: 100 };
     makeCollectionRegistry([SYNC_ROOT, sub]);
-    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1, sourcePath: '/watch' });
 
     const getObs = captureObserverID();
     start(makeCoordinator(makeStore())); // empty store
     await getObs().notify('modify', 'collection', [200], {});
 
-    const action = mirrorExecutor.execute.mock.calls[0][0];
-    expect(action.type).toBe('createFolder');
-    expect(action.payload.relativePath).toBe('Methods');
+    expect(baseline.adoptCollectionSubtree).toHaveBeenCalledTimes(1);
+    const args = baseline.adoptCollectionSubtree.mock.calls[0][0];
+    expect(args.rootCollection.key).toBe('SUB1');
+    expect(args.watchRoot).toBe('/watch');
+    // createFolder is NOT emitted — adoptCollectionSubtree owns the mkdir.
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
   });
 });
 
