@@ -11,6 +11,7 @@ import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from '
 import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
+import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import {
   resolveSyncRoot,
   relativePathToCollection,
@@ -508,21 +509,65 @@ export class WatchFolderService {
               Zotero.debug(`[WatchFolder] Duplicate detected (${duplicateResult.reason}), skipping: ${filePath}`);
               const existing = duplicateResult.existingItem;
               if (this._trackingStore && existing) {
-                this._trackingStore.add(createFileRecord({
-                  localPath: filePath,
-                  canonicalLocalPath: filePath,
-                  lastSyncedHash: hash,
-                  lastSyncedSize,
-                  lastSyncedMtime,
-                  zoteroItemKey: existing.parentItem?.key ?? existing.key,
-                  zoteroAttachmentKey: existing.key,
-                  canonicalCollectionKey,
-                  collectionMembershipKeys: [canonicalCollectionKey],
-                  state: STATE.CLEAN,
-                }));
-                await this._trackingStore.save();
+                // BUG #29 fix: `existing` is typically the PARENT item
+                // (Extra-field hash stamps live on the parent), so
+                // `existing.key` is the parent's key — NOT the attachment's.
+                // Walk the parent's attachments and find the one whose
+                // file actually has the matching hash. If `existing` is
+                // already an attachment, use it directly.
+                let attachment = null;
+                let parentKey = null;
+                if (existing.isAttachment && existing.isAttachment()) {
+                  attachment = existing;
+                  parentKey = existing.parentItem?.key ?? null;
+                } else {
+                  // Parent item — walk children to find the matching attachment.
+                  parentKey = existing.key;
+                  const attIDs = (typeof existing.getAttachments === 'function')
+                    ? (existing.getAttachments() || []) : [];
+                  for (const aid of attIDs) {
+                    const att = Zotero.Items.get(aid);
+                    if (!att || !att.isAttachment || !att.isAttachment()) continue;
+                    let attPath = null;
+                    try { attPath = await att.getFilePathAsync(); }
+                    catch (_e) { continue; }
+                    if (!attPath) continue;
+                    const attHash = await getFileHash(attPath);
+                    if (attHash === hash) { attachment = att; break; }
+                  }
+                  // Fallback: if no child attachment hash matched (e.g. file
+                  // sync pending), use the first attachment if there's
+                  // exactly one. Otherwise we can't safely pick.
+                  if (!attachment && attIDs.length === 1) {
+                    const sole = Zotero.Items.get(attIDs[0]);
+                    if (sole?.isAttachment?.()) attachment = sole;
+                  }
+                }
+                if (attachment) {
+                  this._trackingStore.add(createFileRecord({
+                    localPath: filePath,
+                    canonicalLocalPath: filePath,
+                    lastSyncedHash: hash,
+                    lastSyncedSize,
+                    lastSyncedMtime,
+                    zoteroItemKey: parentKey,
+                    zoteroAttachmentKey: attachment.key,
+                    canonicalCollectionKey,
+                    collectionMembershipKeys: [canonicalCollectionKey],
+                    state: STATE.CLEAN,
+                  }));
+                  await this._trackingStore.save();
+                  return; // skip the import — duplicate handled
+                }
+                // Couldn't resolve the matching attachment — better to
+                // log + fall through to normal import than to store a
+                // record with the WRONG attachment key.
+                Zotero.debug(`[WatchFolder] Dedup-skip: couldn't resolve attachment for parent ${existing.key} (children=${(existing.getAttachments?.() || []).length}); falling through to import.`);
+              } else {
+                // No tracking-store or no existing item — preserve legacy
+                // skip behavior (no record, no import).
+                return;
               }
-              return;
             }
             Zotero.debug(`[WatchFolder] Duplicate detected but importing anyway (action: ${action}): ${filePath}`);
           }
@@ -1415,22 +1460,37 @@ export class WatchFolderService {
     }
 
     // ── Trash branch ──────────────────────────────────────────────────────
-    // v2.0 / Mode 1: never propagate disk deletions to Zotero. Just mark
+    // Mode 1 + Mode 2: never propagate disk deletions to Zotero. Mark
     // the tracking record as `missing` so subsequent scans don't re-detect
-    // and the user can decide what to do.
+    // and the user can resolve via the suppression UX. Mode 2 also emits
+    // a warningSink entry so the user sees the event (bug #33 fix —
+    // previously the Mode-3 modal alert fired in Mode 2 too, blocking
+    // the bridge and creating modal popups for every deleted file).
     const mode = getPref('mode') || 'mode1';
-    if (mode === 'mode1') {
+    if (mode !== 'mode3') {
       for (const record of stillMissing) {
         this._trackingStore.update(record.localPath, { state: STATE.MISSING });
-        Zotero.debug(`[WatchFolder] Mode 1: ${record.localPath} missing from disk — marked, not trashed`);
+        if (mode === 'mode2') {
+          try {
+            reportWarning({
+              category: WARNING_CATEGORY.MISSING_FILE,
+              actionType: 'external-deletion',
+              attachmentKey: record.zoteroAttachmentKey,
+              path: record.localPath,
+              reason: 'disk-deleted',
+              message: `File "${record.localPath}" disappeared from disk — Mode 2 keeps Zotero item; mark as missing.`,
+            });
+          } catch (_e) { /* sink unavailable — debug log only */ }
+        }
+        Zotero.debug(`[WatchFolder] ${mode}: ${record.localPath} missing from disk — marked, not trashed`);
       }
       try { await this._trackingStore.save(); } catch (_) {}
       return;
     }
 
-    // v2.1 / v2.2 take over here. The body below still needs updating to
-    // use the v2 schema + safe-delete predicate; v2.1's B4 work will do
-    // that. For now it's unreachable in Mode 1.
+    // Mode 3 — safe-delete propagation (v2.2). Body still references v1
+    // schema in spots; v2.2's B4 rewrite will tighten it. The cascading-
+    // trash bug from CLAUDE.md must be addressed before Mode 3 ships.
     Zotero.debug(`[WatchFolder] Detected ${stillMissing.length} externally-deleted file(s) (mode=${mode})`);
     const trashed = [];
     for (const record of stillMissing) {

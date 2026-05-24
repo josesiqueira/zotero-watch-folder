@@ -292,8 +292,17 @@ export const hooks = {
             watchFolderService.setSyncCoordinator(syncCoordinator);
 
             if (getPref("enabled")) {
-                await watchFolderService.startWatching();
+                // Order matters: coordinator.start() runs the install-time
+                // baseline (B.2/B.6/B.7) before collectionWatcher registers.
+                // Must precede watchFolderService.startWatching() — the
+                // first scan would otherwise process disk files through
+                // the Mode-1 import flow, beating baseline to creating
+                // sub-collections + tracking records and causing
+                // duplicate-copy outcomes (live BASE.3 / bug #30).
+                // In Mode 1 coordinator.start() short-circuits, so this
+                // is a no-op for Mode 1 users (no extra latency).
                 await syncCoordinator.start();
+                await watchFolderService.startWatching();
             }
 
             Zotero.debug("Zotero Watch Folder: Started successfully");

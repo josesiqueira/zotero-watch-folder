@@ -227,7 +227,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
   }
   let copies = 0, mkdirs = 0, errors = 0, reconciles = 0;
   try {
-    const { collections, attachments } = _enumerateFrom(rootCollection, syncRoot);
+    const { collections, attachments } = await _enumerateFrom(rootCollection, syncRoot);
     // Adopt uses the same B.7 reconcile as the install-time baseline:
     // if disk already has the bytes elsewhere, link instead of duplicate.
     // Caller may pre-supply an index (e.g. shared across many adopt calls
@@ -448,20 +448,31 @@ async function _adoptExistingDestFile({ attachment, item, canonical, relPath, ab
 /**
  * Walk just the subtree rooted at `rootCollection` (which may be any
  * collection under the sync root, including `syncRoot.collection`
- * itself). Sync-version of _enumerateUnderSyncRoot, scoped narrower.
+ * itself). Scoped variant of _enumerateUnderSyncRoot — both are async
+ * because we force-load collection child items before reading them
+ * (Zotero's _childItems cache can be stale after a plugin reload).
  *
- * @returns {{collections: Array, attachments: Array<{attachment, item}>}}
+ * @returns {Promise<{collections: Array, attachments: Array<{attachment, item}>}>}
  */
-function _enumerateFrom(rootCollection, syncRoot) {
+async function _enumerateFrom(rootCollection, syncRoot) {
   const collections = [];
   const attachmentMap = new Map();
   const libraryID = syncRoot.libraryID;
   const visited = new Set();
 
-  const walk = (collection) => {
+  const walk = async (collection) => {
     if (visited.has(collection.id)) return;
     visited.add(collection.id);
     if (collection.key !== syncRoot.collection.key) collections.push(collection);
+
+    // Force-load child items: after a plugin reload Zotero's
+    // Collection._childItems cache can be empty even when collectionItems
+    // DB rows exist. getChildItems would then return []. loadAllData(true)
+    // refreshes from DB.
+    if (typeof collection.loadAllData === 'function') {
+      try { await collection.loadAllData(true); }
+      catch (_e) { /* best effort — fall through to getChildItems */ }
+    }
 
     const items = (typeof collection.getChildItems === 'function')
       ? (collection.getChildItems(false, false) || [])
@@ -484,10 +495,10 @@ function _enumerateFrom(rootCollection, syncRoot) {
     const children = Zotero.Collections.getByParent(collection.id, libraryID) || [];
     for (const child of children) {
       if (isSpecialCollection(child)) continue;
-      walk(child);
+      await walk(child);
     }
   };
-  walk(rootCollection);
+  await walk(rootCollection);
   return { collections, attachments: Array.from(attachmentMap.values()) };
 }
 
@@ -502,10 +513,16 @@ async function _enumerateUnderSyncRoot(syncRoot) {
   const libraryID = syncRoot.libraryID;
   const visited = new Set();
 
-  const walk = (collection) => {
+  const walk = async (collection) => {
     if (visited.has(collection.id)) return;
     visited.add(collection.id);
     if (collection.key !== syncRoot.collection.key) collections.push(collection);
+
+    // Force-load child items — same staleness rationale as _enumerateFrom.
+    if (typeof collection.loadAllData === 'function') {
+      try { await collection.loadAllData(true); }
+      catch (_e) { /* best effort */ }
+    }
 
     const items = (typeof collection.getChildItems === 'function')
       ? (collection.getChildItems(false, false) || [])
@@ -529,11 +546,11 @@ async function _enumerateUnderSyncRoot(syncRoot) {
     const children = Zotero.Collections.getByParent(collection.id, libraryID) || [];
     for (const child of children) {
       if (isSpecialCollection(child)) continue;
-      walk(child);
+      await walk(child);
     }
   };
 
-  walk(syncRoot.collection);
+  await walk(syncRoot.collection);
   return { collections, attachments: Array.from(attachmentMap.values()) };
 }
 
