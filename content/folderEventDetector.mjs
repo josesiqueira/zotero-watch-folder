@@ -1,42 +1,85 @@
 /**
- * Folder Event Detector — v2.1 Phase A2 skeleton.
+ * Folder Event Detector — v2.1 Phase A2.
  *
- * Disk-side counterpart to `collectionWatcher`. Detects:
- *   - folderCreated (new directory under sync root not yet tracked)
- *   - folderRenamed (B2's logic now in `_detectFolderRenames` — Mode 2
- *     can subscribe to it via this module's pub/sub or call it directly)
- *   - folderDeleted (tracked collection's localPath disappeared)
+ * Disk-side counterpart to `collectionWatcher` (A1). Runs once per scan
+ * cycle (driven by `watchFolder._scan` via `syncCoordinator.notifyScanCycle`)
+ * and detects folder DELETIONS — tracked `CollectionRecord`s whose
+ * `localPath` is no longer on disk.
  *
- * Implementation note: piggybacks on the existing poll loop in
- * `watchFolder.mjs:_scan` rather than spawning a second timer. The v1
- * Phase-2 code had a separate `mirrorPollInterval` timer that doubled
- * disk-IO budget; v2.1 doesn't repeat that mistake.
+ * Why only deletions in v2.1:
+ *   - folder RENAMES are already handled by `_detectFolderRenames` in
+ *     watchFolder.mjs (Phase B2). That path runs earlier in the scan
+ *     and updates collection records so this detector sees a consistent
+ *     state.
+ *   - folder CREATES are already handled by
+ *     `_ensureCollectionsForExistingFolders` (Phase B5), which calls
+ *     `relativePathToCollection({ createIfMissing: true })` and persists
+ *     a `CollectionRecord`. By the time A2 runs, any new disk dir has
+ *     been turned into a tracked collection.
  *
- * The plan calls for emitting events to mirrorExecutor like
- * collectionWatcher does for symmetry. For Mode 1 these events fire but
- * the executor stays disabled (mode gate).
- *
- * Not implemented in this v2.1 starter.
+ * The detector emits `deleteFolder` MirrorActions to `mirrorExecutor`,
+ * which applies the mode-appropriate policy: Mode 2 flips the record's
+ * state to `out-of-scope-suppressed` (warn-only); Mode 3 (v2.2) will
+ * trash via `.zotero-watch-trash/`.
  *
  * @module folderEventDetector
  */
 
+import * as mirrorExecutor from './mirrorExecutor.mjs';
+
 /**
- * Run the disk diff against the tracked collection records. Called from
- * `watchFolder._scan` once per cycle. The skeleton no-ops; v2.1 fills in
- * the diff + event emission.
+ * Run the disk diff against the tracked collection records.
  *
- * @param {Array<{path: string}>} scannedFiles
- * @param {string} watchPath
- * @param {object} coordinator
+ * @param {Object} ctx
+ * @param {import('./trackingStore.mjs').TrackingStore} ctx.trackingStore
+ * @param {Set<string>} ctx.onDiskAbsDirs - Absolute paths of all dirs under
+ *   the watch root (already enumerated by the caller — see
+ *   `watchFolder._listSubdirectories`).
+ * @param {string} ctx.watchRoot - Absolute watch-folder root.
  */
-export async function detectFolderEvents(scannedFiles, watchPath, coordinator) {
-  // TODO(v2.1):
-  // 1. List all on-disk dirs under watchPath (use watchFolder._listSubdirectories)
-  // 2. Compare against trackingStore.getAllOfType('collection'):
-  //    - on disk + no record → folderCreated
-  //    - record + no disk    → folderDeleted (or folderRenamed — but
-  //                            B2 already handles the rename case)
-  // 3. Emit MirrorAction to mirrorExecutor via coordinator
-  void scannedFiles; void watchPath; void coordinator;
+export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRoot }) {
+  if (!trackingStore || !watchRoot) return;
+  const dirSet = onDiskAbsDirs instanceof Set ? onDiskAbsDirs : new Set(onDiskAbsDirs || []);
+
+  const records = trackingStore.getAllOfType('collection');
+  if (records.length === 0) return;
+
+  for (const rec of records) {
+    if (!rec || typeof rec.localPath !== 'string' || rec.localPath === '') continue;
+    // Skip v1-era absolute-path records. The v1 `_ensureCollectionsFor
+    // ExistingFolders` wrote `localPath: absDir`; v2 records use
+    // sync-root-relative paths. Migrating v1 stragglers is out of A2
+    // scope — they're effectively invisible to this detector.
+    if (rec.localPath.startsWith('/')) continue;
+
+    const absPath = _toAbs(watchRoot, rec.localPath);
+    if (dirSet.has(absPath)) continue;
+
+    // Fallback existence check — the caller's dir set may be capped at
+    // a max depth that misses very-deep records.
+    let exists = false;
+    try { exists = await IOUtils.exists(absPath); }
+    catch (_e) { exists = false; }
+    if (exists) continue;
+
+    Zotero.debug(`[WatchFolder] folderEventDetector: tracked collection missing on disk → deleteFolder (${rec.localPath})`);
+    try {
+      await mirrorExecutor.execute({
+        type: 'deleteFolder',
+        payload: {
+          collectionKey: rec.zoteroCollectionKey,
+          oldRelativePath: rec.localPath,
+        },
+      });
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] folderEventDetector emit deleteFolder ${rec.localPath}: ${e?.message ?? e}`);
+    }
+  }
+}
+
+function _toAbs(root, rel) {
+  if (!rel) return root;
+  const segs = rel.split('/').filter((s) => s.trim() !== '');
+  if (segs.length === 0) return root;
+  return PathUtils.join(root, ...segs);
 }

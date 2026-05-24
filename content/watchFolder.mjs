@@ -65,6 +65,9 @@ export class WatchFolderService {
 
     /** @type {Object|null} Reference to MetadataRetriever for post-import processing */
     this._metadataRetriever = null;
+
+    /** @type {Object|null} Reference to SyncCoordinator for v2.1 scan-cycle bridge */
+    this._syncCoordinator = null;
   }
 
   /**
@@ -74,6 +77,17 @@ export class WatchFolderService {
   setMetadataRetriever(retriever) {
     this._metadataRetriever = retriever;
     Zotero.debug('[WatchFolder] MetadataRetriever connected');
+  }
+
+  /**
+   * Set the v2.1 SyncCoordinator so the scan loop can notify it once per
+   * cycle (Phase A2's folderEventDetector hook). The coordinator stays
+   * idle in Mode 1; the hook is a no-op until Mode 2/3.
+   * @param {Object} coordinator - SyncCoordinator instance
+   */
+  setSyncCoordinator(coordinator) {
+    this._syncCoordinator = coordinator;
+    Zotero.debug('[WatchFolder] SyncCoordinator connected');
   }
 
   /**
@@ -289,6 +303,25 @@ export class WatchFolderService {
         await this._ensureCollectionsForExistingFolders(watchPath);
       } catch (e) {
         Zotero.debug(`[WatchFolder] Empty-folder pickup failed: ${e.message}`);
+      }
+
+      // ── A2 — folderEventDetector hook ────────────────────────────────
+      // Bridge the scan cycle into the v2.1 sync pipeline. The coordinator
+      // is idle in Mode 1, so this is a no-op there. In Mode 2/3 it lets
+      // the detector emit deleteFolder MirrorActions for tracked
+      // collections whose disk path vanished. Runs AFTER folder-rename
+      // and empty-folder pickup so the disk-side view is settled.
+      if (this._syncCoordinator) {
+        try {
+          const onDiskAbsDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
+          await this._syncCoordinator.notifyScanCycle({
+            scannedFiles: files,
+            onDiskAbsDirs,
+            watchRoot: watchPath,
+          });
+        } catch (e) {
+          Zotero.debug(`[WatchFolder] SyncCoordinator scan-cycle notify failed: ${e.message}`);
+        }
       }
 
       // Detect externally-deleted files vs file-moves. A "move" is when a

@@ -125,6 +125,8 @@ export const hooks = {
             // tracking store with WatchFolderService. Stays idle in Mode 1.
             syncCoordinator = getSyncCoordinator();
             await syncCoordinator.init(watchFolderService._trackingStore);
+            // A2: bridge the scan loop into the coordinator (no-op in Mode 1).
+            watchFolderService.setSyncCoordinator(syncCoordinator);
 
             if (getPref("enabled")) {
                 await watchFolderService.startWatching();

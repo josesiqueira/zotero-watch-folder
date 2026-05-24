@@ -29,6 +29,7 @@
 import { getPref } from './utils.mjs';
 import * as collectionWatcher from './collectionWatcher.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
+import * as folderEventDetector from './folderEventDetector.mjs';
 
 let _instance = null;
 
@@ -110,6 +111,29 @@ export class SyncCoordinator {
     catch (e) { Zotero.logError(`[WatchFolder] SyncCoordinator.stop collectionWatcher: ${e?.message ?? e}`); }
     this._running = false;
     Zotero.debug('[WatchFolder] SyncCoordinator: stopped');
+  }
+
+  /**
+   * Called by `WatchFolderService._scan` once per scan cycle. Bridges the
+   * disk-side scan into the Mode 2/3 sync pipeline (A2). No-op when the
+   * coordinator hasn't been started (Mode 1, or pre-start).
+   *
+   * @param {Object} ctx
+   * @param {Array<{path: string}>} ctx.scannedFiles
+   * @param {Set<string>} ctx.onDiskAbsDirs - Absolute dir paths under watchRoot.
+   * @param {string} ctx.watchRoot
+   */
+  async notifyScanCycle(ctx) {
+    if (!this._running) return;
+    try {
+      await folderEventDetector.detectFolderEvents({
+        trackingStore: this._trackingStore,
+        onDiskAbsDirs: ctx?.onDiskAbsDirs,
+        watchRoot: ctx?.watchRoot,
+      });
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] SyncCoordinator.notifyScanCycle: ${e?.message ?? e}`);
+    }
   }
 
   destroy() {
