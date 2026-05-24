@@ -29,6 +29,7 @@
 import { getPref, getFileHash } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
+import { collectionKeyToRelativePath } from './canonicalPath.mjs';
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;
@@ -157,14 +158,27 @@ function _watchRoot() {
 }
 
 /**
- * Resolve a forward-slash-joined relative path under the watch root into a
- * platform-native absolute path. Empty / null relative paths return the
- * watch-root path itself.
+ * Resolve a "path-like" value (relative-to-watchRoot OR already absolute)
+ * into a platform-native absolute path. Idempotent — an already-absolute
+ * input is returned unchanged. Empty / null returns the watch-root.
+ *
+ * v2 spec says CollectionRecord.localPath / FileRecord.localPath +
+ * canonicalLocalPath are sync-root-relative. But watchFolder._processNewFile
+ * (and related legacy code) still write absolute paths to those fields
+ * (schema-drift bug tracked separately). Until that gets migrated, this
+ * function tolerates both representations so the executor doesn't
+ * double-join — which would produce paths like
+ * `/watch//tmp/watch/file.pdf` and surface as bogus missing-file errors
+ * (seen live during CONF.1).
  */
-function _absPath(relPath) {
+function _absPath(relOrAbs) {
   const root = _watchRoot();
-  if (!relPath || relPath === '') return root;
-  const segments = relPath.split('/').filter((s) => s.trim() !== '');
+  if (!relOrAbs || relOrAbs === '') return root;
+  // Already absolute? POSIX uses leading '/', Windows uses 'C:\…' or
+  // 'C:/…'. Return as-is rather than joining with the watch root.
+  if (relOrAbs.startsWith('/')) return relOrAbs;
+  if (/^[A-Za-z]:[\\/]/.test(relOrAbs)) return relOrAbs;
+  const segments = relOrAbs.split('/').filter((s) => s.trim() !== '');
   if (segments.length === 0) return root;
   return PathUtils.join(root, ...segments);
 }
@@ -516,12 +530,20 @@ async function _removeItemMembership(payload) {
       return { ok: true, reason: 'no-op' };
     }
     const updates = { collectionMembershipKeys: next };
-    // If we just removed the last sync-root membership, mark suppressed so
-    // the user can resolve via the suppression UX (Phase B). Also clear
-    // canonicalCollectionKey unconditionally — leaving the removed key in
-    // place would mislead suppressionResolver._reinstate + A3 recompute
-    // into treating a now-vanished collection as authoritative.
-    if (next.length === 0) {
+    // Suppression decision must be based on SYNC-ROOT memberships only.
+    // Per spec: "Remove `paper-a` from all collections UNDER THE SYNC ROOT
+    // → Treat as out-of-scope". If the item still lives in (e.g.) Inbox
+    // outside the sync root, that doesn't count toward "still synced" —
+    // the plugin should still suppress because no sync-root collection
+    // references it anymore. Bug discovered live in SUPP.1 MCP run.
+    let syncRootMembershipsRemaining = 0;
+    for (const k of next) {
+      try {
+        const rel = await collectionKeyToRelativePath(k);
+        if (rel !== null) syncRootMembershipsRemaining++;
+      } catch (_e) { /* sync-root unresolvable — skip count */ }
+    }
+    if (syncRootMembershipsRemaining === 0) {
       updates.state = STATE.OUT_OF_SCOPE_SUPPRESSED;
       if (rec.canonicalCollectionKey) {
         updates.canonicalCollectionKey = null;
@@ -532,14 +554,14 @@ async function _removeItemMembership(payload) {
     }
     _store.update(rec.localPath, updates);
     try { await _store.save(); } catch (_e) { /* logged */ }
-    if (next.length === 0) {
+    if (syncRootMembershipsRemaining === 0) {
       reportWarning({
         category: WARNING_CATEGORY.SUPPRESSED,
         actionType: 'removeItemMembership',
         attachmentKey,
         collectionKey,
         path: rec.localPath,
-        reason: 'last-membership-removed',
+        reason: 'last-sync-root-membership-removed',
         message: `Item "${rec.localPath}" lost its last sync-root membership — local file kept, sync paused`,
       });
     }

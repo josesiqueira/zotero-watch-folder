@@ -5,7 +5,7 @@
  *   UT-601 emits deleteFolder for tracked collections missing on disk
  *   UT-602 leaves on-disk tracked collections alone
  *   UT-603 falls back to IOUtils.exists when dir set is incomplete
- *   UT-604 skips v1-era absolute-path records
+ *   UT-604 absolute-path records work the same as relative (idempotent _toAbs)
  *   UT-605 no-op when there are no collection records
  *   UT-606 tolerates falsy / malformed records
  */
@@ -105,8 +105,8 @@ describe('UT-603: IOUtils.exists fallback when dir set is incomplete', () => {
 
 // ─── UT-604 ────────────────────────────────────────────────────────────────
 
-describe('UT-604: skips v1-era absolute-path records', () => {
-  it('does not act on records where localPath starts with /', async () => {
+describe('UT-604: absolute-path records work via idempotent _toAbs', () => {
+  it('emits deleteFolder when the legacy absolute path is missing on disk', async () => {
     const records = [
       { type: 'collection', zoteroCollectionKey: 'V1', localPath: '/watch/V1Path', state: 'clean' },
     ];
@@ -115,8 +115,26 @@ describe('UT-604: skips v1-era absolute-path records', () => {
       onDiskAbsDirs: new Set(['/watch']),
       watchRoot: '/watch',
     });
+    // Now that the schema-drift skip is gone, the detector resolves
+    // /watch/V1Path → /watch/V1Path (idempotent), sees it's NOT in the
+    // dirSet + fallback exists returns false → emits deleteFolder.
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0]).toMatchObject({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'V1' },
+    });
+  });
+
+  it('does NOT emit when the absolute path is in the dirSet', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'V1', localPath: '/watch/V1Path', state: 'clean' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch', '/watch/V1Path']),
+      watchRoot: '/watch',
+    });
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
-    expect(IOUtils.exists).not.toHaveBeenCalled();
   });
 });
 

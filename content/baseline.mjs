@@ -584,8 +584,16 @@ async function _attachmentContentHash(attachment) {
   return getFileHash(srcPath);
 }
 
+/**
+ * Idempotent path resolver — see `_absPath` in mirrorExecutor.mjs for
+ * the rationale. v2 records SHOULD store sync-root-relative paths, but
+ * watchFolder.mjs legacy writers still emit absolute paths; this helper
+ * tolerates both so we don't double-join.
+ */
 function _toAbs(root, rel) {
   if (!rel) return root;
+  if (rel.startsWith('/')) return rel;
+  if (/^[A-Za-z]:[\\/]/.test(rel)) return rel;
   const segs = rel.split('/').filter((s) => s.trim() !== '');
   if (segs.length === 0) return root;
   return PathUtils.join(root, ...segs);

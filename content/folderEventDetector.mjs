@@ -47,17 +47,14 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
 
   for (const rec of records) {
     if (!rec || typeof rec.localPath !== 'string' || rec.localPath === '') continue;
-    // Skip v1-era absolute-path records. The v1 `_ensureCollectionsFor
-    // ExistingFolders` wrote `localPath: absDir`; v2 records use
-    // sync-root-relative paths. Migrating v1 stragglers is out of A2
-    // scope — they're effectively invisible to this detector.
-    if (rec.localPath.startsWith('/')) continue;
     // Idempotency guard — a CollectionRecord that's already
     // OUT_OF_SCOPE_SUPPRESSED has already been emitted to the executor
     // (and reported once). Re-emitting every scan cycle would flood the
     // warning ring buffer and rewrite tracking-v2.json on every poll.
     if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) continue;
 
+    // _toAbs is idempotent: absolute paths from legacy v1 writers AND
+    // sync-root-relative paths from v2 baseline both resolve correctly.
     const absPath = _toAbs(watchRoot, rec.localPath);
     if (dirSet.has(absPath)) continue;
 
@@ -85,6 +82,8 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
 
 function _toAbs(root, rel) {
   if (!rel) return root;
+  if (rel.startsWith('/')) return rel;
+  if (/^[A-Za-z]:[\\/]/.test(rel)) return rel;
   const segs = rel.split('/').filter((s) => s.trim() !== '');
   if (segs.length === 0) return root;
   return PathUtils.join(root, ...segs);

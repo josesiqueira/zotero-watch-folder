@@ -250,6 +250,8 @@ async function _moveOutside(record, ctx) {
 
 function _toAbs(root, rel) {
   if (!rel) return root;
+  if (rel.startsWith('/')) return rel;
+  if (/^[A-Za-z]:[\\/]/.test(rel)) return rel;
   const segs = rel.split('/').filter((s) => s.trim() !== '');
   if (segs.length === 0) return root;
   return PathUtils.join(root, ...segs);

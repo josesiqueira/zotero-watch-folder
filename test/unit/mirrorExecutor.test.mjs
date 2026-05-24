@@ -28,10 +28,20 @@ vi.mock('../../content/utils.mjs', async () => {
     }),
   };
 });
+// Mock canonicalPath so the sync-root scope filter in
+// _removeItemMembership can be controlled per test.
+vi.mock('../../content/canonicalPath.mjs', async () => {
+  const actual = await vi.importActual('../../content/canonicalPath.mjs');
+  return {
+    ...actual,
+    collectionKeyToRelativePath: vi.fn(async () => null), // default: nothing is under sync root
+  };
+});
 
 import { execute, canSafelyMove, init, reset, _getStore } from '../../content/mirrorExecutor.mjs';
 import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from '../../content/trackingStore.mjs';
 import { getFileHash, getPref } from '../../content/utils.mjs';
+import { collectionKeyToRelativePath } from '../../content/canonicalPath.mjs';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -401,7 +411,7 @@ describe('UT-409: membership updates (no IO)', () => {
     expect(result.reason).toBe('no-op');
   });
 
-  it('removeItemMembership drops the key and clears canonical when canonical', async () => {
+  it('removeItemMembership drops the key and clears canonical when canonical (C2 IS under sync root)', async () => {
     const store = await makeStore();
     store.add(createFileRecord({
       localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
@@ -409,13 +419,19 @@ describe('UT-409: membership updates (no IO)', () => {
       collectionMembershipKeys: ['C1', 'C2'], state: STATE.CLEAN,
     }));
     init({ trackingStore: store });
+    // C2 IS under the sync root → at least one sync-root membership
+    // remains → NO suppression flip; canonical cleared (it pointed at
+    // the just-removed C1).
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'C2' ? 'somewhere' : null));
     const result = await execute({
       type: 'removeItemMembership',
       payload: { attachmentKey: 'K1', collectionKey: 'C1' },
     });
     expect(result.ok).toBe(true);
-    expect(store.getByLocalPath('p.pdf').collectionMembershipKeys).toEqual(['C2']);
-    expect(store.getByLocalPath('p.pdf').canonicalCollectionKey).toBe(null);
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual(['C2']);
+    expect(rec.canonicalCollectionKey).toBe(null);
+    expect(rec.state).toBe(STATE.CLEAN); // not suppressed
   });
 
   it('removeItemMembership marks suppressed when last membership is dropped', async () => {
@@ -431,6 +447,52 @@ describe('UT-409: membership updates (no IO)', () => {
       payload: { attachmentKey: 'K1', collectionKey: 'C1' },
     });
     expect(store.getByLocalPath('p.pdf').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+});
+
+// ─── UT-415 (live MCP SUPP.1 fix) ──────────────────────────────────────────
+
+describe('UT-415: _removeItemMembership counts SYNC-ROOT memberships only', () => {
+  it('flips to suppressed when remaining membership is OUTSIDE the sync root', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      canonicalCollectionKey: 'SUB1',
+      collectionMembershipKeys: ['SUB1', 'INBOX'], state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    // SUB1 is the sync root (or under it), INBOX is outside. After
+    // removing SUB1, only INBOX remains — but that's not counted as
+    // sync-root → suppression should fire.
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? '' : null));
+
+    const result = await execute({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'SUB1' },
+    });
+    expect(result.ok).toBe(true);
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual(['INBOX']); // INBOX kept in the list
+    expect(rec.canonicalCollectionKey).toBe(null);
+    expect(rec.state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+
+  it('keeps state clean when at least one remaining membership IS under sync root', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      canonicalCollectionKey: 'SUB1',
+      collectionMembershipKeys: ['SUB1', 'SUB2'], state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    // Both SUB1 and SUB2 are under the sync root.
+    collectionKeyToRelativePath.mockImplementation(async () => 'somewhere');
+
+    await execute({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'SUB1' },
+    });
+    expect(store.getByLocalPath('p.pdf').state).toBe(STATE.CLEAN);
   });
 });
 
