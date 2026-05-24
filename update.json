@@ -5,7 +5,7 @@
         {
           "version": "2.0.0-alpha.1",
           "update_link": "https://github.com/josesiqueira/zotero-watch-folder/releases/download/v2.0.0-alpha.1/zotero-watch-folder-2.0.0-alpha.1.xpi",
-          "update_hash": "sha256:ab11bc780fb6ee10ab7e4daa22f5e9b0066fb6dcd766ae1dea603359583857ac",
+          "update_hash": "sha256:c3b7c94c4552f370b5513fca9dc3e0983a4c7dd6db8420681e1b025ef0cc3325",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999"
