@@ -66,6 +66,58 @@
     }
 
     /**
+     * Refresh the sync-warnings row from the bundle's warningSink.
+     * Hidden when there are no warnings.
+     */
+    function refreshWarningsDisplay() {
+        const row = document.getElementById('watch-folder-warnings-row');
+        const countEl = document.getElementById('watch-folder-warnings-count');
+        if (!row || !countEl) return;
+        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
+        const total = sink ? sink.getTotalCount() : 0;
+        countEl.value = String(total);
+        row.hidden = total === 0;
+    }
+
+    /**
+     * Open an alert with the recent warning entries (newest first).
+     * Caps display at the most recent 30 to keep the alert legible.
+     */
+    function viewWarnings() {
+        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
+        if (!sink) {
+            Services.prompt.alert(window, 'Watch Folder', 'Warning sink not available — plugin not fully loaded?');
+            return;
+        }
+        const recent = sink.getRecent(30);
+        if (recent.length === 0) {
+            Services.prompt.alert(window, 'Watch Folder', 'No sync warnings recorded.');
+            return;
+        }
+        const lines = recent.slice().reverse().map((w) => {
+            const ts = new Date(w.timestamp).toLocaleString();
+            const where = w.path ? ` (${w.path})` : (w.collectionKey ? ` (col ${w.collectionKey})` : '');
+            return `[${w.category}] ${ts}${where}\n  ${w.message || w.reason || ''}`;
+        });
+        const counts = sink.getCountsByCategory();
+        const summary = [...counts.entries()]
+            .map(([cat, n]) => `${cat}: ${n}`)
+            .join(' · ');
+        Services.prompt.alert(
+            window,
+            'Watch Folder — Sync warnings',
+            `Total ${sink.getTotalCount()}  (${summary})\n\n${lines.join('\n\n')}`,
+        );
+    }
+
+    function clearWarnings() {
+        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
+        if (!sink) return;
+        sink.clear();
+        refreshWarningsDisplay();
+    }
+
+    /**
      * Refresh the mode display ("Mode 1 — Import only", etc.).
      */
     function refreshModeDisplay() {
@@ -216,6 +268,7 @@
             // Sync-root + mode displays — v2.
             refreshSyncRootDisplay();
             refreshModeDisplay();
+            refreshWarningsDisplay();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
@@ -227,6 +280,8 @@
     window.WatchFolderPrefs = {
         browseForFolder,
         pickSyncRoot,
+        viewWarnings,
+        clearWarnings,
         onLoad: init,
     };
 

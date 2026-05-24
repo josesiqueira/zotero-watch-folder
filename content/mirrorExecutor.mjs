@@ -28,6 +28,7 @@
 
 import { getPref, getFileHash, HASH_CHUNK_SIZE } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
+import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 
 // HASH_CHUNK_SIZE imported so callers reading lastSyncedHash know what byte
 // budget was used. Kept in the import list to make the dependency explicit.
@@ -187,6 +188,14 @@ async function _createFolder(payload) {
       await IOUtils.makeDirectory(abs, { ignoreExisting: true, createAncestors: true });
     } catch (e) {
       Zotero.logError(`[WatchFolder] mirrorExecutor createFolder ${abs}: ${e?.message ?? e}`);
+      reportWarning({
+        category: WARNING_CATEGORY.IO_ERROR,
+        actionType: 'createFolder',
+        collectionKey,
+        path: relativePath,
+        reason: 'mkdir-failed',
+        message: `Failed to create folder "${relativePath}": ${e?.message ?? e}`,
+      });
       return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
     }
     if (_store) {
@@ -232,11 +241,29 @@ async function _moveFolder(payload) {
         await IOUtils.makeDirectory(parent, { ignoreExisting: true, createAncestors: true });
       } catch (e) {
         Zotero.logError(`[WatchFolder] mirrorExecutor moveFolder mkparent ${parent}: ${e?.message ?? e}`);
+        reportWarning({
+          category: WARNING_CATEGORY.IO_ERROR,
+          actionType: 'moveFolder',
+          collectionKey,
+          path: newRelativePath,
+          reason: 'mkparent-failed',
+          message: `Failed to create destination parent for "${newRelativePath}": ${e?.message ?? e}`,
+        });
         return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
       }
     }
     const moveResult = await _moveWithFallback(oldAbs, newAbs, /* recursive */ true);
-    if (!moveResult.ok) return moveResult;
+    if (!moveResult.ok) {
+      reportWarning({
+        category: WARNING_CATEGORY.IO_ERROR,
+        actionType: 'moveFolder',
+        collectionKey,
+        path: newRelativePath,
+        reason: moveResult.reason,
+        message: `Failed to move "${oldRelativePath}" → "${newRelativePath}": ${moveResult.error || moveResult.reason}`,
+      });
+      return moveResult;
+    }
 
     if (_store) {
       // Replace the collection record. add() handles both insert and update
@@ -294,6 +321,14 @@ async function _deleteFolder(payload) {
         try { await _store.save(); } catch (_e) { /* logged */ }
       }
     }
+    reportWarning({
+      category: WARNING_CATEGORY.SUPPRESSED,
+      actionType: 'deleteFolder',
+      collectionKey,
+      path: oldRelativePath || null,
+      reason: 'warn-only-mode2',
+      message: `Folder deletion suppressed (Mode 2): "${oldRelativePath || collectionKey}"`,
+    });
     Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath || collectionKey} suppressed (Mode 2 warn-only)`);
     return { ok: false, reason: 'warn-only-mode2' };
   });
@@ -324,6 +359,23 @@ async function _moveItem(payload) {
           if (gate.reason === 'hash-drifted') {
             _store.update(rec.localPath, { state: STATE.CONFLICT_BLOCKED });
             try { await _store.save(); } catch (_e) { /* logged */ }
+            reportWarning({
+              category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+              actionType: 'moveItem',
+              attachmentKey,
+              path: oldCanonicalPath,
+              reason: 'hash-drifted',
+              message: `Refused to move "${oldCanonicalPath}" — file was edited locally since last sync`,
+            });
+          } else if (gate.reason === 'missing-file') {
+            reportWarning({
+              category: WARNING_CATEGORY.MISSING_FILE,
+              actionType: 'moveItem',
+              attachmentKey,
+              path: oldCanonicalPath,
+              reason: 'missing-file',
+              message: `Cannot move "${oldCanonicalPath}" — file not found on disk`,
+            });
           }
           Zotero.debug(`[WatchFolder] mirrorExecutor moveItem blocked: ${gate.reason}`);
           return gate;
@@ -340,7 +392,17 @@ async function _moveItem(payload) {
       }
     }
     const moveResult = await _moveWithFallback(oldAbs, newAbs, /* recursive */ false);
-    if (!moveResult.ok) return moveResult;
+    if (!moveResult.ok) {
+      reportWarning({
+        category: WARNING_CATEGORY.IO_ERROR,
+        actionType: 'moveItem',
+        attachmentKey,
+        path: oldCanonicalPath,
+        reason: moveResult.reason,
+        message: `Failed to move "${oldCanonicalPath}" → "${newCanonicalPath}": ${moveResult.error || moveResult.reason}`,
+      });
+      return moveResult;
+    }
 
     if (_store) {
       const rec = _store.getByAttachmentKey(attachmentKey);
@@ -371,7 +433,20 @@ async function _addItemMembership(payload) {
   return _withLock(`attachment:${attachmentKey}`, async () => {
     if (!_store) return { ok: true, reason: 'no-store' };
     const rec = _store.getByAttachmentKey(attachmentKey);
-    if (!rec) return { ok: false, reason: 'unknown-attachment' };
+    if (!rec) {
+      // The collectionWatcher saw a tracked item that we don't have a
+      // FileRecord for. Surface this so the user knows there's drift
+      // between Zotero and the local tracking store.
+      reportWarning({
+        category: WARNING_CATEGORY.UNKNOWN_TARGET,
+        actionType: 'addItemMembership',
+        attachmentKey,
+        collectionKey,
+        reason: 'unknown-attachment',
+        message: `addItemMembership: no tracking record for attachment ${attachmentKey}`,
+      });
+      return { ok: false, reason: 'unknown-attachment' };
+    }
     const set = new Set(rec.collectionMembershipKeys || []);
     if (set.has(collectionKey)) return { ok: true, reason: 'no-op' };
     set.add(collectionKey);
@@ -403,6 +478,17 @@ async function _removeItemMembership(payload) {
     }
     _store.update(rec.localPath, updates);
     try { await _store.save(); } catch (_e) { /* logged */ }
+    if (next.length === 0) {
+      reportWarning({
+        category: WARNING_CATEGORY.SUPPRESSED,
+        actionType: 'removeItemMembership',
+        attachmentKey,
+        collectionKey,
+        path: rec.localPath,
+        reason: 'last-membership-removed',
+        message: `Item "${rec.localPath}" lost its last sync-root membership — local file kept, sync paused`,
+      });
+    }
     return { ok: true };
   });
 }

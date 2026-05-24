@@ -7,6 +7,11 @@ import { getWatchFolderService } from './watchFolder.mjs';
 import { initMetadataRetriever, shutdownMetadataRetriever } from './metadataRetriever.mjs';
 import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
 import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs';
+import * as warningSink from './warningSink.mjs';
+
+// Re-export so the prefs script (which can't `import` modules from the
+// sandbox) can reach the sink via Zotero.WatchFolder.warningSink.
+export { warningSink };
 // v2.1 Mode 2 modules (collectionWatcher / folderEventDetector /
 // itemMembershipHandler / mirrorExecutor) are skeletons today — they
 // exist so the lifecycle wires through SyncCoordinator. The coordinator
