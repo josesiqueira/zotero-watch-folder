@@ -23,6 +23,7 @@ pref("extensions.zotero.watchFolder.syncRootLibraryID", 1);  // Default = user l
 pref("extensions.zotero.watchFolder.mode", "mode1");  // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
 pref("extensions.zotero.watchFolder.setupCompleted", false);  // Gates whether the normal poll loop runs; setup wizard runs until true.
 pref("extensions.zotero.watchFolder.localTrashFolderName", ".zotero-watch-trash");  // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
+pref("extensions.zotero.watchFolder.baselineCompletedForRoot", "");  // v2.1 Phase C: sync-root key the install-time baseline has completed against. Empty = not yet run.
 
 // File naming settings
 pref("extensions.zotero.watchFolder.renamePattern", "{firstCreator} - {year} - {title}");

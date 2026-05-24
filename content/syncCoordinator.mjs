@@ -30,6 +30,7 @@ import { getPref } from './utils.mjs';
 import * as collectionWatcher from './collectionWatcher.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import * as folderEventDetector from './folderEventDetector.mjs';
+import * as baseline from './baseline.mjs';
 
 let _instance = null;
 
@@ -94,13 +95,20 @@ export class SyncCoordinator {
       return;
     }
     if (this._running) return;
+    // Phase C — first-run baseline. Idempotent (skips when the sync-root
+    // key matches the persisted `baselineCompletedForRoot` pref).
+    // MUST run before collectionWatcher registers; otherwise the
+    // mkdirs/copies issued here would race with notifier events the
+    // baseline itself indirectly triggers.
+    try {
+      await baseline.runBaseline({ trackingStore: this._trackingStore });
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] SyncCoordinator: baseline failed - ${e?.message ?? e}`);
+    }
     // A1: register the Zotero-side notifier observer. The watcher emits
     // MirrorActions to mirrorExecutor.execute() per A4. itemMembershipHandler
-    // is invoked from inside collectionWatcher for collection-item events
-    // (A3 — still a stub but the wire is live).
+    // is invoked from inside collectionWatcher for collection-item events.
     collectionWatcher.start(this);
-    // TODO(v2.1 A2): folderEventDetector hook into WatchFolderService scan
-    // TODO(v2.1 C): first-run baseline (B.2/B.6/B.7)
     this._running = true;
     Zotero.debug(`[WatchFolder] SyncCoordinator: started in ${mode}`);
   }

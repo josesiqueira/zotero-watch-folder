@@ -112,6 +112,7 @@ function _initDefaultPrefs() {
   _set("mode",                   "mode1"); // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
   _set("setupCompleted",         false);   // Gates whether the normal poll loop runs; setup wizard runs until true.
   _set("localTrashFolderName",   ".zotero-watch-trash"); // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
+  _set("baselineCompletedForRoot", "");    // v2.1 Phase C: stores the sync-root key the install-time baseline has completed against. Empty = baseline not yet run (or sync root changed).
 
   // File naming settings
   _set("renamePattern",          "{firstCreator} - {year} - {title}");

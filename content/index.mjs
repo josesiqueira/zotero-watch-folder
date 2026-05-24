@@ -9,10 +9,11 @@ import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
 import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs';
 import * as warningSink from './warningSink.mjs';
 import * as suppressionResolver from './suppressionResolver.mjs';
+import * as baseline from './baseline.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
-// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver}.
-export { warningSink, suppressionResolver };
+// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline}.
+export { warningSink, suppressionResolver, baseline };
 // v2.1 Mode 2 modules (collectionWatcher / folderEventDetector /
 // itemMembershipHandler / mirrorExecutor) are skeletons today — they
 // exist so the lifecycle wires through SyncCoordinator. The coordinator
