@@ -39,8 +39,9 @@ beforeEach(() => {
 // ─── UT-301 ────────────────────────────────────────────────────────────────
 
 describe('UT-301: isWatchRootAvailable', () => {
-  it('returns true when stat resolves with a directory', async () => {
+  it('returns true when stat + getChildren both succeed', async () => {
     globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+    globalThis.IOUtils.getChildren = vi.fn(async () => []);
     expect(await isWatchRootAvailable('/watch')).toBe(true);
   });
 
@@ -51,6 +52,14 @@ describe('UT-301: isWatchRootAvailable', () => {
 
   it('returns false when stat resolves but type !== directory', async () => {
     globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'regular' }));
+    expect(await isWatchRootAvailable('/watch')).toBe(false);
+  });
+
+  it('returns false when stat succeeds but getChildren throws (chmod 000 case)', async () => {
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+    globalThis.IOUtils.getChildren = vi.fn(async () => {
+      throw new Error('NS_ERROR_FILE_ACCESS_DENIED');
+    });
     expect(await isWatchRootAvailable('/watch')).toBe(false);
   });
 

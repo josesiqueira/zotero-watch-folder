@@ -1503,9 +1503,14 @@ export class WatchFolderService {
           skipped++;
           continue;
         }
-        // For attachments, stamp the parent item (where the duplicate detector looks)
+        // The Extra field only exists on regular bibliographic items. For
+        // attachments we walk to the parent. If the attachment is still
+        // standalone (recognition hasn't created a parent yet), there's
+        // nothing to stamp — skip and let a future backfill run after
+        // recognition succeeds catch it.
         let target = item;
-        if (item.isAttachment && item.isAttachment() && item.parentID) {
+        if (item.isAttachment && item.isAttachment()) {
+          if (!item.parentID) { skipped++; continue; }
           target = await Zotero.Items.getAsync(item.parentID);
           if (!target) { skipped++; continue; }
         }

@@ -55,18 +55,33 @@ export const STATE_FOR_CLASSIFICATION = Object.freeze({
 });
 
 /**
- * Cheap pre-check used at the top of an external-deletion scan: if the
- * watch root itself can't be stat()'d, the whole mount is gone and the
- * scan should pause instead of marking everything as missing.
+ * Pre-check used at the top of an external-deletion scan: returns false
+ * if the watch root is missing, not a directory, or unreadable (e.g. the
+ * user revoked permissions, or the OS reported the mount as unhealthy).
+ *
+ * A bare `stat` is insufficient — on POSIX, `chmod 000 dir` still lets
+ * `stat` succeed and report `type=directory`, but `getChildren` returns
+ * `NS_ERROR_FILE_ACCESS_DENIED`. We treat any failure to ENUMERATE the
+ * directory as "unavailable" so the scan pauses sync instead of
+ * concluding every tracked file is missing.
  *
  * @param {string} watchPath - Absolute path to the configured watch folder.
- * @returns {Promise<boolean>} true if the watch root is reachable.
+ * @returns {Promise<boolean>} true if the watch root can be enumerated.
  */
 export async function isWatchRootAvailable(watchPath) {
   if (!watchPath) return false;
   try {
     const info = await IOUtils.stat(watchPath);
-    return info?.type === 'directory';
+    if (info?.type !== 'directory') return false;
+  } catch (_e) {
+    return false;
+  }
+  // Stat succeeded — now confirm the directory is actually readable.
+  // IOUtils.getChildren throws NS_ERROR_FILE_ACCESS_DENIED on a 000-perm
+  // dir, NS_ERROR_FILE_NOT_FOUND on a transient unmount, etc.
+  try {
+    await IOUtils.getChildren(watchPath);
+    return true;
   } catch (_e) {
     return false;
   }
