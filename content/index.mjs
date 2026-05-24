@@ -6,9 +6,11 @@
 import { getWatchFolderService } from './watchFolder.mjs';
 import { initMetadataRetriever, shutdownMetadataRetriever } from './metadataRetriever.mjs';
 import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
-// collectionSync.mjs deleted in v2 cleanup — v2.1 will build its replacement
-// (collectionWatcher.mjs + folderEventDetector.mjs + mirrorExecutor.mjs)
-// under the new sync-root architecture.
+import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs';
+// v2.1 Mode 2 modules (collectionWatcher / folderEventDetector /
+// itemMembershipHandler / mirrorExecutor) are skeletons today — they
+// exist so the lifecycle wires through SyncCoordinator. The coordinator
+// stays idle for Mode 1 (the only mode that ships in v2.0).
 // firstRunHandler.mjs deleted in v2 cleanup — the v1 "Import All / Skip /
 // Cancel" dialog is replaced by the C2 sync-root picker in prefs (and,
 // once C1's full wizard ships, a proper multi-step onboarding flow).
@@ -18,6 +20,7 @@ import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
 // Global references
 let watchFolderService = null;
 let metadataRetriever = null;
+let syncCoordinator = null;
 let firstRunNudgeShown = false;
 
 const PREF_BRANCH = "extensions.zotero.watchFolder.";
@@ -118,8 +121,14 @@ export const hooks = {
             await watchFolderService.init();
             watchFolderService.setMetadataRetriever(metadataRetriever);
 
+            // v2.1 Mode 2 coordinator — initialised here so it shares the
+            // tracking store with WatchFolderService. Stays idle in Mode 1.
+            syncCoordinator = getSyncCoordinator();
+            await syncCoordinator.init(watchFolderService._trackingStore);
+
             if (getPref("enabled")) {
                 await watchFolderService.startWatching();
+                await syncCoordinator.start();
             }
 
             Zotero.debug("Zotero Watch Folder: Started successfully");
@@ -155,6 +164,16 @@ export const hooks = {
 
     async onShutdown() {
         Zotero.debug("Zotero Watch Folder: Shutting down");
+
+        if (syncCoordinator) {
+            try {
+                await syncCoordinator.stop();
+                resetSyncCoordinator();
+                syncCoordinator = null;
+            } catch (error) {
+                Zotero.logError(`Zotero Watch Folder: SyncCoordinator shutdown error - ${error.message}`);
+            }
+        }
 
         if (watchFolderService) {
             try {
