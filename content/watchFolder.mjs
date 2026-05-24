@@ -92,6 +92,24 @@ export class WatchFolderService {
   }
 
   /**
+   * Resolve a tracked FileRecord/CollectionRecord `localPath` (which the
+   * v2 spec says is sync-root-relative, but legacy writers in this
+   * module sometimes emit as absolute) into an absolute path. Idempotent:
+   * absolute input is returned as-is. Empty/null → watchPath itself.
+   *
+   * @private
+   */
+  _resolveTrackedAbs(storedPath, watchPath) {
+    if (!storedPath) return watchPath || '';
+    if (storedPath.startsWith('/')) return storedPath;
+    if (/^[A-Za-z]:[\\/]/.test(storedPath)) return storedPath;
+    const segs = storedPath.split('/').filter((s) => s.trim() !== '');
+    if (!watchPath) return storedPath;
+    if (segs.length === 0) return watchPath;
+    return PathUtils.join(watchPath, ...segs);
+  }
+
+  /**
    * Initialize the service
    * Loads tracking data and registers Zotero notifier
    * @returns {Promise<void>}
@@ -1366,11 +1384,27 @@ export class WatchFolderService {
       // expectedOnDisk===false — set when postImportAction was 'delete'.
       // External-deletion sync ignores those records.
       if (record.state === STATE.MISSING) continue;
+      // Suppressed/detached records are intentionally kept out of sync
+      // by the user — don't treat them as "missing on disk" candidates.
+      if (record.state === STATE.OUT_OF_SCOPE_SUPPRESSED) continue;
+      if (record.state === STATE.USER_DETACHED) continue;
+      if (record.state === STATE.CONFLICT_BLOCKED) continue;
       if (!record.localPath || !record.zoteroAttachmentKey) continue;
-      if (diskPaths.has(record.localPath)) continue;
+
+      // Resolve the stored path to an absolute one for the disk checks.
+      // FileRecord.localPath is sync-root-relative per v2 spec, but legacy
+      // sites (and the scan-loop dedup-skip path before #25 fully lands)
+      // sometimes store absolute paths. _resolveTrackedAbs accepts both —
+      // absolute input is returned as-is, relative is joined under
+      // watchPath. Without this, baseline's relative-path records were
+      // mis-flagged as "missing" + then "moved" by _handleFileMoves,
+      // which silently rewrote them to absolute paths (live test cascade).
+      const absPath = this._resolveTrackedAbs(record.localPath, watchPath);
+      if (diskPaths.has(absPath)) continue;
+      if (record.localPath !== absPath && diskPaths.has(record.localPath)) continue;
 
       // Race-safe double-check.
-      const exists = await IOUtils.exists(record.localPath).catch(() => false);
+      const exists = await IOUtils.exists(absPath).catch(() => false);
       if (exists) continue;
 
       // NOTE: classification (B6) runs LATER, after move-detection has
