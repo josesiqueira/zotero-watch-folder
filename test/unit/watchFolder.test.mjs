@@ -931,8 +931,8 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     service._trackingStore = makeStore(
       [{
         type: 'file',
-        localPath: 'Methods/paper.pdf',
-        canonicalLocalPath: 'Methods/paper.pdf',
+        localPath: '/watch/Methods/paper.pdf',
+        canonicalLocalPath: '/watch/Methods/paper.pdf',
         lastSyncedHash: 'H1',
         zoteroAttachmentKey: 'AK1',
         canonicalCollectionKey: 'COL_METHODS',
@@ -941,7 +941,7 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
       }],
       [{
         type: 'collection',
-        localPath: 'Methods',
+        localPath: '/watch/Methods',
         zoteroCollectionKey: 'COL_METHODS',
         parentCollectionKey: null,
         state: 'clean',
@@ -963,16 +963,16 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     expect(fakeCollection.name).toBe('Procedures');
     expect(fakeCollection.saveTx).toHaveBeenCalledTimes(1);
 
-    // Tracking record was rewritten to the new path.
+    // Tracking record was rewritten to the new absolute path.
     const renamed = service._trackingStore.getCollectionRecord('COL_METHODS');
     expect(renamed).not.toBe(null);
-    expect(renamed.localPath).toBe('Procedures');
+    expect(renamed.localPath).toBe('/watch/Procedures');
 
     // Descendant file record was rewritten too.
-    expect(service._trackingStore._files.has('Methods/paper.pdf')).toBe(false);
-    const renamedFile = service._trackingStore._files.get('Procedures/paper.pdf');
+    expect(service._trackingStore._files.has('/watch/Methods/paper.pdf')).toBe(false);
+    const renamedFile = service._trackingStore._files.get('/watch/Procedures/paper.pdf');
     expect(renamedFile).toBeTruthy();
-    expect(renamedFile.canonicalLocalPath).toBe('Procedures/paper.pdf');
+    expect(renamedFile.canonicalLocalPath).toBe('/watch/Procedures/paper.pdf');
   });
 
   it('does NOT rename when there are no tracked files under the missing folder (no hash anchor)', async () => {
@@ -980,7 +980,7 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
       [], // no files
       [{
         type: 'collection',
-        localPath: 'Methods',
+        localPath: '/watch/Methods',
         zoteroCollectionKey: 'COL_METHODS',
         parentCollectionKey: null,
         state: 'clean',
@@ -995,21 +995,21 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
 
     expect(fakeCollection.saveTx).not.toHaveBeenCalled();
     const stillThere = service._trackingStore.getCollectionRecord('COL_METHODS');
-    expect(stillThere.localPath).toBe('Methods');
+    expect(stillThere.localPath).toBe('/watch/Methods');
   });
 
   it('does NOT rename when no on-disk dir has matching file hashes', async () => {
     service._trackingStore = makeStore(
       [{
         type: 'file',
-        localPath: 'Methods/paper.pdf',
+        localPath: '/watch/Methods/paper.pdf',
         lastSyncedHash: 'H1',
         zoteroAttachmentKey: 'AK1',
         state: 'clean',
       }],
       [{
         type: 'collection',
-        localPath: 'Methods',
+        localPath: '/watch/Methods',
         zoteroCollectionKey: 'COL_METHODS',
         parentCollectionKey: null,
         state: 'clean',
@@ -1031,14 +1031,14 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     service._trackingStore = makeStore(
       [{
         type: 'file',
-        localPath: 'Methods/paper.pdf',
+        localPath: '/watch/Methods/paper.pdf',
         lastSyncedHash: 'H1',
         zoteroAttachmentKey: 'AK1',
         state: 'clean',
       }],
       [{
         type: 'collection',
-        localPath: 'Methods',
+        localPath: '/watch/Methods',
         zoteroCollectionKey: 'COL_METHODS',
         parentCollectionKey: null,
         state: 'clean',
@@ -1060,8 +1060,8 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
       [
         {
           type: 'file',
-          localPath: 'Methods/AI/paper.pdf',
-          canonicalLocalPath: 'Methods/AI/paper.pdf',
+          localPath: '/watch/Methods/AI/paper.pdf',
+          canonicalLocalPath: '/watch/Methods/AI/paper.pdf',
           lastSyncedHash: 'H_AI',
           zoteroAttachmentKey: 'AK_AI',
           state: 'clean',
@@ -1070,14 +1070,14 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
       [
         {
           type: 'collection',
-          localPath: 'Methods',
+          localPath: '/watch/Methods',
           zoteroCollectionKey: 'COL_METHODS',
           parentCollectionKey: null,
           state: 'clean',
         },
         {
           type: 'collection',
-          localPath: 'Methods/AI',
+          localPath: '/watch/Methods/AI',
           zoteroCollectionKey: 'COL_AI',
           parentCollectionKey: 'COL_METHODS',
           state: 'clean',
@@ -1102,17 +1102,17 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     expect(methodsCollection.name).toBe('Procedures');
     expect(aiCollection.name).toBe('AI');
 
-    // Tracking records: shallowest (Methods) processed first, sweeps
-    // descendants. AI's localPath rewritten to Procedures/AI by the
-    // parent's recursive sweep — no per-child rename needed.
+    // Tracking records (absolute paths now): shallowest (Methods)
+    // processed first, sweeps descendants. AI's localPath rewritten
+    // by the parent's recursive sweep.
     const methodsRec = service._trackingStore.getCollectionRecord('COL_METHODS');
-    expect(methodsRec.localPath).toBe('Procedures');
+    expect(methodsRec.localPath).toBe('/watch/Procedures');
     const aiRec = service._trackingStore.getCollectionRecord('COL_AI');
-    expect(aiRec.localPath).toBe('Procedures/AI');
+    expect(aiRec.localPath).toBe('/watch/Procedures/AI');
 
-    const aiFile = service._trackingStore._files.get('Procedures/AI/paper.pdf');
+    const aiFile = service._trackingStore._files.get('/watch/Procedures/AI/paper.pdf');
     expect(aiFile).toBeTruthy();
-    expect(aiFile.canonicalLocalPath).toBe('Procedures/AI/paper.pdf');
-    expect(service._trackingStore._files.has('Methods/AI/paper.pdf')).toBe(false);
+    expect(aiFile.canonicalLocalPath).toBe('/watch/Procedures/AI/paper.pdf');
+    expect(service._trackingStore._files.has('/watch/Methods/AI/paper.pdf')).toBe(false);
   });
 });

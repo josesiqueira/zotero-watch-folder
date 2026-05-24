@@ -402,7 +402,8 @@ export class WatchFolderService {
       // records, B2 folder-rename detection has nothing to compare
       // against on subsequent scans.
       if (this._trackingStore && relativeDir !== '') {
-        await this._ensureCollectionRecordsForPath(relativeDir, targetCollection);
+        const watchPath = getPref('sourcePath') || '';
+        await this._ensureCollectionRecordsForPath(relativeDir, targetCollection, watchPath);
       }
 
       // Step 3: Hash + dedup pre-check via tracking store.
@@ -584,26 +585,29 @@ export class WatchFolderService {
    * @param {string} relativeDir - Forward-slash relative path, e.g. "Methods/AI".
    * @param {object} leafCollection - The Zotero.Collection at the leaf of relativeDir.
    */
-  async _ensureCollectionRecordsForPath(relativeDir, leafCollection) {
+  async _ensureCollectionRecordsForPath(relativeDir, leafCollection, watchPath) {
     const segments = relativeDir.split('/').filter(s => s !== '');
     if (segments.length === 0) return;
 
     // Walk from the leaf upward, collecting (collection, segmentPath) pairs.
     // We then iterate top-down to insert records with parent linkage.
+    // localPath is stored as an ABSOLUTE disk path (matching the convention
+    // file records use) so per-prefix comparisons in folder-rename
+    // detection and the recursive sweep work without watch-path
+    // conversion gymnastics.
     const chain = [];
     let cursor = leafCollection;
     let depth = segments.length;
     while (cursor && depth > 0) {
-      chain.unshift({
-        collection: cursor,
-        path: segments.slice(0, depth).join('/'),
-      });
+      const relSegments = segments.slice(0, depth);
+      const absPath = watchPath + '/' + relSegments.join('/');
+      chain.unshift({ collection: cursor, absPath });
       depth--;
       if (!cursor.parentID) break;
       cursor = Zotero.Collections.get(cursor.parentID);
     }
 
-    for (const { collection, path } of chain) {
+    for (const { collection, absPath } of chain) {
       const existing = this._trackingStore.getCollectionRecord(collection.key);
       if (existing) continue;
       let parentKey = null;
@@ -614,12 +618,12 @@ export class WatchFolderService {
         }
       }
       this._trackingStore.add(createCollectionRecord({
-        localPath: path,
+        localPath: absPath,
         zoteroCollectionKey: collection.key,
         parentCollectionKey: parentKey,
         state: STATE.CLEAN,
       }));
-      Zotero.debug(`[WatchFolder] Tracked new collection record: ${path} (key=${collection.key})`);
+      Zotero.debug(`[WatchFolder] Tracked new collection record: ${absPath} (key=${collection.key})`);
     }
   }
 
@@ -653,21 +657,17 @@ export class WatchFolderService {
     const collectionRecords = this._trackingStore.getAllOfType('collection');
     if (collectionRecords.length === 0) return;
 
-    // ── 1. Build on-disk dir state ──────────────────────────────────────
-    const onDiskDirs = new Set(['']);
-    const dirToFilePaths = new Map();
+    // ── 1. Build on-disk dir state (ABSOLUTE paths to match record schema) ──
+    const onDiskDirs = new Set([watchPath]);
     for (const fileInfo of scannedFiles) {
       const rel = relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop(); // drop filename
-      const dir = parts.join('/');
-      // Add this dir + all ancestor dirs.
+      // Add this dir + all ancestor dirs as absolute paths.
       for (let i = 1; i <= parts.length; i++) {
-        onDiskDirs.add(parts.slice(0, i).join('/'));
+        onDiskDirs.add(watchPath + '/' + parts.slice(0, i).join('/'));
       }
-      if (!dirToFilePaths.has(dir)) dirToFilePaths.set(dir, []);
-      dirToFilePaths.get(dir).push(fileInfo.path);
     }
 
     // ── 2. Find missing collection records ──────────────────────────────
@@ -686,19 +686,18 @@ export class WatchFolderService {
       return hashCache.get(p);
     };
 
-    // Index scanned files by their sync-root-relative path so candidate
-    // matching can do O(1) tail lookups.
-    const scannedRelByDir = new Map(); // candDir → [{rel, absPath}, …]
+    // Index scanned files by their absolute ancestor dirs so candidate
+    // matching can do O(1) tail lookups against the absolute-path schema.
+    const scannedByAbsDir = new Map(); // absDir → [{absPath}, …]
     for (const fileInfo of scannedFiles) {
       const rel = relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop();
-      // For every ancestor dir (incl. immediate parent), index this file.
       for (let i = 1; i <= parts.length; i++) {
-        const dir = parts.slice(0, i).join('/');
-        if (!scannedRelByDir.has(dir)) scannedRelByDir.set(dir, []);
-        scannedRelByDir.get(dir).push({ rel, absPath: fileInfo.path });
+        const absDir = watchPath + '/' + parts.slice(0, i).join('/');
+        if (!scannedByAbsDir.has(absDir)) scannedByAbsDir.set(absDir, []);
+        scannedByAbsDir.get(absDir).push({ absPath: fileInfo.path });
       }
     }
 
@@ -738,18 +737,18 @@ export class WatchFolderService {
         this._trackingStore.getAllOfType('collection').map(r => r.localPath),
       );
       const candidateDirs = [...onDiskDirs].filter(d =>
-        d !== '' && !trackedDirs.has(d));
+        d !== watchPath && !trackedDirs.has(d));
 
       let best = null;
       let bestScore = 0;
       for (const candDir of candidateDirs) {
         const candPrefix = candDir + '/';
-        const candEntries = scannedRelByDir.get(candDir) || [];
+        const candEntries = scannedByAbsDir.get(candDir) || [];
         let score = 0;
-        for (const { rel, absPath } of candEntries) {
+        for (const { absPath } of candEntries) {
           let candTail;
-          if (rel === candDir) candTail = '';
-          else if (rel.startsWith(candPrefix)) candTail = rel.slice(candPrefix.length);
+          if (absPath === candDir) candTail = '';
+          else if (absPath.startsWith(candPrefix)) candTail = absPath.slice(candPrefix.length);
           else continue;
           const h = await hashOf(absPath);
           if (h && trackedShape.get(h) === candTail) score++;
@@ -1149,25 +1148,14 @@ export class WatchFolderService {
       if (!record.localPath || !record.zoteroAttachmentKey) continue;
       if (diskPaths.has(record.localPath)) continue;
 
-      // Race-safe double-check + classify why the file is missing. The
-      // classifier distinguishes "drive disconnected" / "permission denied"
-      // / "cloud placeholder" from "user actually deleted it".
+      // Race-safe double-check.
       const exists = await IOUtils.exists(record.localPath).catch(() => false);
       if (exists) continue;
 
-      const classification = await classifyMissingFile(record.localPath);
-      if (classification === MISSING_CLASSIFICATION.STILL_EXISTS) continue;
-      if (classification === MISSING_CLASSIFICATION.DRIVE_DISCONNECTED
-          || classification === MISSING_CLASSIFICATION.PERMISSION_DENIED
-          || classification === MISSING_CLASSIFICATION.CLOUD_PLACEHOLDER) {
-        const newState = STATE_FOR_CLASSIFICATION[classification];
-        if (record.state !== newState) {
-          this._trackingStore.update(record.localPath, { state: newState });
-        }
-        continue;
-      }
-
-      // USER_DELETED → fall through to move-detection / deletion path.
+      // NOTE: classification (B6) runs LATER, after move-detection has
+      // had a chance to claim records as moves. Pre-classifying here
+      // would prevent records whose parent dir disappeared (folder
+      // rename) from being recognized as moves.
       missing.push(record);
     }
 
@@ -1224,13 +1212,39 @@ export class WatchFolderService {
 
     if (trulyMissing.length === 0) return;
 
+    // ── B6 classification on records that no candidate claimed ─────────
+    // A record is truly missing — but WHY? Distinguish drive-disconnected
+    // / permission-denied / cloud-placeholder from user-deleted. Non-
+    // user-deleted classifications skip the trash branch entirely (no
+    // destructive action when the mount is gone) and just update state.
+    const stillMissing = [];
+    for (const record of trulyMissing) {
+      const classification = await classifyMissingFile(record.localPath, watchPath);
+      if (classification === MISSING_CLASSIFICATION.STILL_EXISTS) continue;
+      if (classification === MISSING_CLASSIFICATION.DRIVE_DISCONNECTED
+          || classification === MISSING_CLASSIFICATION.PERMISSION_DENIED
+          || classification === MISSING_CLASSIFICATION.CLOUD_PLACEHOLDER) {
+        const newState = STATE_FOR_CLASSIFICATION[classification];
+        if (record.state !== newState) {
+          this._trackingStore.update(record.localPath, { state: newState });
+        }
+        continue;
+      }
+      stillMissing.push(record);
+    }
+
+    if (stillMissing.length === 0) {
+      try { await this._trackingStore.save(); } catch (_) {}
+      return;
+    }
+
     // ── Trash branch ──────────────────────────────────────────────────────
     // v2.0 / Mode 1: never propagate disk deletions to Zotero. Just mark
     // the tracking record as `missing` so subsequent scans don't re-detect
     // and the user can decide what to do.
     const mode = getPref('mode') || 'mode1';
     if (mode === 'mode1') {
-      for (const record of trulyMissing) {
+      for (const record of stillMissing) {
         this._trackingStore.update(record.localPath, { state: STATE.MISSING });
         Zotero.debug(`[WatchFolder] Mode 1: ${record.localPath} missing from disk — marked, not trashed`);
       }
@@ -1241,9 +1255,9 @@ export class WatchFolderService {
     // v2.1 / v2.2 take over here. The body below still needs updating to
     // use the v2 schema + safe-delete predicate; v2.1's B4 work will do
     // that. For now it's unreachable in Mode 1.
-    Zotero.debug(`[WatchFolder] Detected ${trulyMissing.length} externally-deleted file(s) (mode=${mode})`);
+    Zotero.debug(`[WatchFolder] Detected ${stillMissing.length} externally-deleted file(s) (mode=${mode})`);
     const trashed = [];
-    for (const record of trulyMissing) {
+    for (const record of stillMissing) {
       try {
         const syncRoot = await resolveSyncRoot().catch(() => null);
         const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;

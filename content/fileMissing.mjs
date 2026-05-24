@@ -75,13 +75,19 @@ export async function isWatchRootAvailable(watchPath) {
 /**
  * Classify why a tracked file is no longer on disk. Caller has already
  * confirmed that `IOUtils.exists(filePath)` returned false. We re-check
- * to absorb scan-snapshot races, then probe the parent directory to tell
+ * to absorb scan-snapshot races, then probe parent + watch root to tell
  * the four real cases apart.
  *
  * @param {string} filePath - Absolute path of the formerly-tracked file.
+ * @param {string} [watchPath] - Configured watch root, used to distinguish
+ *   "user renamed/deleted the parent directory" (USER_DELETED — parent
+ *   gone but watch root present) from "whole mount went away"
+ *   (DRIVE_DISCONNECTED — watch root itself unreachable). If omitted,
+ *   we fall back to the older heuristic that treats any parent-stat
+ *   failure as drive-disconnected.
  * @returns {Promise<MissingClassification>}
  */
-export async function classifyMissingFile(filePath) {
+export async function classifyMissingFile(filePath, watchPath = null) {
   // 1) Race-safe re-check. The scan list can lag by milliseconds; if the
   //    file is back, we're done.
   try {
@@ -90,8 +96,11 @@ export async function classifyMissingFile(filePath) {
     }
   } catch (_e) { /* fall through */ }
 
-  // 2) Probe the parent directory. If parent stat throws, the mount /
-  //    network share / cloud client has gone away. Tag as drive-disconnected.
+  // 2) Probe the parent directory. If parent stat throws AND the watch
+  //    root also can't be stat'd, the mount / network share / cloud
+  //    client is gone (drive_disconnected). If watch root is fine but
+  //    the file's parent is gone, the user deleted/renamed the parent
+  //    directory — classify as user_deleted so move-detection can run.
   const parentPath = (() => {
     try { return PathUtils.parent(filePath); } catch (_e) { return null; }
   })();
@@ -102,10 +111,14 @@ export async function classifyMissingFile(filePath) {
   try {
     parentInfo = await IOUtils.stat(parentPath);
   } catch (e) {
-    // Parent gone = whole subtree unreachable, treat as drive-disconnected.
-    return _isPermissionError(e)
-      ? MISSING_CLASSIFICATION.PERMISSION_DENIED
-      : MISSING_CLASSIFICATION.DRIVE_DISCONNECTED;
+    if (_isPermissionError(e)) return MISSING_CLASSIFICATION.PERMISSION_DENIED;
+    // Watch root reachable but this parent isn't → user removed the parent
+    // (often a folder rename in flight). Otherwise the drive is gone.
+    if (watchPath) {
+      const rootOk = await isWatchRootAvailable(watchPath);
+      if (rootOk) return MISSING_CLASSIFICATION.USER_DELETED;
+    }
+    return MISSING_CLASSIFICATION.DRIVE_DISCONNECTED;
   }
   if (parentInfo?.type !== 'directory') {
     // Parent path exists but isn't a directory? Treat as deleted.
@@ -113,14 +126,20 @@ export async function classifyMissingFile(filePath) {
   }
 
   // 3) Try listing the parent directory. If listing throws with a
-  //    permission error, classify that specifically.
+  //    permission error, classify that specifically. Otherwise, if the
+  //    watch root is still reachable, treat as user_deleted (transient
+  //    listing failures on a healthy mount usually mean the directory
+  //    is being mutated, not unreachable).
   let entries;
   try {
     entries = await IOUtils.getChildren(parentPath);
   } catch (e) {
-    return _isPermissionError(e)
-      ? MISSING_CLASSIFICATION.PERMISSION_DENIED
-      : MISSING_CLASSIFICATION.DRIVE_DISCONNECTED;
+    if (_isPermissionError(e)) return MISSING_CLASSIFICATION.PERMISSION_DENIED;
+    if (watchPath) {
+      const rootOk = await isWatchRootAvailable(watchPath);
+      if (rootOk) return MISSING_CLASSIFICATION.USER_DELETED;
+    }
+    return MISSING_CLASSIFICATION.DRIVE_DISCONNECTED;
   }
 
   // 4) If the parent listing shows a cloud-placeholder variant of our
