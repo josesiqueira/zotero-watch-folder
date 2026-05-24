@@ -319,32 +319,58 @@ async function _moveFolder(payload) {
       const prefix = oldRelativePath + '/';
       const files = _store.getAllOfType('file');
       const rewritten = new Set();
+      // Per-attachment lock around each rewrite (TODO Track A #4). A
+      // concurrent moveItem on the same key would otherwise read a
+      // partially-rewritten record. Acquire one lock at a time — never in
+      // parallel — to avoid lock-order issues with a follow-up moveItem.
       for (const f of files) {
         const matchesExact = f.localPath === oldRelativePath;
         const matchesNested = f.localPath.startsWith(prefix);
         if (!matchesExact && !matchesNested) continue;
-        const suffix = matchesExact ? '' : f.localPath.slice(oldRelativePath.length);
-        const newPath = newRelativePath + suffix;
-        const wasCanonical = f.canonicalLocalPath === f.localPath;
-        const newCanonical = wasCanonical
-          ? newPath
-          : _rewriteIfUnder(f.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
-        // localPath is the Map key — must remove + re-add to re-key.
-        _store.remove(f.localPath);
-        _store.add(createFileRecord({
-          ...f,
-          localPath: newPath,
-          canonicalLocalPath: newCanonical,
-        }));
-        rewritten.add(f.zoteroAttachmentKey);
+        if (!f.zoteroAttachmentKey) continue; // skip: would collide on `attachment:undefined`
+        await _withLock(`attachment:${f.zoteroAttachmentKey}`, async () => {
+          // Re-read under the lock — a concurrent moveItem completed between
+          // the outer enumeration and the lock acquisition may have moved
+          // the record out of the subtree.
+          const live = _store.getByAttachmentKey(f.zoteroAttachmentKey);
+          if (!live) return;
+          const stillExact = live.localPath === oldRelativePath;
+          const stillNested = live.localPath.startsWith(prefix);
+          if (!stillExact && !stillNested) return;
+          const suffix = stillExact ? '' : live.localPath.slice(oldRelativePath.length);
+          const newPath = newRelativePath + suffix;
+          const wasCanonical = live.canonicalLocalPath === live.localPath;
+          const newCanonical = wasCanonical
+            ? newPath
+            : _rewriteIfUnder(live.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
+          // localPath is the Map key — must remove + re-add to re-key.
+          _store.remove(live.localPath);
+          _store.add(createFileRecord({
+            ...live,
+            localPath: newPath,
+            canonicalLocalPath: newCanonical,
+          }));
+          rewritten.add(live.zoteroAttachmentKey);
+        });
       }
       // Pass 2: canonicalLocalPath fixup for records whose localPath is
       // OUTSIDE the moved subtree (multi-collection items).
       for (const f of _store.getAllOfType('file')) {
         if (rewritten.has(f.zoteroAttachmentKey)) continue;
-        const newCanonical = _rewriteIfUnder(f.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
-        if (newCanonical === f.canonicalLocalPath) continue;
-        _store.update(f.localPath, { canonicalLocalPath: newCanonical });
+        if (!f.zoteroAttachmentKey) {
+          // No attachment key → cannot lock safely; mirror previous unlocked behavior.
+          const newCanonical = _rewriteIfUnder(f.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
+          if (newCanonical === f.canonicalLocalPath) continue;
+          _store.update(f.localPath, { canonicalLocalPath: newCanonical });
+          continue;
+        }
+        await _withLock(`attachment:${f.zoteroAttachmentKey}`, async () => {
+          const live = _store.getByAttachmentKey(f.zoteroAttachmentKey);
+          if (!live) return;
+          const newCanonical = _rewriteIfUnder(live.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
+          if (newCanonical === live.canonicalLocalPath) return;
+          _store.update(live.localPath, { canonicalLocalPath: newCanonical });
+        });
       }
       try { await _store.save(); } catch (_e) { /* logged */ }
     }
@@ -392,9 +418,26 @@ async function _moveItem(payload) {
   return _withLock(`attachment:${attachmentKey}`, async () => {
     if (oldCanonicalPath === newCanonicalPath) return { ok: true, reason: 'no-op' };
 
+    // Re-read the live record AFTER acquiring the lock. A prior action in the
+    // same scan-cycle batch (e.g. a moveFolder that rewrote child paths) may
+    // have made the queued payload's oldCanonicalPath stale. Trusting the
+    // payload here surfaced as spurious missing-file / wrong-source moves.
+    // Tracked as TODO Track A #3.
+    let liveSourcePath = oldCanonicalPath;
+    if (_store) {
+      const liveRec = _store.getByAttachmentKey(attachmentKey);
+      if (liveRec && liveRec.canonicalLocalPath) {
+        liveSourcePath = liveRec.canonicalLocalPath;
+      }
+    }
+    if (liveSourcePath === newCanonicalPath) {
+      Zotero.debug(`[WatchFolder] mirrorExecutor: moveItem no-op (already at ${newCanonicalPath})`);
+      return { ok: true, reason: 'no-op' };
+    }
+
     let oldAbs, newAbs;
     try {
-      oldAbs = _absPath(oldCanonicalPath);
+      oldAbs = _absPath(liveSourcePath);
       newAbs = _absPath(newCanonicalPath);
     } catch (e) {
       return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) };

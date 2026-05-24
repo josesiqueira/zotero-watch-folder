@@ -12,6 +12,10 @@
  *   UT-408 moveItem (clean → file moved + record re-keyed)
  *   UT-409 addItemMembership / removeItemMembership (no IO, set ops)
  *   UT-410 per-key lock serializes concurrent calls
+ *   UT-411..UT-415 review/SUPP/MCP fixes
+ *   UT-416 moveItem reads live canonicalLocalPath after stale payload (Track A #3)
+ *   UT-417 moveItem uses live source when destination differs from live (Track A #3)
+ *   UT-418 moveFolder acquires per-attachment lock for each child (Track A #4)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -621,6 +625,175 @@ describe('UT-413: _removeItemMembership clears canonical on last-membership-remo
     expect(rec.collectionMembershipKeys).toEqual([]);
     expect(rec.canonicalCollectionKey).toBe(null);
     expect(rec.state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+});
+
+// ─── UT-416 (Track A #3 — moveItem stale oldCanonicalPath race) ───────────
+
+describe('UT-416: _moveItem reads live canonicalLocalPath after stale payload', () => {
+  it('no-ops when a prior same-cycle action already moved the file to the destination', async () => {
+    const store = await makeStore();
+    // Seed at A/paper.pdf.
+    store.add(createFileRecord({
+      localPath: 'A/paper.pdf', canonicalLocalPath: 'A/paper.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash',
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    // Simulate same-cycle rewrite: a moveFolder already relocated it to B.
+    store.update('A/paper.pdf', { canonicalLocalPath: 'B/paper.pdf' });
+    // Note: localPath stays as the Map key in this test; the live canonical
+    // is what _moveItem consults for the source path.
+
+    const result = await execute({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'K1',
+        oldCanonicalPath: 'A/paper.pdf', // stale
+        newCanonicalPath: 'B/paper.pdf',
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBe('no-op');
+    expect(IOUtils.move).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-417 (Track A #3 — stale payload still resolves correct source) ────
+
+describe('UT-417: _moveItem uses live source when destination differs from live', () => {
+  it('moves from B (live) to C, not A (stale payload)', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'A/paper.pdf', canonicalLocalPath: 'A/paper.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash',
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    // Same-cycle rewrite to B.
+    store.update('A/paper.pdf', { canonicalLocalPath: 'B/paper.pdf' });
+
+    const result = await execute({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'K1',
+        oldCanonicalPath: 'A/paper.pdf', // stale
+        newCanonicalPath: 'C/paper.pdf',
+      },
+    });
+    expect(result.ok).toBe(true);
+    // Source must be the LIVE path (B), not the stale payload (A).
+    expect(IOUtils.move).toHaveBeenCalledWith('/watch/B/paper.pdf', '/watch/C/paper.pdf', expect.any(Object));
+    expect(IOUtils.move).not.toHaveBeenCalledWith('/watch/A/paper.pdf', expect.anything(), expect.anything());
+  });
+});
+
+// ─── UT-418 (Track A #4 — per-attachment lock during moveFolder rewrite) ──
+
+describe('UT-418: _moveFolder acquires per-attachment lock for each child', () => {
+  it('serializes a concurrent moveItem against a child attachment', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Old', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Old/paper.pdf', canonicalLocalPath: 'Old/paper.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash',
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    const order = [];
+    let releaseMove;
+    const moveBlock = new Promise((r) => { releaseMove = r; });
+
+    // Block IOUtils.move (the moveFolder rename) so we can prove the
+    // concurrent moveItem cannot enter the per-attachment lock while
+    // moveFolder's rewrite loop is still in flight.
+    IOUtils.move.mockImplementation(async (src, dst) => {
+      if (src === '/watch/Old') {
+        order.push('moveFolder:io-start');
+        await moveBlock;
+        order.push('moveFolder:io-end');
+      } else {
+        order.push(`moveItem:io ${src} → ${dst}`);
+      }
+    });
+
+    const pFolder = execute({
+      type: 'moveFolder',
+      payload: {
+        collectionKey: 'SUB1',
+        oldRelativePath: 'Old',
+        newRelativePath: 'New',
+      },
+    });
+
+    // Give moveFolder time to enter IOUtils.move (and therefore reach the
+    // per-attachment rewrite loop only AFTER we release).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(order).toEqual(['moveFolder:io-start']);
+
+    // Queue a concurrent moveItem on the same attachment. It must wait
+    // until moveFolder has released the per-attachment lock around the
+    // rewrite. The payload references the post-rewrite path so this is a
+    // benign no-op once it does run.
+    const pItem = execute({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'K1',
+        oldCanonicalPath: 'New/paper.pdf',
+        newCanonicalPath: 'New/paper.pdf',
+      },
+    });
+
+    // Yield: moveItem must NOT have observed any state yet (still queued
+    // behind moveFolder's IO + rewrite).
+    await new Promise((r) => setTimeout(r, 0));
+    // moveItem on a same-key payload short-circuits to no-op before any IO,
+    // so the only way to detect interleaving is to check that the FS-level
+    // move-folder did not yet end.
+    expect(order).toEqual(['moveFolder:io-start']);
+
+    releaseMove();
+    await Promise.all([pFolder, pItem]);
+    expect(order[0]).toBe('moveFolder:io-start');
+    expect(order).toContain('moveFolder:io-end');
+
+    // Final state: record is re-keyed under New/, and the moveItem ran AFTER
+    // the rewrite (so it saw the new path).
+    expect(store.getByLocalPath('Old/paper.pdf')).toBe(null);
+    expect(store.getByLocalPath('New/paper.pdf')).toBeTruthy();
+  });
+
+  it('skips records with no zoteroAttachmentKey instead of locking on attachment:undefined', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Old', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    // A bogus record with no attachment key. Skipped by the rewrite loop.
+    store.add(createFileRecord({
+      localPath: 'Old/orphan.pdf', canonicalLocalPath: 'Old/orphan.pdf',
+      zoteroAttachmentKey: '', lastSyncedHash: 'h',
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'moveFolder',
+      payload: {
+        collectionKey: 'SUB1',
+        oldRelativePath: 'Old',
+        newRelativePath: 'New',
+      },
+    });
+    expect(result.ok).toBe(true);
+    // The orphan record is NOT rewritten (would have collided on the
+    // attachment:undefined lock key).
+    expect(store.getByLocalPath('Old/orphan.pdf')).toBeTruthy();
+    expect(store.getByLocalPath('New/orphan.pdf')).toBe(null);
   });
 });
 

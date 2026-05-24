@@ -13,6 +13,16 @@
  *   UT-809 MOVE_OUTSIDE requires targetDir
  *   UT-810 MOVE_OUTSIDE happy path moves file + tombstones
  *   UT-811 MOVE_OUTSIDE cross-FS fallback uses copy+remove
+ *   UT-812 (scanner re-import-loop guard via hasPath — file-level)
+ *   UT-813 listSuppressedCollections + uninitialized-store tolerance
+ *   UT-820 resolveCollection REINSTATE creates Zotero collection, updates record
+ *   UT-821 resolveCollection KEEP_LOCAL flips collection to USER_DETACHED
+ *   UT-822 resolveCollection TRASH moves folder to OS trash + drops record/children
+ *   UT-823 resolveCollection MOVE_OUTSIDE recursive move + cross-FS fallback
+ *   UT-824 resolveConflict RESTAMP_BASELINE re-hashes + state=CLEAN
+ *   UT-825 resolveConflict DISCARD_LOCAL copies attachment file, re-hashes
+ *   UT-826 resolveConflict PAUSE_SYNC flips to USER_DETACHED
+ *   UT-827 rollback on save() failure restores state + reports warning
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -34,10 +44,20 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
 
 import {
   resolve,
+  resolveCollection,
+  resolveConflict,
   listSuppressed,
   RESOLUTION_ACTION,
+  COLLECTION_RESOLUTION_ACTION,
+  CONFLICT_RESOLUTION_ACTION,
 } from '../../content/suppressionResolver.mjs';
-import { TrackingStore, createFileRecord, STATE } from '../../content/trackingStore.mjs';
+import {
+  TrackingStore,
+  createFileRecord,
+  createCollectionRecord,
+  STATE,
+} from '../../content/trackingStore.mjs';
+import * as warningSink from '../../content/warningSink.mjs';
 
 async function makeStore() {
   const store = new TrackingStore();
@@ -363,5 +383,354 @@ describe('UT-811: MOVE_OUTSIDE cross-FS fallback', () => {
     expect(result.reason).toBe('io-error');
     expect(IOUtils.remove).toHaveBeenCalledWith('/elsewhere/p.pdf', expect.objectContaining({ ignoreAbsent: true }));
     expect(store.getByLocalPath('p.pdf')).toBeTruthy(); // record kept
+  });
+});
+
+// ─── UT-820: resolveCollection REINSTATE ───────────────────────────────────
+
+describe('UT-820: resolveCollection REINSTATE', () => {
+  it('creates a new Zotero collection, updates record with new key + state=CLEAN', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods/Sub', zoteroCollectionKey: 'OLD1',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+
+    // Old key no longer resolves to a live collection.
+    Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => null);
+    const created = { id: 999, key: 'NEW1', name: '', libraryID: 1, save: vi.fn(async () => {}) };
+    globalThis.Zotero.Collection = vi.fn(function () {
+      Object.assign(this, created);
+      created.save = this.save = vi.fn(async () => { this.key = 'NEW1'; });
+      return this;
+    });
+
+    const rec = store.getCollectionRecord('OLD1');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.REINSTATE, {
+      store, syncRoot: SYNC_ROOT_INFO,
+    });
+    expect(result.ok).toBe(true);
+    expect(store.getCollectionRecord('OLD1')).toBe(null);
+    const fresh = store.getCollectionRecord('NEW1');
+    expect(fresh).toBeTruthy();
+    expect(fresh.state).toBe(STATE.CLEAN);
+    expect(fresh.parentCollectionKey).toBe('ROOT1');
+  });
+
+  it('re-links when the old key still resolves (user re-created in Zotero)', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods/Sub', zoteroCollectionKey: 'OLD1',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    const live = { id: 42, key: 'OLD1', name: 'Sub' };
+    Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => live);
+    const ctorSpy = vi.fn();
+    globalThis.Zotero.Collection = vi.fn(function () { ctorSpy(); });
+
+    const rec = store.getCollectionRecord('OLD1');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.REINSTATE, {
+      store, syncRoot: SYNC_ROOT_INFO,
+    });
+    expect(result.ok).toBe(true);
+    expect(ctorSpy).not.toHaveBeenCalled();
+    expect(store.getCollectionRecord('OLD1').state).toBe(STATE.CLEAN);
+  });
+});
+
+// ─── UT-821: resolveCollection KEEP_LOCAL ──────────────────────────────────
+
+describe('UT-821: resolveCollection KEEP_LOCAL', () => {
+  it('flips collection state to USER_DETACHED, folder untouched', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.KEEP_LOCAL, { store });
+    expect(result.ok).toBe(true);
+    expect(store.getCollectionRecord('CK').state).toBe(STATE.USER_DETACHED);
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(IOUtils.remove).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-822: resolveCollection TRASH ───────────────────────────────────────
+
+describe('UT-822: resolveCollection TRASH', () => {
+  it('moves folder to OS trash, removes collection + child file records', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    // Two files under that folder + one outside.
+    store.add(createFileRecord({
+      localPath: 'Topic/a.pdf', zoteroAttachmentKey: 'A1',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Topic/sub/b.pdf', zoteroAttachmentKey: 'A2',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Other/c.pdf', zoteroAttachmentKey: 'A3', state: STATE.CLEAN,
+    }));
+
+    const fakeFile = { initWithPath: vi.fn(), moveToTrash: vi.fn() };
+    Components.classes['@mozilla.org/file/local;1'].createInstance.mockReturnValue(fakeFile);
+
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.TRASH, { store });
+    expect(result.ok).toBe(true);
+    expect(fakeFile.initWithPath).toHaveBeenCalledWith('/watch/Topic');
+    expect(fakeFile.moveToTrash).toHaveBeenCalled();
+    expect(store.getCollectionRecord('CK')).toBe(null);
+    expect(store.getByLocalPath('Topic/a.pdf')).toBe(null);
+    expect(store.getByLocalPath('Topic/sub/b.pdf')).toBe(null);
+    expect(store.getByLocalPath('Other/c.pdf')).toBeTruthy();
+  });
+
+  it('returns io-error when nsIFile.moveToTrash throws', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    const fakeFile = {
+      initWithPath: vi.fn(),
+      moveToTrash: vi.fn(() => { throw new Error('EPERM'); }),
+    };
+    Components.classes['@mozilla.org/file/local;1'].createInstance.mockReturnValue(fakeFile);
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.TRASH, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('io-error');
+    expect(store.getCollectionRecord('CK')).toBeTruthy();
+  });
+});
+
+// ─── UT-823: resolveCollection MOVE_OUTSIDE ────────────────────────────────
+
+describe('UT-823: resolveCollection MOVE_OUTSIDE', () => {
+  it('rejects when no targetDir', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.MOVE_OUTSIDE, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('no-target-dir');
+  });
+
+  it('recursive move + drops collection + child records', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Topic/a.pdf', zoteroAttachmentKey: 'A1',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.MOVE_OUTSIDE, {
+      store, targetDir: '/elsewhere',
+    });
+    expect(result.ok).toBe(true);
+    expect(IOUtils.move).toHaveBeenCalledWith('/watch/Topic', '/elsewhere/Topic', expect.any(Object));
+    expect(store.getCollectionRecord('CK')).toBe(null);
+    expect(store.getByLocalPath('Topic/a.pdf')).toBe(null);
+  });
+
+  it('cross-FS fallback uses recursive copy + recursive remove', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    IOUtils.move.mockRejectedValueOnce(new Error('EXDEV'));
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.MOVE_OUTSIDE, {
+      store, targetDir: '/elsewhere',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBe('copy-fallback');
+    expect(IOUtils.copy).toHaveBeenCalledWith('/watch/Topic', '/elsewhere/Topic', expect.objectContaining({ recursive: true }));
+    expect(IOUtils.remove).toHaveBeenCalledWith('/watch/Topic', expect.objectContaining({ recursive: true }));
+  });
+});
+
+// ─── UT-824: resolveConflict RESTAMP_BASELINE ──────────────────────────────
+
+describe('UT-824: resolveConflict RESTAMP_BASELINE', () => {
+  it('re-hashes file, sets lastSyncedHash + state=CLEAN', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'OLDHASH', state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    IOUtils.exists.mockResolvedValue(true);
+    // getFileHash uses IOUtils.read + crypto.subtle.digest (16-byte fake) →
+    // deterministic hash from geckoMocks; sufficient for assertion.
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.RESTAMP_BASELINE, { store });
+    expect(result.ok).toBe(true);
+    const updated = store.getByLocalPath('p.pdf');
+    expect(updated.state).toBe(STATE.CLEAN);
+    expect(updated.lastSyncedHash).not.toBe('OLDHASH');
+    expect(updated.lastSyncedHash).toBeTruthy();
+  });
+
+  it('returns missing-file when the file is gone on disk', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'gone.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'H', state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    IOUtils.exists.mockResolvedValue(false);
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.RESTAMP_BASELINE, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('missing-file');
+    expect(store.getByLocalPath('gone.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
+  });
+});
+
+// ─── UT-825: resolveConflict DISCARD_LOCAL ─────────────────────────────────
+
+describe('UT-825: resolveConflict DISCARD_LOCAL', () => {
+  it('copies attachment file over local, re-hashes, flips to CLEAN', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'ATT1',
+      lastSyncedHash: 'OLDHASH', state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    const attachment = {
+      id: 5, key: 'ATT1',
+      getFilePathAsync: vi.fn(async () => '/zotero/store/ATT1/p.pdf'),
+    };
+    Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(attachment);
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.DISCARD_LOCAL, {
+      store, syncRoot: SYNC_ROOT_INFO,
+    });
+    expect(result.ok).toBe(true);
+    expect(IOUtils.copy).toHaveBeenCalledWith('/zotero/store/ATT1/p.pdf', '/watch/p.pdf');
+    const updated = store.getByLocalPath('p.pdf');
+    expect(updated.state).toBe(STATE.CLEAN);
+    expect(updated.lastSyncedHash).toBeTruthy();
+    expect(updated.lastSyncedHash).not.toBe('OLDHASH');
+  });
+
+  it('returns attachment-missing when the attachment lookup yields nothing', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'GONE',
+      state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(null);
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.DISCARD_LOCAL, {
+      store, syncRoot: SYNC_ROOT_INFO,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('attachment-missing');
+  });
+
+  it('returns attachment-missing when getFilePathAsync returns nothing', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'A',
+      state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue({
+      key: 'A', getFilePathAsync: vi.fn(async () => null),
+    });
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.DISCARD_LOCAL, {
+      store, syncRoot: SYNC_ROOT_INFO,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('attachment-missing');
+  });
+});
+
+// ─── UT-826: resolveConflict PAUSE_SYNC ────────────────────────────────────
+
+describe('UT-826: resolveConflict PAUSE_SYNC', () => {
+  it('flips state to USER_DETACHED', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'A',
+      state: STATE.CONFLICT_BLOCKED,
+    });
+    store.add(rec);
+    const result = await resolveConflict(rec, CONFLICT_RESOLUTION_ACTION.PAUSE_SYNC, { store });
+    expect(result.ok).toBe(true);
+    expect(store.getByLocalPath('p.pdf').state).toBe(STATE.USER_DETACHED);
+  });
+});
+
+// ─── UT-827: rollback on save() failure ────────────────────────────────────
+
+describe('UT-827: rollback on save() failure', () => {
+  it('_keepLocal: restores state + reports warning when save throws', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    });
+    store.add(rec);
+
+    const reportSpy = vi.spyOn(warningSink, 'report');
+    const originalState = rec.state;
+    store.save = vi.fn(async () => { throw new Error('EROFS'); });
+
+    const result = await resolve(rec, RESOLUTION_ACTION.KEEP_LOCAL, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('save-failed');
+    expect(result.error).toMatch(/EROFS/);
+    // Tracking-store state must have been restored.
+    expect(store.getByLocalPath('a.pdf').state).toBe(originalState);
+    expect(reportSpy).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'io-error',
+      actionType: 'suppression-save',
+    }));
+    reportSpy.mockRestore();
+  });
+
+  it('_trash: restores tombstone+record when save throws after FS move', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'h', state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    });
+    store.add(rec);
+    store.save = vi.fn(async () => { throw new Error('EROFS'); });
+    const result = await resolve(rec, RESOLUTION_ACTION.TRASH, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('save-failed');
+    // The tracking-store mutations must be rolled back even though the
+    // file is already gone from disk.
+    expect(store.getByLocalPath('a.pdf')).toBeTruthy();
+    expect(store.getAllOfType('tombstone').length).toBe(0);
+  });
+
+  it('resolveCollection _keepLocalCollection: restores state on save failure', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Topic', zoteroCollectionKey: 'CK',
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.save = vi.fn(async () => { throw new Error('EROFS'); });
+    const rec = store.getCollectionRecord('CK');
+    const result = await resolveCollection(rec, COLLECTION_RESOLUTION_ACTION.KEEP_LOCAL, { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('save-failed');
+    expect(store.getCollectionRecord('CK').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
   });
 });

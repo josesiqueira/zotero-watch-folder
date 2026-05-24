@@ -151,6 +151,12 @@
             ? `${files.length} (+${folders.length} folders)`
             : String(files.length);
         row.hidden = files.length === 0 && folders.length === 0;
+        // The folders Resolve button is independent of the files one: a user
+        // may have suppressed folders but no suppressed files (or vice versa).
+        const foldersBtn = document.getElementById('watch-folder-suppressed-resolve-folders-btn');
+        if (foldersBtn) foldersBtn.hidden = folders.length === 0;
+        const filesBtn = document.getElementById('watch-folder-suppressed-resolve-btn');
+        if (filesBtn) filesBtn.hidden = files.length === 0;
     }
 
     /**
@@ -226,6 +232,149 @@
             }
         }
         refreshSuppressedDisplay();
+        refreshWarningsDisplay();
+    }
+
+    /**
+     * Iterate through suppressed CollectionRecords (folders whose Zotero
+     * collection lost its last sync-root membership) and ask the user what
+     * to do for each. Mirrors resolveSuppressed() but dispatches to
+     * resolver.resolveCollection() with the COLLECTION_RESOLUTION_ACTION
+     * enum. For MOVE_OUTSIDE we open FilePicker to pick a target directory.
+     */
+    async function resolveSuppressedFolders() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver) {
+            Services.prompt.alert(window, 'Watch Folder', 'Suppression resolver not available — plugin not fully loaded?');
+            return;
+        }
+        if (typeof resolver.resolveCollection !== 'function'
+            || !resolver.COLLECTION_RESOLUTION_ACTION) {
+            Services.prompt.alert(window, 'Watch Folder', 'Folder resolution unavailable — plugin not fully loaded?');
+            return;
+        }
+        const records = typeof resolver.listSuppressedCollections === 'function'
+            ? resolver.listSuppressedCollections()
+            : [];
+        if (records.length === 0) {
+            Services.prompt.alert(window, 'Watch Folder', 'No suppressed folders.');
+            return;
+        }
+
+        const ACTIONS = [
+            { label: 'Re-create the Zotero collection',           key: resolver.COLLECTION_RESOLUTION_ACTION.REINSTATE },
+            { label: 'Keep local folder, stop syncing it',        key: resolver.COLLECTION_RESOLUTION_ACTION.KEEP_LOCAL },
+            { label: 'Move local folder to trash',                key: resolver.COLLECTION_RESOLUTION_ACTION.TRASH },
+            { label: 'Move local folder outside watch folder',    key: resolver.COLLECTION_RESOLUTION_ACTION.MOVE_OUTSIDE },
+            { label: 'Skip for now',                              key: null },
+        ];
+        const labels = ACTIONS.map((a) => a.label);
+
+        let i = 0;
+        for (const record of records) {
+            i++;
+            const out = {};
+            const ok = Services.prompt.select(
+                window,
+                `Suppressed folder ${i} of ${records.length}`,
+                `"${record.localPath}" lost its last Zotero sync-root membership.\n\nWhat do you want to do?`,
+                labels,
+                out,
+            );
+            if (!ok) break;
+            const choice = ACTIONS[out.value];
+            if (!choice || !choice.key) continue;
+
+            let opts = {};
+            if (choice.key === resolver.COLLECTION_RESOLUTION_ACTION.MOVE_OUTSIDE) {
+                const fp = new FilePicker();
+                fp.init(window, 'Pick destination folder (outside watch folder)', fp.modeGetFolder);
+                const fpResult = await fp.show();
+                if (fpResult !== fp.returnOK) continue;
+                opts.targetDir = (fp.file && typeof fp.file === 'object' && fp.file.path)
+                    ? fp.file.path
+                    : String(fp.file);
+            }
+
+            try {
+                const result = await resolver.resolveCollection(record, choice.key, opts);
+                if (!result.ok) {
+                    Services.prompt.alert(
+                        window,
+                        'Watch Folder',
+                        `Failed to ${choice.label.toLowerCase()} for "${record.localPath}":\n${result.reason || ''}${result.error ? '\n' + result.error : ''}`,
+                    );
+                }
+            } catch (e) {
+                Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+            }
+        }
+        refreshSuppressedDisplay();
+        refreshWarningsDisplay();
+    }
+
+    /**
+     * Iterate through conflict-blocked FileRecords (local hash drifted from
+     * the baseline; mirrorExecutor's conflict gate flipped to CONFLICT_BLOCKED)
+     * and ask the user how to resolve each. No targetDir needed — all three
+     * actions are local-state flips on the tracking record.
+     */
+    async function resolveConflicts() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver) {
+            Services.prompt.alert(window, 'Watch Folder', 'Suppression resolver not available — plugin not fully loaded?');
+            return;
+        }
+        if (typeof resolver.resolveConflict !== 'function'
+            || !resolver.CONFLICT_RESOLUTION_ACTION) {
+            Services.prompt.alert(window, 'Watch Folder', 'Conflict resolution unavailable — plugin not fully loaded?');
+            return;
+        }
+        const records = typeof resolver.listConflicted === 'function'
+            ? resolver.listConflicted()
+            : [];
+        if (records.length === 0) {
+            Services.prompt.alert(window, 'Watch Folder', 'No conflict-blocked items.');
+            return;
+        }
+
+        const ACTIONS = [
+            { label: 'Re-stamp baseline from current file (trust local edit)', key: resolver.CONFLICT_RESOLUTION_ACTION.RESTAMP_BASELINE },
+            { label: 'Discard local edit (restore from Zotero)',               key: resolver.CONFLICT_RESOLUTION_ACTION.DISCARD_LOCAL },
+            { label: 'Pause syncing this file',                                key: resolver.CONFLICT_RESOLUTION_ACTION.PAUSE_SYNC },
+            { label: 'Skip for now',                                           key: null },
+        ];
+        const labels = ACTIONS.map((a) => a.label);
+
+        let i = 0;
+        for (const record of records) {
+            i++;
+            const out = {};
+            const ok = Services.prompt.select(
+                window,
+                `Conflict-blocked item ${i} of ${records.length}`,
+                `"${record.localPath}" has a local edit that diverged from the baseline hash.\n\nHow do you want to resolve it?`,
+                labels,
+                out,
+            );
+            if (!ok) break;
+            const choice = ACTIONS[out.value];
+            if (!choice || !choice.key) continue;
+
+            try {
+                const result = await resolver.resolveConflict(record, choice.key, {});
+                if (!result.ok) {
+                    Services.prompt.alert(
+                        window,
+                        'Watch Folder',
+                        `Failed to ${choice.label.toLowerCase()} for "${record.localPath}":\n${result.reason || ''}${result.error ? '\n' + result.error : ''}`,
+                    );
+                }
+            } catch (e) {
+                Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+            }
+        }
+        refreshConflictedDisplay();
         refreshWarningsDisplay();
     }
 
@@ -418,6 +567,8 @@
         viewWarnings,
         clearWarnings,
         resolveSuppressed,
+        resolveSuppressedFolders,
+        resolveConflicts,
         runSetupWizard,
         onLoad: init,
     };

@@ -13,38 +13,33 @@ what feels right. Each item is self-contained — none block the others.
 
 ### Track A — finish Mode 2 polish (small, well-defined)
 
-These close out the residual v2.1 work. Good for a short session.
+4 of 5 done. Only the live-Zotero visual check remains.
 
-- [ ] **Folder + conflict resolution actions in prefs UI.** Counts are
-      surfaced via `Zotero.WatchFolder.suppressionResolver.listSuppressed
-      Collections()` + `.listConflicted()`, but only file records have a
-      4-action menu. Mirror that for folders (REINSTATE collection / KEEP
-      local folder / TRASH / MOVE outside) and conflicts (re-stamp baseline
-      from disk / discard local edit / pause sync for this file). Touch
-      points: `content/suppressionResolver.mjs`,
-      `content/preferences.{xhtml,js}`, FTL.
+- [x] **Folder + conflict resolution actions in prefs UI.** Added
+      `resolveCollection()` (4 actions: REINSTATE / KEEP_LOCAL / TRASH /
+      MOVE_OUTSIDE) + `resolveConflict()` (3 actions: RESTAMP_BASELINE /
+      DISCARD_LOCAL / PAUSE_SYNC) to `suppressionResolver.mjs`. Prefs
+      pane wired up with two new "Resolve…" buttons matching the
+      existing per-record `Services.prompt.select` loop.
 - [ ] **WARN.1 visual prefs UI verification.** Live-test the prefs pane
       rows ("Sync warnings: N (View) (Clear)" + "Suppressed items: N
-      (Resolve…)" + "Conflict-blocked: N"). API surface is already
-      verified by `test/mcp/MODE2.md`; just confirm the XHTML rows render
-      + interact correctly. May need a `zotero_screenshot` pass.
-- [ ] **`_moveItem` cross-action stale-`oldCanonicalPath` race.** A
-      `moveItem` action queued in the same scan-cycle batch as a
-      `moveFolder` action can be issued with an `oldCanonicalPath`
-      that's already been rewritten. Fix: in
-      `content/mirrorExecutor.mjs:_moveItem`, read the current
-      `record.canonicalLocalPath` fresh from the store at execution
-      time rather than trusting the payload value. Notifier serialization
-      mitigates most of this but a cross-watcher window remains.
-- [ ] **Per-attachment lock during `moveFolder` child rewrite.** Acquire
-      `attachment:<key>` locks while rewriting child file records in
-      `_moveFolder` so concurrent `moveItem` actions on the same
-      attachments wait.
-- [ ] **Resolver `save()` rollback.** `suppressionResolver` surfaces
-      tracking-store save failures via warningSink, but the in-memory
-      mutation has already been applied. Decide: rollback on save
-      failure, or accept the divergence as a known limitation and
-      document.
+      (Resolve… / Resolve folders…)" + "Conflict-blocked: N (Resolve…)").
+      API surface is verified by `test/mcp/MODE2.md` + unit tests; just
+      confirm the XHTML rows render + interact correctly. May need a
+      `zotero_screenshot` pass.
+- [x] **`_moveItem` cross-action stale-`oldCanonicalPath` race.**
+      Re-reads live `canonicalLocalPath` from the store after acquiring
+      `attachment:<key>` lock. If the live path already equals the
+      payload's `newCanonicalPath`, short-circuits as no-op.
+- [x] **Per-attachment lock during `moveFolder` child rewrite.** Both
+      rewrite passes acquire `attachment:<key>` per child (sequentially,
+      to avoid lock-order issues) and re-read the record inside the
+      lock before mutating.
+- [x] **Resolver `save()` rollback.** All 11 handlers (4 file + 4
+      collection + 3 conflict) now snapshot pre-mutation state and
+      restore on `save()` failure. For TRASH/MOVE_OUTSIDE the FS
+      mutation is not reversed (file is already trashed/moved), only
+      the tracking-store mutations roll back — documented inline.
 
 ### Track B — fix the v1-era known bugs
 
@@ -102,7 +97,7 @@ Bigger scope. Reserve a longer session.
 ## Project state at-a-glance
 
 - **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **Tests:** 19 files / 435 passing + 21 skipped (`npm test`).
+- **Tests:** 19 files / 456 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ except WARN.1 visual UI step.
 - **Auto-update:** `update.json` on `main` points at the v2.1 XPI;
