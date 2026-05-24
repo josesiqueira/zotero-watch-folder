@@ -27,6 +27,8 @@
  */
 
 import { getPref } from './utils.mjs';
+import * as collectionWatcher from './collectionWatcher.mjs';
+import * as mirrorExecutor from './mirrorExecutor.mjs';
 
 let _instance = null;
 
@@ -68,6 +70,10 @@ export class SyncCoordinator {
   async init(trackingStore) {
     if (this._initialized) return;
     this._trackingStore = trackingStore;
+    // Wire the executor's tracking-store dependency at init time so it's
+    // ready before any collection event can land — Zotero may emit
+    // notifier events on the very first `add()` after registration.
+    mirrorExecutor.init({ trackingStore });
     this._initialized = true;
     Zotero.debug('[WatchFolder] SyncCoordinator: initialized (idle until mode2/mode3)');
   }
@@ -87,24 +93,32 @@ export class SyncCoordinator {
       return;
     }
     if (this._running) return;
-    // TODO(v2.1 A1): collectionWatcher.start(this)
+    // A1: register the Zotero-side notifier observer. The watcher emits
+    // MirrorActions to mirrorExecutor.execute() per A4. itemMembershipHandler
+    // is invoked from inside collectionWatcher for collection-item events
+    // (A3 — still a stub but the wire is live).
+    collectionWatcher.start(this);
     // TODO(v2.1 A2): folderEventDetector hook into WatchFolderService scan
-    // TODO(v2.1 A3): itemMembershipHandler attached as a notifier subscriber
-    // TODO(v2.1 A4/A5): mirrorExecutor + conflict gate ready to receive actions
     // TODO(v2.1 C): first-run baseline (B.2/B.6/B.7)
     this._running = true;
-    Zotero.debug(`[WatchFolder] SyncCoordinator: started in ${mode} (skeleton — no handlers yet)`);
+    Zotero.debug(`[WatchFolder] SyncCoordinator: started in ${mode}`);
   }
 
   async stop() {
     if (!this._running) return;
-    // TODO(v2.1): unregister observers, tear down detector hooks
+    try { collectionWatcher.stop(); }
+    catch (e) { Zotero.logError(`[WatchFolder] SyncCoordinator.stop collectionWatcher: ${e?.message ?? e}`); }
     this._running = false;
     Zotero.debug('[WatchFolder] SyncCoordinator: stopped');
   }
 
   destroy() {
-    try { /* sync destroy */ this._running = false; this._initialized = false; this._trackingStore = null; }
-    catch (_e) { /* swallow */ }
+    try {
+      try { collectionWatcher.stop(); } catch (_e) { /* best effort */ }
+      try { mirrorExecutor.reset(); } catch (_e) { /* best effort */ }
+      this._running = false;
+      this._initialized = false;
+      this._trackingStore = null;
+    } catch (_e) { /* swallow */ }
   }
 }
