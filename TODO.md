@@ -1,108 +1,159 @@
-# Zotero Watch Folder - TODO
+# Zotero Watch Folder — TODO
 
-The v2 rewrite is well underway. v2.0 (Mode 1) shipped as `v2.0.0-alpha.1`.
-v2.1 (Mode 2) is feature-complete on main and awaits a release tag once the
-items in **Pre-release** are done.
+**v2.1.0-alpha.1 shipped** (commit `dc4ad27`, tag `v2.1.0-alpha.1`).
+Mode 2 (mirror without delete) is functional end-to-end against a real
+Zotero install. v2.0 (Mode 1) remains shipped and unchanged.
 
-## Pre-release (v2.1)
+---
 
-- [ ] **MODE2.md MCP runbook.** `test/mcp/MODE2.md` doesn't exist yet —
-      need a sibling to `MODE1.md` covering the new flows (B.2 copy, B.6
-      mkdir, B.7 hash reconcile, late-attached PDF, adopt-into-scope,
-      collection rename, item-membership change, suppression UX,
-      conflict-blocked surface).
-- [ ] **Run SMOKE.md S.1–S.7 in a live Zotero install** (still the
-      pre-release checklist) plus the new MODE2 cases.
-- [ ] **Bump version → 2.1.0-alpha.1** in `package.json` + `manifest.json`,
-      build/package, upload via `gh release upload`, commit + push the new
-      `update.json` so existing v2.0.0-alpha.1 installs auto-discover.
+## Start here next session
 
-## Open (v2.1 polish)
+Open this file first. Pick one of the three tracks below depending on
+what feels right. Each item is self-contained — none block the others.
 
-- [ ] **Full C1 setup wizard.** Replaces the C2 minimal sync-root picker +
-      first-run nudge with a multi-step pane (welcome → pick watch folder →
-      pick sync root → pick mode → confirm). Wizard runs until
-      `setupCompleted=true`.
-- [ ] **Folder + conflict-blocked resolution actions in prefs UI.** The
-      counts are surfaced (`getSuppressedCollections`, `getConflictedFiles`)
-      but only file records can be resolved via the 4-action menu. Add
-      folder actions (REINSTATE collection / KEEP local folder / TRASH /
-      MOVE outside) and conflict actions (re-stamp baseline / discard local
-      edit / pause sync for this file).
-- [ ] **`_moveItem` cross-action stale-`oldCanonicalPath` race.** Read
-      `oldCanonicalPath` from the live record instead of the payload so a
-      same-cycle `moveFolder` doesn't leave the move stranded with
-      missing-file.
-- [ ] **Per-attachment lock during `moveFolder` child rewrite.** Notifier
-      serialization mitigated most of it but a cross-watcher race window
-      remains (folderEventDetector vs collectionWatcher).
-- [ ] **Resolver save() rollback.** Currently we surface save failures via
-      warningSink but the in-memory mutation has already been applied —
-      next restart silently reverts. Rollback semantics needed for
-      reinstate/keep-local/trash/move-outside.
+### Track A — finish Mode 2 polish (small, well-defined)
 
-## v2.2 — Mode 3 (safe delete)
+These close out the residual v2.1 work. Good for a short session.
 
-- [ ] **`_handleZoteroTrash` v2 rewrite** with the safe-delete predicate
-      (hash-clean check + attachment-key mapping). Must fix the
-      cascading-trash bug below before re-enabling propagation.
-- [ ] **`.zotero-watch-trash/` local trash dir.** The scanner skip-list
-      already reserves the name. Mode 3 moves local files here instead of
-      OS trash for recoverability.
-- [ ] **Bulk-delete protection.** Pause + confirm when >10 files or >20%
-      of the tree would be deleted, or when the watch volume goes offline.
-- [ ] **Restore matrix (RST.1–RST.6).** Restoring a Zotero attachment from
-      Trash should restore the local file from plugin trash; restoring a
-      local file should re-link to its tombstone.
-- [ ] **Tombstone-aware dedup.** `findByHash` should also consult
-      tombstones so a restored local file relinks instead of importing as
-      new.
+- [ ] **Folder + conflict resolution actions in prefs UI.** Counts are
+      surfaced via `Zotero.WatchFolder.suppressionResolver.listSuppressed
+      Collections()` + `.listConflicted()`, but only file records have a
+      4-action menu. Mirror that for folders (REINSTATE collection / KEEP
+      local folder / TRASH / MOVE outside) and conflicts (re-stamp baseline
+      from disk / discard local edit / pause sync for this file). Touch
+      points: `content/suppressionResolver.mjs`,
+      `content/preferences.{xhtml,js}`, FTL.
+- [ ] **WARN.1 visual prefs UI verification.** Live-test the prefs pane
+      rows ("Sync warnings: N (View) (Clear)" + "Suppressed items: N
+      (Resolve…)" + "Conflict-blocked: N"). API surface is already
+      verified by `test/mcp/MODE2.md`; just confirm the XHTML rows render
+      + interact correctly. May need a `zotero_screenshot` pass.
+- [ ] **`_moveItem` cross-action stale-`oldCanonicalPath` race.** A
+      `moveItem` action queued in the same scan-cycle batch as a
+      `moveFolder` action can be issued with an `oldCanonicalPath`
+      that's already been rewritten. Fix: in
+      `content/mirrorExecutor.mjs:_moveItem`, read the current
+      `record.canonicalLocalPath` fresh from the store at execution
+      time rather than trusting the payload value. Notifier serialization
+      mitigates most of this but a cross-watcher window remains.
+- [ ] **Per-attachment lock during `moveFolder` child rewrite.** Acquire
+      `attachment:<key>` locks while rewriting child file records in
+      `_moveFolder` so concurrent `moveItem` actions on the same
+      attachments wait.
+- [ ] **Resolver `save()` rollback.** `suppressionResolver` surfaces
+      tracking-store save failures via warningSink, but the in-memory
+      mutation has already been applied. Decide: rollback on save
+      failure, or accept the divergence as a known limitation and
+      document.
 
-## Known bugs (from CLAUDE.md "Open issues / known bugs")
+### Track B — fix the v1-era known bugs
 
-- [ ] **Cascading-trash bug** — dedup-skipped files share itemID with
-      matched item; deleting one prompts `_promptDiskDelete` for every
-      sibling. Mode 1 + Mode 2 gating sidesteps; must fix before v2.2.
-- [ ] **1MB hash chunk cap** — two PDFs differing only after the first
-      1MB hash identically and are wrongly marked duplicate. Affects B.7
-      reconcile too. Tradeoff: full-file hash vs perf vs sampling
-      multiple chunks vs including file size.
-- [ ] **`metadataRetriever` fire-and-forget queue** at lines 122, 177,
-      370 — swallowed errors. Add `.catch(e => Zotero.logError(e))`.
-- [ ] **`tracking.json` not saved when all files dedup-skip** — early
-      return in `_processNewFile` skips the `save()` even though
-      `add(...)` flipped `_dirty=true`. Crash between scans loses these.
-- [ ] **Schema drift in legacy v1 record sites** — `_ensureCollection
-      RecordsForPath` writes absolute paths to `localPath` instead of
-      sync-root-relative. The folderEventDetector skips records starting
-      with `/` as a workaround. Real fix: migrate.
+These come from CLAUDE.md's "Open issues / known bugs" section and are
+mostly orthogonal to v2.2.
+
+- [ ] **Cascading-trash bug** (CRITICAL before v2.2). Dedup-skipped
+      files share `itemID` with the matched existing item; deleting one
+      with `diskDeleteSync=auto` prompts `_promptDiskDelete` for every
+      sibling. Mode 1 + Mode 2 gating sidesteps; must fix before v2.2's
+      `_handleZoteroTrash` rewrite enables propagation. Repro: drop a
+      duplicate, let it dedup-track, then `rm` it.
 - [ ] **Phase 3 bulk ops** (`reorganizeAll`, `retryAllMetadata`,
-      `applyRulesToAll`) — no UI hook AND not reachable via hooks.
-      Effectively dormant. Decide: delete or wire up.
-
-## Cleanup / nice-to-haves
-
-- [ ] **Smart rules management UI.** Engine in `content/smartRules.mjs`
-      works but rules are JSON in about:config. A prefs-pane editor would
-      make the feature usable.
-- [ ] **Listener leak in `warningSink`** — `clear()` doesn't drop
+      `applyRulesToAll`) — no UI hook AND not reachable via
+      `Zotero.WatchFolder.hooks`. Effectively dormant. Decide: delete
+      from `content/bulkOperations.mjs` or wire up via prefs.
+- [ ] **Smart rules editor UI.** Engine in `content/smartRules.mjs`
+      works but rules are JSON in `about:config`. A small prefs-pane
+      editor would make the feature usable for non-developers.
+- [ ] **Listener leak in `warningSink`.** `clear()` doesn't drop
       `_listeners`. Currently no live subscriber outside the prefs pane,
-      so latent only. Document or fix.
+      so latent only. Document the contract OR drop listeners in
+      `clear()` (only `_resetForTesting` does so today).
+
+### Track C — start v2.2 (Mode 3 — safe delete)
+
+Bigger scope. Reserve a longer session.
+
+- [ ] **Fix cascading-trash bug first** (see Track B). Mode 3 propagates
+      disk deletions back to Zotero — the cascading-trash logic must not
+      ship.
+- [ ] **`_handleZoteroTrash` v2 rewrite** with the safe-delete predicate
+      (hash-clean check + attachment-key mapping). Lives in
+      `content/watchFolder.mjs` ~line 1085+. Currently gated off in Mode
+      1/2; v2.2 turns it on.
+- [ ] **`.zotero-watch-trash/` local trash dir.** Scanner skip-list
+      already reserves the name (`content/fileScanner.mjs`
+      `SKIP_DIRNAMES`). Mode 3 moves local files here instead of OS
+      trash for recoverability. Wire via `mirrorExecutor.deleteFolder`
+      and the disk-deletion path.
+- [ ] **Bulk-delete protection.** Pause + confirm prompt when >10 files
+      or >20% of the tree would be deleted, or when the watch volume
+      goes offline. Add in `mirrorExecutor` before any bulk destructive
+      op runs.
+- [ ] **Restore matrix (RST.1–RST.6 in `updates_22_05_26.md`).**
+      Restoring a Zotero attachment from Trash should restore the local
+      file from plugin trash; restoring a local file should re-link to
+      its tombstone.
+- [ ] **Tombstone-aware dedup.** `trackingStore.findByHash` should also
+      consult tombstones so a restored local file relinks instead of
+      importing as new.
+
+---
+
+## Project state at-a-glance
+
+- **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
+- **Tests:** 19 files / 435 passing + 21 skipped (`npm test`).
+- **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
+  (v2.1) ✅ except WARN.1 visual UI step.
+- **Auto-update:** `update.json` on `main` points at the v2.1 XPI;
+  existing v2.0 installs auto-discover.
+- **Architecture docs:** `CLAUDE.md` (project layout + invariants),
+  `updates_22_05_26.md` (v2 sync-model spec, source of truth for
+  behavior), `docs/CODEBASE_OVERVIEW.md`.
+
+## Quick commands
+
+```sh
+npm test                              # vitest
+npm run bundle                        # rebuild dist/content/scripts/watchFolder.js
+npm run build && npm run bundle && npm run package
+                                      # full XPI rebuild
+gh release view v2.1.0-alpha.1        # release page
+```
+
+When working with the live Zotero MCP bridge:
+- Health check: `zotero_plugin_list` (not `zotero_ping` — known broken)
+- If the bridge wedges with "Could not find Zotero console actor",
+  just retry — it's intermittent. If port 6100 stops listening,
+  Zotero needs a restart.
+- `Zotero.DB.executeTransaction(async () => { await x.save(); })` is
+  the reliable save pattern; bare `await x.saveTx()` silently fails
+  in the bridge's IIFE wrapper.
+
+---
 
 ## Done
 
 - **v2.0 (`v2.0.0-alpha.1`)** — sync-root model (Phase A), Mode 1 import
   wiring (B1/B3/B4/B6), prefs sync-root picker (C2), Phase 2 cleanup.
-- **v2.1** — Mode 2 functional end-to-end:
-  - Phase A1–A6: full event pipeline (collectionWatcher / folderEvent
-    Detector / itemMembershipHandler / mirrorExecutor / syncCoordinator
-    + per-key locks + conflict gate + notifier serialization)
-  - Phase B: 4-action suppression resolver + prefs UX
-  - Phase C: baseline B.1–B.7 (mkdir / copy / adopt / late-attach / hash
-    reconcile)
-  - Phase D: warningSink + prefs surface + suppressed/conflict counts
-  - All 15 review findings (7 high, 8 medium) fixed in fb371c4..a57eded
+- **v2.1 (`v2.1.0-alpha.1`)** — Mode 2 end-to-end:
+  - Phase A1–A6 event pipeline (collectionWatcher / folderEventDetector
+    / itemMembershipHandler / itemAddHandler / mirrorExecutor /
+    syncCoordinator with per-key promise locks + canSafelyMove conflict
+    gate + cross-FS move fallback + runtime mode-pref observer +
+    notifier serialization).
+  - Phase B 4-action suppression resolver + prefs UX.
+  - Phase C install-time baseline (B.1–B.7: mkdir / copy / adopt-into-
+    scope / late-attached PDF / hash reconcile).
+  - Phase C1 multi-step setup wizard.
+  - Phase D warningSink + prefs surface + suppressed/conflict counts.
+  - Hash strategy migrated to full-file SHA-256 (HASH_VERSION=2).
+  - Schema-drift fix: localPath/canonicalLocalPath consistently
+    sync-root-relative throughout watchFolder.mjs.
+  - 15 review findings + 8 live-MCP bugs fixed in commits
+    `fb371c4`..`2a98adf`.
 - **Pre-v2** — Phase 1 (watch folder, auto-import, metadata retrieval,
-  file renaming, first-run flow, post-import actions), Phase 2 (collection
-  ↔ folder mirroring), Phase 3 (smart rules, duplicate detection, bulk
-  ops). Two-way deletion sync (now mode-gated per v2). Plugin icons.
+  file renaming, first-run flow, post-import actions), Phase 2
+  (collection ↔ folder mirroring), Phase 3 (smart rules, duplicate
+  detection, bulk ops). Two-way deletion sync (now mode-gated per v2).
+  Plugin icons.
