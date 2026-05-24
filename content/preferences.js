@@ -390,6 +390,27 @@
         }
     }
 
+    /**
+     * Re-run the setup wizard from the prefs pane. Delegates to the
+     * bundle's runSetupWizard (re-exported via Zotero.WatchFolder), so
+     * the same multi-step flow used at first-run is reused here. After
+     * the wizard returns, refresh the sync-root + mode displays.
+     */
+    async function runSetupWizard() {
+        const fn = Zotero.WatchFolder && Zotero.WatchFolder.runSetupWizard;
+        if (typeof fn !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Setup wizard not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            await fn(window);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Wizard error: ${e.message}`);
+        }
+        refreshSyncRootDisplay();
+        refreshModeDisplay();
+    }
+
     // Expose to window so oncommand attributes in the XHTML can reach these.
     window.WatchFolderPrefs = {
         browseForFolder,
@@ -397,6 +418,7 @@
         viewWarnings,
         clearWarnings,
         resolveSuppressed,
+        runSetupWizard,
         onLoad: init,
     };
 

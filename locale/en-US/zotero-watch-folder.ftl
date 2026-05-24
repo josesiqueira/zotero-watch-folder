@@ -24,6 +24,7 @@ watch-folder-pref-file-types-desc = Comma-separated extensions (e.g., pdf,epub,d
 watch-folder-pref-sync-root = Zotero sync root:
 watch-folder-pref-sync-root-change = Change…
 watch-folder-pref-mode = Sync mode:
+watch-folder-pref-rerun-wizard = Re-run setup wizard…
 watch-folder-pref-warnings = Sync warnings:
 watch-folder-pref-warnings-view = View
 watch-folder-pref-warnings-clear = Clear

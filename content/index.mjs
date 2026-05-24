@@ -41,24 +41,197 @@ function setPref(key, value) {
 }
 
 /**
- * v2 first-run nudge. Shown once per Zotero session when the plugin
- * isn't configured yet (no sync root). Offers to open the Watch Folder
- * preferences pane directly so the user can pick a sync root via the
- * C2 picker. Calling `setupCompleted=true` suppresses the nudge on
- * future runs.
+ * v2.1 Phase C1 — full setup wizard. Multi-step modal flow:
+ *   1. Welcome / continue confirmation
+ *   2. Pick local watch folder (FilePicker)
+ *   3. Pick Zotero sync-root collection (Services.prompt.select over
+ *      non-virtual user-library collections)
+ *   4. Pick sync mode (Mode 1 — import only, Mode 2 — mirror without delete)
+ *   5. Confirm summary + enable
  *
- * This is the minimal v2 onboarding surface — the full multi-step setup
- * wizard (Phase C1) replaces this with a guided flow once it ships.
+ * Returns true if the user completed setup, false if they cancelled at
+ * any step. Sets the relevant prefs + `setupCompleted=true` + `enabled=true`
+ * on success.
  *
+ * Re-runnable: prefs pane exposes a "Re-run setup wizard…" button via
+ * Zotero.WatchFolder.runSetupWizard(window).
+ *
+ * @param {Window} window - The Zotero main window (or prefs window).
+ * @returns {Promise<boolean>}
+ */
+export async function runSetupWizard(window) {
+    if (!Services || !Services.prompt) return false;
+
+    // ─── Step 1: welcome ──────────────────────────────────────────
+    const welcomeFlags =
+          Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+        | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+        | Services.prompt.BUTTON_POS_0_DEFAULT;
+    const welcome = Services.prompt.confirmEx(
+        window,
+        "Watch Folder — Setup",
+        "Set up Watch Folder in 4 steps?\n\n"
+          + "1. Pick a local folder the plugin should watch\n"
+          + "2. Pick the Zotero collection imports should land in\n"
+          + "3. Pick a sync mode\n"
+          + "4. Confirm and enable\n\n"
+          + "You can re-run the wizard later from Edit → Settings → Watch Folder.",
+        welcomeFlags,
+        "Continue",
+        null, null,
+        null,
+        {},
+    );
+    if (welcome !== 0) return false;
+
+    // ─── Step 2: watch folder ────────────────────────────────────
+    const watchFolder = await _wizardPickWatchFolder(window);
+    if (!watchFolder) return false;
+
+    // ─── Step 3: sync root collection ────────────────────────────
+    const syncRootChoice = await _wizardPickSyncRoot(window);
+    if (!syncRootChoice) return false;
+
+    // ─── Step 4: sync mode ───────────────────────────────────────
+    const modeChoice = _wizardPickMode(window);
+    if (!modeChoice) return false;
+
+    // ─── Step 5: confirm ─────────────────────────────────────────
+    const confirmFlags =
+          Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+        | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+        | Services.prompt.BUTTON_POS_0_DEFAULT;
+    const confirm = Services.prompt.confirmEx(
+        window,
+        "Watch Folder — Confirm",
+        `Ready to enable:\n\n`
+          + `Watch folder: ${watchFolder}\n`
+          + `Zotero sync root: ${syncRootChoice.label}\n`
+          + `Mode: ${modeChoice.label}\n\n`
+          + `Imports will start on the next scan cycle (default every 5s).`,
+        confirmFlags,
+        "Enable",
+        null, null,
+        null,
+        {},
+    );
+    if (confirm !== 0) return false;
+
+    // ─── Commit prefs + start services ───────────────────────────
+    setPref("sourcePath", watchFolder);
+    setPref("syncRootCollectionKey", syncRootChoice.key);
+    setPref("syncRootLibraryID", syncRootChoice.libraryID);
+    setPref("mode", modeChoice.key);
+    setPref("setupCompleted", true);
+    setPref("enabled", true);
+
+    try {
+        if (watchFolderService) await watchFolderService.startWatching();
+        if (syncCoordinator) await syncCoordinator.start();
+    } catch (e) {
+        Zotero.logError(`[WatchFolder] runSetupWizard: failed to start services - ${e.message}`);
+    }
+    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} root=${syncRootChoice.key} mode=${modeChoice.key})`);
+    return true;
+}
+
+async function _wizardPickWatchFolder(window) {
+    try {
+        const { FilePicker } = ChromeUtils.importESModule(
+            'chrome://zotero/content/modules/filePicker.mjs',
+        );
+        const fp = new FilePicker();
+        fp.init(window, "Pick the local folder to watch", fp.modeGetFolder);
+        const current = getPref("sourcePath");
+        if (current) {
+            try { fp.displayDirectory = current; } catch (_) { /* best effort */ }
+        }
+        const result = await fp.show();
+        if (result !== fp.returnOK) return null;
+        const f = fp.file;
+        if (!f) return null;
+        return (typeof f === "object" && f.path) ? f.path : String(f);
+    } catch (e) {
+        Services.prompt.alert(window, "Watch Folder", `Folder picker error: ${e.message}`);
+        return null;
+    }
+}
+
+async function _wizardPickSyncRoot(window) {
+    const libraryID = Zotero.Libraries.userLibraryID;
+    let collections;
+    try {
+        collections = Zotero.Collections.getByLibrary(libraryID) || [];
+    } catch (e) {
+        Services.prompt.alert(window, "Watch Folder", `Could not enumerate collections: ${e.message}`);
+        return null;
+    }
+    const usable = collections
+        .filter((c) => !c.isVirtual)
+        .map((c) => ({ key: c.key, label: _displayPath(c), libraryID }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+    if (usable.length === 0) {
+        Services.prompt.alert(
+            window,
+            "Watch Folder",
+            "No collections found in your library. Create one in Zotero first, then re-run setup.",
+        );
+        return null;
+    }
+    const labels = usable.map((u) => u.label);
+    const out = {};
+    const ok = Services.prompt.select(
+        window,
+        "Pick sync root collection",
+        "Files added to your watch folder will be imported into the collection you pick here. "
+          + "Subfolders on disk become subcollections under this root.",
+        labels,
+        out,
+    );
+    if (!ok) return null;
+    return usable[out.value] ?? null;
+}
+
+function _wizardPickMode(window) {
+    // Only modes that actually work in this release. Mode 3 ships in
+    // v2.2 — adding it before then would let users pick it and then
+    // silently fall back to Mode 2 behavior.
+    const modes = [
+        { key: "mode1", label: "Mode 1 — Import only (no two-way sync; safest)" },
+        { key: "mode2", label: "Mode 2 — Mirror without delete (two-way; deletes are warn-only)" },
+    ];
+    const out = {};
+    const ok = Services.prompt.select(
+        window,
+        "Pick sync mode",
+        "Mode 1 only watches the local folder for new files. Mode 2 also reflects changes you make in Zotero (rename, reorganize) back to disk.",
+        modes.map((m) => m.label),
+        out,
+    );
+    if (!ok) return null;
+    return modes[out.value] ?? null;
+}
+
+function _displayPath(collection) {
+    const segments = [];
+    let cursor = collection;
+    for (let i = 0; i < 64 && cursor; i++) {
+        segments.push(cursor.name);
+        if (!cursor.parentID) break;
+        cursor = Zotero.Collections.get(cursor.parentID);
+    }
+    return segments.reverse().join(" / ");
+}
+
+/**
+ * First-run hook. If the plugin isn't configured yet, offers the
+ * setup wizard. Suppressed permanently once `setupCompleted=true`.
  * @param {Window} window - The Zotero main window.
  */
 async function maybeShowFirstRunNudge(window) {
-    // Already set up? Nothing to do.
     if (getPref("setupCompleted") === true) return;
-    // Sync root already picked but `setupCompleted` somehow unset? Mark
-    // complete and bail — the C2 picker is the canonical setter, but
-    // this absorbs the case where a user wired things up via about:config
-    // (or a manual pref import) before the nudge fired.
+    // Sync root already picked but `setupCompleted` somehow unset?
+    // Absorb the case (manual about:config setup) without nagging.
     const syncRootKey = getPref("syncRootCollectionKey");
     if (syncRootKey) {
         setPref("setupCompleted", true);
@@ -66,42 +239,25 @@ async function maybeShowFirstRunNudge(window) {
     }
     if (!Services || !Services.prompt) return;
 
-    const title = "Zotero Watch Folder";
-    const msg = "Welcome! Watch Folder isn't configured yet.\n\n"
-              + "To start syncing, open Edit → Settings → Watch Folder, "
-              + "pick a local folder to watch, then click 'Change…' next "
-              + "to 'Zotero sync root' to choose where imports should land.\n\n"
-              + "Open settings now?";
     const flags =
           Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
         | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
         | Services.prompt.BUTTON_POS_0_DEFAULT;
-
     const result = Services.prompt.confirmEx(
         window,
-        title,
-        msg,
+        "Watch Folder",
+        "Watch Folder isn't configured yet.\n\nRun the setup wizard now?",
         flags,
-        "Open settings",
+        "Run setup",
         null, null,
         null,
         {},
     );
-    // result === 0 → user clicked "Open settings"; result === 1 → cancelled.
-    if (result === 0) {
-        try {
-            // Zotero exposes openPreferences with a paneID parameter.
-            const paneID = "zotero-prefpane-watch-folder";
-            if (window.Zotero?.Utilities?.Internal?.openPreferences) {
-                window.Zotero.Utilities.Internal.openPreferences(paneID);
-            } else if (window.openPreferences) {
-                window.openPreferences(paneID);
-            } else {
-                Zotero.debug("[WatchFolder] Could not auto-open prefs — host doesn't expose openPreferences");
-            }
-        } catch (e) {
-            Zotero.debug(`[WatchFolder] Failed to open prefs: ${e.message}`);
-        }
+    if (result !== 0) return;
+    try {
+        await runSetupWizard(window);
+    } catch (e) {
+        Zotero.logError(`[WatchFolder] first-run wizard error - ${e.message}`);
     }
 }
 
