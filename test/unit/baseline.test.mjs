@@ -36,6 +36,10 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
     isSpecialCollection: vi.fn(() => false),
   };
 });
+vi.mock('../../content/fileScanner.mjs', () => ({
+  scanFolderRecursive: vi.fn(async () => []),
+  SKIP_DIRNAMES: new Set(),
+}));
 
 import { runBaseline, isBaselineNeeded, markBaselineComplete } from '../../content/baseline.mjs';
 import { TrackingStore, STATE } from '../../content/trackingStore.mjs';
@@ -46,6 +50,7 @@ import {
   chooseCanonicalCollection,
   isSpecialCollection,
 } from '../../content/canonicalPath.mjs';
+import { scanFolderRecursive } from '../../content/fileScanner.mjs';
 
 const SYNC_ROOT = {
   collection: { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
@@ -80,6 +85,7 @@ beforeEach(() => {
   chooseCanonicalCollection.mockResolvedValue(null);
   isSpecialCollection.mockReturnValue(false);
   getFileHash.mockResolvedValue('hash1');
+  scanFolderRecursive.mockResolvedValue([]);
 });
 
 // ─── UT-901 ────────────────────────────────────────────────────────────────
@@ -309,6 +315,123 @@ describe('UT-910: force=true bypasses idempotency', () => {
     SYNC_ROOT.collection.getChildItems = () => [];
     const result = await runBaseline({ trackingStore: await makeStore(), force: true });
     expect(result.baselineRan).toBe(true);
+  });
+});
+
+// ─── UT-912 (B.7) ─────────────────────────────────────────────────────────
+
+describe('UT-912: B.7 hash-based reconcile', () => {
+  it('adopts an existing disk file at a non-canonical path when content matches', async () => {
+    const att = {
+      id: 700, key: 'ATT1',
+      attachmentFilename: 'paper.pdf',
+      isAttachment: () => true,
+      parentItemID: null,
+      getCollections: () => [],
+      // The attachment's Zotero-storage source path.
+      getFilePathAsync: vi.fn(async () => '/zotero-storage/ABC/paper.pdf'),
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    // The CANONICAL destination /watch/Methods/paper.pdf does NOT exist.
+    // But disk has /watch/elsewhere/paper.pdf with matching content hash.
+    IOUtils.exists.mockImplementation(async (p) => {
+      if (p === '/watch/elsewhere/paper.pdf') return true;
+      if (p === '/zotero-storage/ABC/paper.pdf') return true;
+      return false;
+    });
+    scanFolderRecursive.mockResolvedValue([
+      { path: '/watch/elsewhere/paper.pdf', name: 'paper.pdf' },
+    ]);
+    // Both the disk file and the Zotero storage file hash to the same value.
+    getFileHash.mockResolvedValue('SAMEHASH');
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.ok).toBe(true);
+    expect(result.reconciles).toBe(1);
+    expect(result.copies).toBe(0);
+    // Did NOT copy from Zotero storage.
+    expect(IOUtils.copy).not.toHaveBeenCalled();
+    // Tracked record points at the EXISTING disk path, not the canonical.
+    const rec = store.getByAttachmentKey('ATT1');
+    expect(rec).toBeTruthy();
+    expect(rec.localPath).toBe('elsewhere/paper.pdf');
+    expect(rec.canonicalLocalPath).toBe('elsewhere/paper.pdf');
+    expect(rec.lastSyncedHash).toBe('SAMEHASH');
+  });
+
+  it('still copies from Zotero storage when no disk file has the matching hash', async () => {
+    const att = {
+      id: 700, key: 'ATT1',
+      attachmentFilename: 'paper.pdf',
+      isAttachment: () => true,
+      parentItemID: null,
+      getCollections: () => [],
+      getFilePathAsync: vi.fn(async () => '/zotero-storage/ABC/paper.pdf'),
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    IOUtils.exists.mockImplementation(async (p) => p === '/zotero-storage/ABC/paper.pdf');
+    scanFolderRecursive.mockResolvedValue([
+      { path: '/watch/other.pdf', name: 'other.pdf' },
+    ]);
+    // Disk file has a DIFFERENT hash from the Zotero attachment.
+    getFileHash.mockImplementation(async (p) => (p === '/watch/other.pdf' ? 'DISK-HASH' : 'ZOTERO-HASH'));
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.copies).toBe(1);
+    expect(result.reconciles).toBe(0);
+    expect(IOUtils.copy).toHaveBeenCalledWith('/zotero-storage/ABC/paper.pdf', '/watch/Methods/paper.pdf');
+  });
+
+  it('does not double-claim: second attachment with the same hash falls through to copy', async () => {
+    const att1 = {
+      id: 700, key: 'ATT1', attachmentFilename: 'paper.pdf',
+      isAttachment: () => true, parentItemID: null, getCollections: () => [],
+      getFilePathAsync: async () => '/zotero-storage/ABC/paper.pdf',
+    };
+    const att2 = {
+      id: 701, key: 'ATT2', attachmentFilename: 'paper-copy.pdf',
+      isAttachment: () => true, parentItemID: null, getCollections: () => [],
+      getFilePathAsync: async () => '/zotero-storage/DEF/paper-copy.pdf',
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att1, att2];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    IOUtils.exists.mockImplementation(async (p) => p.startsWith('/zotero-storage') || p === '/watch/disk-copy.pdf');
+    scanFolderRecursive.mockResolvedValue([{ path: '/watch/disk-copy.pdf', name: 'disk-copy.pdf' }]);
+    getFileHash.mockResolvedValue('SHARED-HASH'); // every file has same hash
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.reconciles).toBe(1); // only the FIRST attachment adopted the disk file
+    expect(result.copies).toBe(1);     // the SECOND attachment falls through to copy
+  });
+
+  it('skips B.7 entirely in dryRun mode', async () => {
+    const att = {
+      id: 700, key: 'ATT1', attachmentFilename: 'paper.pdf',
+      isAttachment: () => true, parentItemID: null, getCollections: () => [],
+      getFilePathAsync: async () => '/zotero-storage/ABC/paper.pdf',
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    scanFolderRecursive.mockResolvedValue([{ path: '/watch/other.pdf', name: 'other.pdf' }]);
+    await runBaseline({ trackingStore: await makeStore(), dryRun: true });
+    // dryRun shouldn't even call scanFolderRecursive — the hash index is skipped.
+    expect(scanFolderRecursive).not.toHaveBeenCalled();
   });
 });
 

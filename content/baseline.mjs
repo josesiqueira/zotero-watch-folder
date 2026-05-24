@@ -25,7 +25,7 @@
  * @module baseline
  */
 
-import { getPref, setPref, getFileHash } from './utils.mjs';
+import { getPref, setPref, getFileHash, relativePath } from './utils.mjs';
 import {
   resolveSyncRoot,
   collectionKeyToRelativePath,
@@ -34,6 +34,7 @@ import {
 } from './canonicalPath.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
+import { scanFolderRecursive } from './fileScanner.mjs';
 
 const BASELINE_PREF = 'baselineCompletedForRoot';
 
@@ -89,10 +90,18 @@ export async function runBaseline(opts = {}) {
 
   Zotero.debug(`[WatchFolder] baseline: starting for sync root ${syncRoot.collection.key} → ${watchRoot}`);
   const dryRun = !!opts.dryRun;
-  let copies = 0, mkdirs = 0, errors = 0;
+  let copies = 0, mkdirs = 0, errors = 0, reconciles = 0;
 
   try {
     const { collections, attachments } = await _enumerateUnderSyncRoot(syncRoot);
+
+    // B.7 — build a disk-file hash index ONCE so the per-attachment
+    // copy step can detect content that already exists on disk at a
+    // non-canonical path. Adopts it as the tracked record instead of
+    // copying from Zotero storage (which would duplicate the bytes).
+    // The index is the dominant cost of baseline on large trees — we
+    // skip it in dryRun to keep planning cheap.
+    const diskHashIndex = dryRun ? null : await _buildDiskHashIndex(watchRoot);
 
     // ─── B.6 — empty subcollections → empty disk folders ────────────
     for (const col of collections) {
@@ -142,9 +151,10 @@ export async function runBaseline(opts = {}) {
       const { attachment, item } = entry;
       try {
         const result = await _copyAttachmentToCanonical({
-          attachment, item, syncRoot, watchRoot, store, dryRun,
+          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex,
         });
         if (result === 'copied') copies++;
+        else if (result === 'adopted-different-path') reconciles++;
       } catch (e) {
         errors++;
         reportWarning({
@@ -162,8 +172,8 @@ export async function runBaseline(opts = {}) {
       markBaselineComplete(syncRoot.collection.key);
     }
 
-    Zotero.debug(`[WatchFolder] baseline: complete (copies=${copies} mkdirs=${mkdirs} errors=${errors})`);
-    return { ok: true, baselineRan: true, copies, mkdirs, errors };
+    Zotero.debug(`[WatchFolder] baseline: complete (copies=${copies} mkdirs=${mkdirs} reconciles=${reconciles} errors=${errors})`);
+    return { ok: true, baselineRan: true, copies, mkdirs, reconciles, errors };
   } catch (e) {
     Zotero.logError(`[WatchFolder] baseline: ${e?.message ?? e}`);
     return { ok: false, baselineRan: false, error: String(e?.message ?? e) };
@@ -211,13 +221,20 @@ export async function copyAttachmentToCanonical(args) {
  * @param {boolean} [args.dryRun=false]
  * @returns {Promise<{ok: boolean, copies: number, mkdirs: number, errors: number}>}
  */
-export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRoot, store, dryRun = false }) {
+export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRoot, store, dryRun = false, diskHashIndex }) {
   if (!rootCollection || !syncRoot || !watchRoot || !store) {
     return { ok: false, copies: 0, mkdirs: 0, errors: 0, reason: 'invalid-args' };
   }
-  let copies = 0, mkdirs = 0, errors = 0;
+  let copies = 0, mkdirs = 0, errors = 0, reconciles = 0;
   try {
     const { collections, attachments } = _enumerateFrom(rootCollection, syncRoot);
+    // Adopt uses the same B.7 reconcile as the install-time baseline:
+    // if disk already has the bytes elsewhere, link instead of duplicate.
+    // Caller may pre-supply an index (e.g. shared across many adopt calls
+    // in a session); otherwise we build a scoped one for this subtree.
+    const index = (typeof diskHashIndex !== 'undefined')
+      ? diskHashIndex
+      : (dryRun ? null : await _buildDiskHashIndex(watchRoot));
     for (const col of collections) {
       const relPath = await collectionKeyToRelativePath(col.key);
       if (relPath == null || relPath === '') continue;
@@ -257,8 +274,11 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
     }
     for (const { attachment, item } of attachments) {
       try {
-        const result = await _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoot, store, dryRun });
+        const result = await _copyAttachmentToCanonical({
+          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex: index,
+        });
         if (result === 'copied') copies++;
+        else if (result === 'adopted-different-path') reconciles++;
       } catch (e) {
         errors++;
         reportWarning({
@@ -273,7 +293,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
     if (!dryRun) {
       try { await store.save(); } catch (_e) { /* logged */ }
     }
-    return { ok: true, copies, mkdirs, errors };
+    return { ok: true, copies, mkdirs, reconciles, errors };
   } catch (e) {
     Zotero.logError(`[WatchFolder] adoptCollectionSubtree: ${e?.message ?? e}`);
     return { ok: false, copies, mkdirs, errors, error: String(e?.message ?? e) };
@@ -281,10 +301,13 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
 }
 
 /**
- * Returns 'copied' on successful copy, 'skipped' when destination
- * exists or attachment isn't trackable. Throws on hard IO failures.
+ * Returns one of:
+ *   'copied'                  — copied from Zotero storage to canonical
+ *   'adopted-different-path'  — disk had a hash-matching file elsewhere; linked
+ *   'skipped'                 — destination existed (adopted) or nothing to do
+ * Throws on hard IO failures.
  */
-async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoot, store, dryRun }) {
+async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex }) {
   const filename = attachment.attachmentFilename;
   if (!filename) return 'skipped';
 
@@ -295,11 +318,11 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;
   const absDest = _toAbs(watchRoot, relPath);
 
-  // Don't trample existing files (B.7 full reconcile is a follow-up).
+  // Don't trample existing files. If the destination already has a file,
+  // adopt it (hash-link to the Zotero attachment) so the dedup paths
+  // recognise the pair.
   const destExists = await IOUtils.exists(absDest);
   if (destExists) {
-    // Adopt the file if we don't already track it — hash-link to the
-    // Zotero attachment so the regular dedup paths recognise the pair.
     if (!store.getByAttachmentKey(attachment.key) && !dryRun) {
       await _adoptExistingDestFile({ attachment, item, canonical, relPath, absDest, store });
     }
@@ -308,6 +331,45 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
 
   // Already tracked elsewhere — skip (shouldn't happen on a true first run).
   if (store.getByAttachmentKey(attachment.key)) return 'skipped';
+
+  // ── B.7 cross-path reconcile ────────────────────────────────────
+  // Before copying from Zotero storage, see if disk already has the
+  // same content at a non-canonical path. If yes, adopt that file
+  // instead of duplicating bytes.
+  if (diskHashIndex && !dryRun) {
+    const attHash = await _attachmentContentHash(attachment);
+    if (attHash) {
+      const matchAbs = diskHashIndex.get(attHash);
+      if (matchAbs && matchAbs !== absDest) {
+        const matchRel = relativePath(matchAbs, watchRoot);
+        if (matchRel != null && matchRel !== '') {
+          // Don't double-claim: a future iteration with the same hash
+          // (e.g. two Zotero attachments sharing bytes) must fall
+          // through to its own copy.
+          diskHashIndex.delete(attHash);
+          let stat = null;
+          try { stat = await IOUtils.stat(matchAbs); } catch (_e) { /* best effort */ }
+          // Accept the disk layout — localPath = disk path,
+          // canonicalLocalPath also = disk path so canonical recompute
+          // doesn't immediately relocate the user's chosen layout.
+          store.add(createFileRecord({
+            localPath: matchRel,
+            canonicalLocalPath: matchRel,
+            lastSyncedHash: attHash,
+            lastSyncedSize: stat?.size ?? 0,
+            lastSyncedMtime: stat?.lastModified ?? 0,
+            zoteroItemKey: _parentItemKey(attachment),
+            zoteroAttachmentKey: attachment.key,
+            canonicalCollectionKey: canonical.key,
+            collectionMembershipKeys: _itemMembershipKeys(item),
+            state: STATE.CLEAN,
+          }));
+          Zotero.debug(`[WatchFolder] baseline B.7: linked ${attachment.key} → existing disk file ${matchRel} (canonical would have been ${relPath})`);
+          return 'adopted-different-path';
+        }
+      }
+    }
+  }
 
   let srcPath = null;
   try { srcPath = await attachment.getFilePathAsync(); }
@@ -476,6 +538,51 @@ async function _enumerateUnderSyncRoot(syncRoot) {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Walk the watch folder and hash every file. Returns a Map<hash, absPath>
+ * keyed by SHA-256-of-first-1MB (matches HASH_CHUNK_SIZE in utils.mjs).
+ * On hash collision (multiple disk files sharing content), the FIRST
+ * encountered path wins; subsequent paths are silently dropped.
+ *
+ * Used by B.7 hash reconcile in the initial baseline. Skipped in dryRun.
+ */
+async function _buildDiskHashIndex(watchRoot) {
+  const index = new Map();
+  let files = [];
+  try { files = await scanFolderRecursive(watchRoot); }
+  catch (e) {
+    Zotero.debug(`[WatchFolder] baseline B.7: hash-index scan failed: ${e?.message ?? e}`);
+    return index;
+  }
+  for (const fileInfo of files) {
+    if (!fileInfo?.path) continue;
+    const hash = await getFileHash(fileInfo.path);
+    if (!hash) continue;
+    if (!index.has(hash)) index.set(hash, fileInfo.path);
+  }
+  Zotero.debug(`[WatchFolder] baseline B.7: hashed ${files.length} disk files, ${index.size} unique hashes`);
+  return index;
+}
+
+/**
+ * Best-effort content hash for a Zotero attachment. Reads the file at
+ * the attachment's storage path via IOUtils — there's no shortcut from
+ * Zotero's existing metadata to a SHA-256-of-first-1MB. Returns null
+ * when the file is unavailable (not yet synced, missing, etc).
+ */
+async function _attachmentContentHash(attachment) {
+  if (!attachment || typeof attachment.getFilePathAsync !== 'function') return null;
+  let srcPath = null;
+  try { srcPath = await attachment.getFilePathAsync(); }
+  catch (_e) { return null; }
+  if (!srcPath) return null;
+  let exists = false;
+  try { exists = await IOUtils.exists(srcPath); }
+  catch (_e) { return null; }
+  if (!exists) return null;
+  return getFileHash(srcPath);
+}
 
 function _toAbs(root, rel) {
   if (!rel) return root;
