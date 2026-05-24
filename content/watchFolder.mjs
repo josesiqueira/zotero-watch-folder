@@ -5,7 +5,7 @@
  */
 
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
-import { scanFolder, scanFolderRecursive } from './fileScanner.mjs';
+import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
@@ -276,6 +276,19 @@ export class WatchFolderService {
         await this._detectFolderRenames(files, watchPath);
       } catch (e) {
         Zotero.debug(`[WatchFolder] Folder-rename detection failed: ${e.message}`);
+      }
+
+      // ── B.4 / EF.1 — empty-folder pickup ─────────────────────────────
+      // Files imported into a subfolder trigger subcollection creation
+      // as a side effect of canonicalPath.relativePathToCollection. But
+      // a user who creates an empty subfolder (or a subfolder with only
+      // skipped/ignored files) expects an empty Zotero subcollection
+      // too. Walk the disk dirs and create collections for any not yet
+      // tracked.
+      try {
+        await this._ensureCollectionsForExistingFolders(watchPath);
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] Empty-folder pickup failed: ${e.message}`);
       }
 
       // Detect externally-deleted files vs file-moves. A "move" is when a
@@ -666,6 +679,81 @@ export class WatchFolderService {
   }
 
   /**
+   * Recursively enumerate subdirectories under `watchPath`, skipping
+   * reserved names (`imported`, `.zotero-watch-trash`) and depth-capping
+   * the walk to mirror `scanFolderRecursive`. Returns absolute paths.
+   *
+   * @private
+   * @param {string} watchPath
+   * @param {number} [maxDepth=10]
+   * @returns {Promise<string[]>}
+   */
+  async _listSubdirectories(watchPath, maxDepth = 10) {
+    const out = [];
+    const visit = async (dir, depth) => {
+      if (depth > maxDepth) return;
+      let entries;
+      try { entries = await IOUtils.getChildren(dir); } catch (_e) { return; }
+      for (const entry of entries) {
+        let info;
+        try { info = await IOUtils.stat(entry); } catch (_e) { continue; }
+        if (info?.type !== 'directory') continue;
+        const name = PathUtils.filename(entry);
+        if (SKIP_DIRNAMES.has(name)) continue;
+        out.push(entry);
+        await visit(entry, depth + 1);
+      }
+    };
+    await visit(watchPath, 0);
+    return out;
+  }
+
+  /**
+   * B.4 / EF.1 — make sure every disk subfolder under the sync root has
+   * a matching Zotero subcollection. The file-import path creates
+   * collections as a side effect when a file lands in a subfolder, but
+   * folders that contain only ignored files (or no files at all) need
+   * an explicit pass so the user's expected `inbox/Methods/` ↔ Zotero
+   * `Methods` mapping holds.
+   *
+   * @private
+   * @param {string} watchPath
+   */
+  async _ensureCollectionsForExistingFolders(watchPath) {
+    if (!this._trackingStore || !watchPath) return;
+    const dirs = await this._listSubdirectories(watchPath);
+    if (dirs.length === 0) return;
+
+    const tracked = new Set(
+      this._trackingStore.getAllOfType('collection').map(r => r.localPath),
+    );
+
+    for (const absDir of dirs) {
+      if (tracked.has(absDir)) continue;
+      const relDir = relativePath(absDir, watchPath);
+      if (relDir == null || relDir === '') continue;
+      try {
+        const col = await relativePathToCollection(relDir, { createIfMissing: true });
+        if (col) {
+          await this._ensureCollectionRecordsForPath(relDir, col, watchPath);
+          // tracked.add(absDir) — refresh local set so subsequent siblings
+          // don't double-create. _ensureCollectionRecordsForPath also
+          // inserts the record into the store, so getAllOfType would
+          // return it on the next call, but doing it here keeps the
+          // inner loop pure.
+          tracked.add(absDir);
+        }
+      } catch (e) {
+        if (e instanceof SyncRootMissingError) {
+          Zotero.debug('[WatchFolder] Sync root missing — skipping empty-folder pickup');
+          return;
+        }
+        Zotero.debug(`[WatchFolder] Empty-folder pickup failed for ${absDir}: ${e.message}`);
+      }
+    }
+  }
+
+  /**
    * Detect folder renames on disk (e.g. user renamed Methods/ → Procedures/)
    * and rename the corresponding Zotero collection instead of letting
    * per-file move-detection leave an empty Zotero subcollection behind.
@@ -696,13 +784,17 @@ export class WatchFolderService {
     if (collectionRecords.length === 0) return;
 
     // ── 1. Build on-disk dir state (ABSOLUTE paths to match record schema) ──
-    const onDiskDirs = new Set([watchPath]);
+    // Include ALL existing subdirs (even empty ones) — otherwise a tracked
+    // collection record for an empty folder would be flagged as missing
+    // every scan and trigger spurious "no tracked file hashes — skip" log.
+    const onDiskDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
     for (const fileInfo of scannedFiles) {
       const rel = relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop(); // drop filename
-      // Add this dir + all ancestor dirs as absolute paths.
+      // Add this dir + all ancestor dirs as absolute paths (covers the
+      // file-only path for redundancy with the dir walk above).
       for (let i = 1; i <= parts.length; i++) {
         onDiskDirs.add(watchPath + '/' + parts.slice(0, i).join('/'));
       }

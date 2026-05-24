@@ -64,6 +64,7 @@ vi.mock('../../content/fileMissing.mjs', () => {
 vi.mock('../../content/fileScanner.mjs', () => ({
   scanFolder: vi.fn(),
   scanFolderRecursive: vi.fn(),
+  SKIP_DIRNAMES: Object.freeze(new Set(['imported', '.zotero-watch-trash'])),
 }));
 
 vi.mock('../../content/fileImporter.mjs', () => ({
@@ -1114,5 +1115,141 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     expect(aiFile).toBeTruthy();
     expect(aiFile.canonicalLocalPath).toBe('/watch/Procedures/AI/paper.pdf');
     expect(service._trackingStore._files.has('/watch/Methods/AI/paper.pdf')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-055: empty-folder pickup (B.4 / EF.1) — disk subfolders without files
+// still get a corresponding Zotero subcollection so the local-↔-Zotero
+// folder mapping holds for users who pre-create empty folders.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
+  let service;
+  let relativePathToCollectionMock;
+
+  function makeStore(initialFiles = [], initialCollections = []) {
+    const files = new Map(initialFiles.map(f => [f.localPath, f]));
+    const collections = new Map(initialCollections.map(c => [c.zoteroCollectionKey, c]));
+    return {
+      _files: files,
+      _collections: collections,
+      getAllOfType: vi.fn((t) => {
+        if (t === 'file') return [...files.values()];
+        if (t === 'collection') return [...collections.values()];
+        return [];
+      }),
+      getCollectionRecord: vi.fn((key) => collections.get(key) || null),
+      removeCollectionRecord: vi.fn((key) => collections.delete(key)),
+      remove: vi.fn((path) => files.delete(path)),
+      removeByAttachmentKey: vi.fn(),
+      update: vi.fn(),
+      add: vi.fn((rec) => {
+        if (rec.type === 'file') files.set(rec.localPath, rec);
+        else if (rec.type === 'collection') collections.set(rec.zoteroCollectionKey, rec);
+      }),
+      hasPath: vi.fn((p) => files.has(p)),
+      save: vi.fn(async () => {}),
+    };
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const cp = await import('../../content/canonicalPath.mjs');
+    relativePathToCollectionMock = cp.relativePathToCollection;
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._trackingStore = makeStore();
+
+    // Default IOUtils stubs — overridden per test where needed.
+    globalThis.IOUtils.getChildren = vi.fn(async () => []);
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'regular' }));
+  });
+
+  it('creates a Zotero subcollection for an existing empty disk folder', async () => {
+    // Disk: /watch contains an empty `Methods/` dir.
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/Methods'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async (p) =>
+      p === '/watch/Methods' ? { type: 'directory' } : { type: 'regular' });
+
+    const methodsCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', parentID: 1 };
+    relativePathToCollectionMock.mockResolvedValue(methodsCollection);
+    globalThis.Zotero.Collections.get = vi.fn(() => null); // no parent walk needed past leaf
+
+    await service._ensureCollectionsForExistingFolders('/watch');
+
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true });
+    const record = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(record).not.toBe(null);
+    expect(record.localPath).toBe('/watch/Methods');
+  });
+
+  it('does NOT re-create a Zotero subcollection that already has a tracking record', async () => {
+    service._trackingStore = makeStore([], [{
+      type: 'collection',
+      localPath: '/watch/Methods',
+      zoteroCollectionKey: 'COL_METHODS',
+      parentCollectionKey: null,
+      state: 'clean',
+    }]);
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/Methods'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+
+    await service._ensureCollectionsForExistingFolders('/watch');
+
+    expect(relativePathToCollectionMock).not.toHaveBeenCalled();
+  });
+
+  it('skips SKIP_DIRNAMES (imported/, .zotero-watch-trash/)', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/imported', '/watch/.zotero-watch-trash'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+
+    await service._ensureCollectionsForExistingFolders('/watch');
+
+    expect(relativePathToCollectionMock).not.toHaveBeenCalled();
+  });
+
+  it('walks recursively and creates collections at depth', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/Methods'];
+      if (p === '/watch/Methods') return ['/watch/Methods/AI'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+
+    relativePathToCollectionMock.mockImplementation(async (relPath) => ({
+      id: 100 + relPath.length,
+      key: `COL_${relPath.replace(/\//g, '_')}`,
+      name: relPath.split('/').pop(),
+      parentID: 1,
+    }));
+    globalThis.Zotero.Collections.get = vi.fn(() => null);
+
+    await service._ensureCollectionsForExistingFolders('/watch');
+
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true });
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods/AI', { createIfMissing: true });
+  });
+
+  it('bails silently when sync root is missing', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/Methods'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+
+    const cp = await import('../../content/canonicalPath.mjs');
+    relativePathToCollectionMock.mockRejectedValue(new cp.SyncRootMissingError('gone'));
+
+    await expect(service._ensureCollectionsForExistingFolders('/watch')).resolves.toBeUndefined();
   });
 });
