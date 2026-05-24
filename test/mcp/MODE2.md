@@ -524,18 +524,26 @@ Bash: rm -rf /tmp/ZoteroWatchTest/inbox2
 
 | Case | Status | Notes |
 |---|---|---|
-| Preflight | ⬜ | |
-| SETUP.M2.1 | ⬜ | |
-| BASE.1 (B.6 mkdir) | ⬜ | |
-| BASE.2 (B.2 copy) | ⬜ | |
-| BASE.3 (B.7 reconcile) | ⬜ | |
-| ADOPT.1 | ⬜ | |
-| LATE.1 | ⬜ | |
-| REN.1 | ⬜ | |
-| MEM.1 | ⬜ | |
-| SUPP.1 | ⬜ | |
-| CONF.1 | ⬜ | |
-| WARN.1 | ⬜ | |
+| Preflight | ✅ | 37 keys (29 v2.1 + 8 v1 stragglers — `bidirectionalSync`, `collectionSyncEnabled`, `conflictResolution`, `lastWatchedPath`, `mirrorPath`, `mirrorPollInterval`, `mirrorRootCollection`, `targetCollection`). All v2.1 exports present (warningSink, suppressionResolver, baseline, runSetupWizard). |
+| SETUP.M2.1 | ✅ | ModeTwoTest collection key `H79DCAVM`. **MCP gotcha:** bare `await c.saveTx()` in the IIFE wrapper succeeded but returned undefined and didn't persist. Workaround: wrap in `Zotero.DB.executeTransaction(async () => { await c.save(); })`. |
+| BASE.1 (B.6 mkdir) | ✅ | `EmptySub/` created on disk; tracking record `state=clean`, path=`EmptySub` (sync-root-relative). |
+| BASE.2 (B.2 copy) | ⚠️ | File copied (3.4 MB), full-file hash computed, attachment + memberships + canonical correct. **Bug surfaced:** `watchFolder._processNewFile`'s dedup-skip path overwrote baseline's relative-path FileRecord with an absolute-path one. Idempotent `_absPath` (commit `68964a3`) defuses the downstream cascade but the underlying schema drift remains (task #25 deferred). |
+| BASE.3 (B.7 reconcile) | ⬜ | Not run. |
+| ADOPT.1 | ⬜ | Not run. |
+| LATE.1 | ⬜ | Not run. |
+| REN.1 | ✅ | `EmptySub/` → `RenamedSub/` on disk; tracking record `localPath` updated. Full notifier → moveFolder → executor pipeline works. |
+| MEM.1 | ⬜ | Not run (covered partially by CONF.1 — re-adding the parent to the sync root triggered canonical recompute correctly). |
+| SUPP.1 | ✅ (after fix) | First run: ❌ state stayed `clean` because remaining `Inbox` (outside sync root) membership wasn't filtered out. Fix in commit `68964a3` (`_removeItemMembership` now filters by `collectionKeyToRelativePath !== null`). Second run: state correctly flipped to `out-of-scope-suppressed`, canonical cleared, Inbox kept in membership list, SUPPRESSED warning with `last-sync-root-membership-removed`. |
+| CONF.1 | ✅ (after fix) | First run: ❌ warning was `missing-file` instead of `hash-drifted` because absolute `oldCanonicalPath` was double-joined with watchRoot. Fix in commit `68964a3` (idempotent `_absPath` returns absolute input unchanged). Second run: `conflict-blocked` / `hash-drifted` warning fires correctly; FileRecord state flips to `conflict-blocked`. |
+| WARN.1 | ⬜ | Partially — warning sink confirmed live via API (`getRecent`, `getCountsByCategory`); prefs UI rows not visually verified in this run. |
+
+### Bugs discovered + fixed during this run
+- **`_absPath` not idempotent** (mirrorExecutor + baseline + folderEventDetector + suppressionResolver) — fixed in `68964a3`.
+- **`_removeItemMembership` ignored sync-root scope** when counting remaining memberships — fixed in `68964a3` (+ UT-415 ×2).
+
+### Deferred (tracked separately)
+- **Schema drift in `watchFolder._processNewFile`** — task #25. Scan-loop writes absolute paths to `FileRecord.localPath` and `canonicalLocalPath`. Defensive idempotent `_absPath` makes this non-blocking for v2.1, but a real migration is owed.
+- **MCP bridge flakiness** — `Zotero.DB.executeTransaction(async () => { await x.save(); })` is the reliable save pattern; bare `await x.saveTx()` silently fails in some IIFE contexts. Document in CLAUDE.md MCP section.
 
 Update this table inline as cases are run. Any ❌ should reference the
 relevant log lines / DB queries so a follow-up can diagnose without
