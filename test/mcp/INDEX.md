@@ -26,11 +26,12 @@ Status legend: `✅ pass` · `❌ fail` · `🐛 known-bug` · `⬜ unverified` 
 
 | Phase | File | Cases | Last run / Status |
 |---|---|---|---|
-| **v2.0 Mode 1** | [MODE1.md](./MODE1.md) | SETUP.1, ADD.1–3, DUP.1, RENAME.1, LD.1, ZA.1, FM.1 | **Not yet run on a live Zotero.** Built 2026-05-23 against B1+B2+B3+B4+B6+C2+E. Run all cases before tagging v2.0. |
-| Smoke | [SMOKE.md](./SMOKE.md) | S.1, S.2, S.3, S.4, S.5, S.6, S.7 | **Run 2026-05-22 (v1.2.3):** S.1 ✅ · S.2 ✅ · S.3 ✅ · S.4 ✅ (v1) · S.5 ✅ · S.6 ⚠️ · S.7 ⬜. **Not re-run since v2 rewrite — S.1 will fail (31→28 key count); S.4 is now Mode-1-gated and should be reframed.** |
-| Phase 1 — core | [P1.md](./P1.md) | 1.1 – 1.12 (incl. 1.11.a–f, 1.12.a–d) | **Run 2026-05-22 (v1.2.3):** 1.6 ✅ · 1.7 ⬜ · 1.8 ✅ · 1.9 ⬜ · others ⬜. **Many cases reference v1 schema fields and need a v2 re-pass.** |
+| **v2.0 Mode 1** | [MODE1.md](./MODE1.md) | SETUP.1, ADD.1–3, DUP.1, RENAME.1, LD.1, ZA.1, FM.1 | **Run 2026-05-23 against v2.0.0-alpha.1 build.** Re-run before tagging v2.1 to confirm Mode-1 didn't regress under the new SyncCoordinator wiring (the coordinator is idle in Mode 1 but is now instantiated unconditionally). |
+| **v2.1 Mode 2** | [MODE2.md](./MODE2.md) | SETUP.M2.1, BASE.1–3 (B.2/B.6/B.7), ADOPT.1–2, LATE.1, REN.1, MEM.1, SUPP.1, CONF.1, WARN.1 | **Pending.** Sketched during v2.1 work; populate before tagging v2.1.0-alpha.1. Covers the new Mode 2 surface end-to-end. |
+| Smoke | [SMOKE.md](./SMOKE.md) | S.1, S.2, S.3, S.4, S.5, S.6, S.7 | **Run 2026-05-22 (v1.2.3):** S.1 ✅ · S.2 ✅ · S.3 ✅ · S.4 ✅ (v1) · S.5 ✅ · S.6 ⚠️ · S.7 ⬜. **Stale for v2.1 — S.1 key count is now 29 (added `baselineCompletedForRoot`); S.4 is Mode-1/2 gated.** Re-run before v2.1 tag. |
+| Phase 1 — core | [P1.md](./P1.md) | 1.1 – 1.12 (incl. 1.11.a–f, 1.12.a–d) | **Run 2026-05-22 (v1.2.3):** 1.6 ✅ · 1.8 ✅ · others ⬜. Many cases reference v1 schema fields and need a v2 re-pass. |
 | Edge cases | [EDGE.md](./EDGE.md) | E.1 – E.6 | **Run 2026-05-22 (v1.2.3):** E.1 ✅ · E.4 ⚠️ · others ⬜. |
-| ~~Phase 2 — collection sync~~ | — | — | **Deleted in Phase E** along with `collectionSync.mjs` & siblings. v2.1 will write a fresh `MODE2.md`. |
+| ~~Phase 2 — collection sync~~ | — | — | **Deleted in Phase E** along with `collectionSync.mjs` & siblings. v2.1's MODE2.md covers the new surface. |
 | ~~Phase 3 — advanced~~ | — | — | **Deleted in Phase E**. `reorganizeAll` removed; `retryAllMetadata` + `applyRulesToAll` survived. Reduced surface — no separate runbook now. |
 
 ### Notes from 2026-05-22 run
@@ -40,9 +41,14 @@ Status legend: `✅ pass` · `❌ fail` · `🐛 known-bug` · `⬜ unverified` 
 - **S.4/S.5 dialog status**: the 3-button `_promptDiskDelete` dialog DOES fire and is correctly themed (`Delete permanently` / `Keep on disk` / `Move to OS trash` with `Don't ask again`). Historical bug report in `updates_13_05_26.md` appears outdated.
 - **Bridge actor flakiness**: `zotero_read_logs`, `zotero_search_prefs`, `zotero_ping`, and `zotero_set_pref` intermittently fail with "Could not find Zotero console actor". `zotero_execute_js` is the reliable workaround for prefs (via `Zotero.Prefs.set/get`) and for log inspection (via `Zotero.Debug` API).
 
-## Pre-release checklist (v2.0)
+## Pre-release checklist (v2.1)
 
-Before tagging v2.0, run **MODE1.md end-to-end** plus any v1 cases in SMOKE / P1 / EDGE that still match the v2 surface. The v1 cases that exercise removed code (full-library reorganize, collection sync) are obsolete and won't be re-run.
+Before tagging v2.1.0-alpha.1:
+1. **MODE1.md end-to-end** — confirm v2.0 Mode-1 behaviour didn't regress under the v2.1 SyncCoordinator wiring (coordinator instantiated unconditionally but stays idle in Mode 1).
+2. **MODE2.md end-to-end** — the new Mode-2 surface. Must populate the runbook first.
+3. **SMOKE.md S.1–S.7** — re-run against v2.1 (S.1 key count moved 28 → 29).
+
+The v1 cases that exercise removed code (full-library reorganize, collection sync) are obsolete and won't be re-run.
 
 ## Known bugs runbooks should detect
 
