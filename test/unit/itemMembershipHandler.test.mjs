@@ -1,0 +1,410 @@
+/**
+ * Unit tests for content/itemMembershipHandler.mjs (v2.1 Phase A3).
+ *
+ * Covers:
+ *   UT-501 add event on tracked item → addItemMembership executor call
+ *   UT-502 add event on untracked item → logged, no executor call (B.2 deferred)
+ *   UT-503 add event scope gate (collection not under sync root → ignored)
+ *   UT-504 add event triggers moveItem when canonical changes
+ *   UT-505 remove event on tracked item → removeItemMembership executor call
+ *   UT-506 remove of canonical with remaining memberships → recompute + moveItem
+ *   UT-507 remove of last membership → no recompute (executor handles suppress)
+ *   UT-508 parent item events resolve to attachment children
+ *   UT-509 standalone-attachment shortcut
+ *   UT-510 modify events are ignored
+ *   UT-511 malformed composite IDs and missing items are tolerated
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock collaborators BEFORE importing the SUT so vi.mock hoists.
+vi.mock('../../content/mirrorExecutor.mjs', () => ({
+  execute: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock('../../content/canonicalPath.mjs', async () => {
+  const actual = await vi.importActual('../../content/canonicalPath.mjs');
+  return {
+    ...actual,
+    resolveSyncRoot: vi.fn(),
+    collectionKeyToRelativePath: vi.fn(),
+    chooseCanonicalCollection: vi.fn(),
+  };
+});
+
+import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
+import {
+  resolveSyncRoot,
+  collectionKeyToRelativePath,
+  chooseCanonicalCollection,
+} from '../../content/canonicalPath.mjs';
+import { handleCollectionItemEvent } from '../../content/itemMembershipHandler.mjs';
+
+const SYNC_ROOT = { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null };
+
+function makeStore(records = []) {
+  const byKey = new Map(records.map((r) => [r.zoteroAttachmentKey, r]));
+  return {
+    getByAttachmentKey: vi.fn((key) => byKey.get(key) ?? null),
+    _byKey: byKey,
+    _replace: (key, updates) => {
+      const cur = byKey.get(key);
+      if (cur) byKey.set(key, { ...cur, ...updates });
+    },
+  };
+}
+
+function makeCoordinator(store) {
+  return { _trackingStore: store };
+}
+
+function makeItem(opts) {
+  const { key, isAttachment = false, attachmentChildren = [] } = opts;
+  return {
+    key,
+    isAttachment: () => isAttachment,
+    getAttachments: () => attachmentChildren.map((a) => a.id),
+    getCollections: () => opts.collectionIDs || [],
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  Zotero.debug = vi.fn();
+  Zotero.logError = vi.fn();
+  Zotero.Libraries = { userLibraryID: 1, publicationsLibraryID: 4 };
+  Zotero.Collections.get = vi.fn();
+  Zotero.Items.get = vi.fn();
+  resolveSyncRoot.mockResolvedValue({ collection: SYNC_ROOT, libraryID: 1 });
+  collectionKeyToRelativePath.mockResolvedValue('Methods');
+  chooseCanonicalCollection.mockResolvedValue(null);
+});
+
+// ─── UT-501 ────────────────────────────────────────────────────────────────
+
+describe('UT-501: add on tracked item → addItemMembership executor call', () => {
+  it('forwards addItemMembership and leaves canonical alone when unchanged', async () => {
+    const collection = { id: 200, key: 'SUB1', name: 'Methods' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    collectionKeyToRelativePath.mockResolvedValue('Methods');
+    chooseCanonicalCollection.mockResolvedValue({ key: 'EXISTING', libraryID: 1 });
+
+    const store = makeStore([
+      { zoteroAttachmentKey: 'ATT1', canonicalCollectionKey: 'EXISTING', collectionMembershipKeys: ['EXISTING'], canonicalLocalPath: 'X/paper.pdf' },
+    ]);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(store));
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0]).toEqual({
+      type: 'addItemMembership',
+      payload: { attachmentKey: 'ATT1', collectionKey: 'SUB1' },
+    });
+  });
+});
+
+// ─── UT-502 ────────────────────────────────────────────────────────────────
+
+describe('UT-502: add on untracked item → defer (B.2 case)', () => {
+  it('does not call executor and logs deferral', async () => {
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'NEW', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    collectionKeyToRelativePath.mockResolvedValue('Methods');
+
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(Zotero.debug).toHaveBeenCalledWith(
+      expect.stringMatching(/untracked.*NEW.*Phase C/),
+    );
+  });
+});
+
+// ─── UT-503 ────────────────────────────────────────────────────────────────
+
+describe('UT-503: scope gate', () => {
+  it('drops events on collections outside the sync root', async () => {
+    Zotero.Collections.get.mockReturnValue({ id: 999, key: 'OTHER' });
+    collectionKeyToRelativePath.mockResolvedValue(null); // outside sync root
+
+    await handleCollectionItemEvent('add', ['999-300'], {}, makeCoordinator(makeStore()));
+    expect(Zotero.Items.get).not.toHaveBeenCalled();
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('drops events when sync root unset', async () => {
+    resolveSyncRoot.mockResolvedValueOnce(null);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-504 ────────────────────────────────────────────────────────────────
+
+describe('UT-504: add triggers moveItem when canonical changes', () => {
+  it('emits moveItem with new canonical path + key when canonical changed', async () => {
+    const collection = { id: 200, key: 'NEWC', name: 'NewC' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    collectionKeyToRelativePath.mockImplementation(async (k) => {
+      if (k === 'NEWC') return 'NewFolder';
+      return 'OldFolder';
+    });
+    chooseCanonicalCollection.mockResolvedValue({ key: 'NEWC', libraryID: 1 });
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'OLDC',
+        collectionMembershipKeys: ['OLDC'],
+        canonicalLocalPath: 'OldFolder/paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(store));
+
+    const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
+    expect(calls[0].type).toBe('addItemMembership');
+    expect(calls[1]).toEqual({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'ATT1',
+        oldCanonicalPath: 'OldFolder/paper.pdf',
+        newCanonicalPath: 'NewFolder/paper.pdf',
+        newCanonicalCollectionKey: 'NEWC',
+      },
+    });
+  });
+
+  it('does NOT emit moveItem when newCanonical equals current', async () => {
+    const collection = { id: 200, key: 'SAME', name: 'Same' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    collectionKeyToRelativePath.mockResolvedValue('OldFolder');
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SAME', libraryID: 1 });
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'SAME',
+        collectionMembershipKeys: ['SAME'],
+        canonicalLocalPath: 'OldFolder/paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(store));
+
+    const types = mirrorExecutor.execute.mock.calls.map((c) => c[0].type);
+    expect(types).toEqual(['addItemMembership']);
+  });
+});
+
+// ─── UT-505 ────────────────────────────────────────────────────────────────
+
+describe('UT-505: remove on tracked item → removeItemMembership', () => {
+  it('emits removeItemMembership when collection is in the membership list', async () => {
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'OTHER',
+        collectionMembershipKeys: ['SUB1', 'OTHER'],
+        canonicalLocalPath: 'X/paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0]).toEqual({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'ATT1', collectionKey: 'SUB1' },
+    });
+  });
+
+  it('no-ops when collection was not in the membership list', async () => {
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      { zoteroAttachmentKey: 'ATT1', canonicalCollectionKey: 'OTHER', collectionMembershipKeys: ['OTHER'] },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-506 ────────────────────────────────────────────────────────────────
+
+describe('UT-506: remove of canonical with remaining memberships → recompute', () => {
+  it('emits removeItemMembership AND moveItem to new canonical', async () => {
+    const collection = { id: 200, key: 'CAN' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    collectionKeyToRelativePath.mockImplementation(async (k) => {
+      if (k === 'CAN') return 'OldFolder';
+      if (k === 'NEW') return 'NewFolder';
+      return null;
+    });
+    chooseCanonicalCollection.mockResolvedValue({ key: 'NEW', libraryID: 1 });
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'CAN',
+        collectionMembershipKeys: ['CAN', 'NEW'],
+        canonicalLocalPath: 'OldFolder/paper.pdf',
+      },
+    ]);
+    // Simulate the executor having stripped CAN and cleared canonicalCollectionKey.
+    mirrorExecutor.execute.mockImplementation(async (action) => {
+      if (action.type === 'removeItemMembership') {
+        store._replace('ATT1', {
+          collectionMembershipKeys: ['NEW'],
+          canonicalCollectionKey: null,
+        });
+      }
+      return { ok: true };
+    });
+
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
+    expect(calls[0].type).toBe('removeItemMembership');
+    expect(calls[1]).toEqual({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'ATT1',
+        oldCanonicalPath: 'OldFolder/paper.pdf',
+        newCanonicalPath: 'NewFolder/paper.pdf',
+        newCanonicalCollectionKey: 'NEW',
+      },
+    });
+  });
+});
+
+// ─── UT-507 ────────────────────────────────────────────────────────────────
+
+describe('UT-507: remove of last membership', () => {
+  it('does NOT recompute when no memberships remain', async () => {
+    const collection = { id: 200, key: 'CAN' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'CAN',
+        collectionMembershipKeys: ['CAN'],
+        canonicalLocalPath: 'OldFolder/paper.pdf',
+      },
+    ]);
+    mirrorExecutor.execute.mockImplementation(async (action) => {
+      if (action.type === 'removeItemMembership') {
+        store._replace('ATT1', {
+          collectionMembershipKeys: [],
+          canonicalCollectionKey: null,
+        });
+      }
+      return { ok: true };
+    });
+
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    const types = mirrorExecutor.execute.mock.calls.map((c) => c[0].type);
+    expect(types).toEqual(['removeItemMembership']);
+    expect(chooseCanonicalCollection).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-508 ────────────────────────────────────────────────────────────────
+
+describe('UT-508: parent item events resolve to attachment children', () => {
+  it('walks all attachment children of a parent item', async () => {
+    const collection = { id: 200, key: 'SUB1' };
+    const attA = { key: 'ATTA', isAttachment: () => true };
+    const attB = { key: 'ATTB', isAttachment: () => true };
+    const parent = {
+      key: 'PARENT',
+      isAttachment: () => false,
+      getAttachments: () => [501, 502],
+    };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockImplementation((id) => {
+      if (id === 300) return parent;
+      if (id === 501) return attA;
+      if (id === 502) return attB;
+      return null;
+    });
+
+    const store = makeStore([
+      { zoteroAttachmentKey: 'ATTA', canonicalCollectionKey: 'SUB1', collectionMembershipKeys: ['SUB1'], canonicalLocalPath: 'X/a.pdf' },
+      { zoteroAttachmentKey: 'ATTB', canonicalCollectionKey: 'SUB1', collectionMembershipKeys: ['SUB1'], canonicalLocalPath: 'X/b.pdf' },
+    ]);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(store));
+
+    const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
+    expect(calls.length).toBe(2);
+    expect(calls.map((c) => c.payload.attachmentKey)).toEqual(['ATTA', 'ATTB']);
+  });
+});
+
+// ─── UT-509 ────────────────────────────────────────────────────────────────
+
+describe('UT-509: standalone attachment shortcut', () => {
+  it('uses the item key directly when isAttachment() returns true', async () => {
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'STAND', isAttachment: () => true, getAttachments: () => [] };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      { zoteroAttachmentKey: 'STAND', canonicalCollectionKey: 'SUB1', collectionMembershipKeys: ['SUB1'], canonicalLocalPath: 'X/p.pdf' },
+    ]);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(store));
+    expect(mirrorExecutor.execute.mock.calls[0][0].payload.attachmentKey).toBe('STAND');
+  });
+});
+
+// ─── UT-510 ────────────────────────────────────────────────────────────────
+
+describe('UT-510: modify events ignored', () => {
+  it('does nothing on modify', async () => {
+    await handleCollectionItemEvent('modify', ['200-300'], {}, makeCoordinator(makeStore()));
+    expect(resolveSyncRoot).not.toHaveBeenCalled();
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-511 ────────────────────────────────────────────────────────────────
+
+describe('UT-511: malformed input tolerance', () => {
+  it('skips composite IDs that fail to parse', async () => {
+    await handleCollectionItemEvent('add', ['not-a-pair', '200', ''], {}, makeCoordinator(makeStore()));
+    expect(Zotero.Collections.get).not.toHaveBeenCalled();
+  });
+
+  it('skips when collection or item lookup returns null', async () => {
+    Zotero.Collections.get.mockReturnValue(null);
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('handles empty compositeIDs array', async () => {
+    await handleCollectionItemEvent('add', [], {}, makeCoordinator(makeStore()));
+    expect(resolveSyncRoot).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-add/remove events', async () => {
+    await handleCollectionItemEvent('delete', ['200-300'], {}, makeCoordinator(makeStore()));
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});

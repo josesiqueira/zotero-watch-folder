@@ -300,7 +300,7 @@ async function _deleteFolder(payload) {
 }
 
 async function _moveItem(payload) {
-  const { attachmentKey, oldCanonicalPath, newCanonicalPath } = payload;
+  const { attachmentKey, oldCanonicalPath, newCanonicalPath, newCanonicalCollectionKey } = payload;
   if (!attachmentKey || typeof newCanonicalPath !== 'string' || !oldCanonicalPath) {
     return { ok: false, reason: 'invalid-payload' };
   }
@@ -351,6 +351,11 @@ async function _moveItem(payload) {
           ...rec,
           localPath: newCanonicalPath,
           canonicalLocalPath: wasCanonical ? newCanonicalPath : rec.canonicalLocalPath,
+          // Keep the canonical-collection field in sync when the caller is
+          // re-canonicalizing (A3 path). Undefined → leave existing value.
+          canonicalCollectionKey: (typeof newCanonicalCollectionKey !== 'undefined')
+            ? (newCanonicalCollectionKey ?? null)
+            : rec.canonicalCollectionKey,
         }));
         try { await _store.save(); } catch (_e) { /* logged */ }
       }
