@@ -46,6 +46,17 @@ let _coordinator = null;
 let _store = null;
 
 /**
+ * Promise chain that serializes notifier callbacks. Zotero's notifier
+ * fires events as fire-and-forget (it ignores our returned promise), so
+ * back-to-back emissions (e.g. a modify on a collection followed by an
+ * add burst on its items) would otherwise interleave through the async
+ * `collectionKeyToRelativePath` / `getCollectionRecord` chain and read
+ * an inconsistent store snapshot. The chain forces each notify to wait
+ * for the previous one to settle. Errors do NOT poison the chain.
+ */
+let _notifyChain = Promise.resolve();
+
+/**
  * Register the Zotero notifier observer. Idempotent — calling twice is
  * harmless.
  * @param {SyncCoordinator} coordinator
@@ -56,13 +67,21 @@ export function start(coordinator) {
   _store = coordinator?._trackingStore ?? null;
 
   const observer = {
-    // Zotero's notifier ignores our return value, but returning the promise
-    // lets tests `await observer.notify(...)` deterministically. Errors are
-    // caught here so we never leak an unhandled rejection out to Zotero.
-    notify: (event, type, ids, extraData) =>
-      _onNotify(event, type, ids, extraData).catch((e) => {
-        Zotero.logError(`[WatchFolder] collectionWatcher notify: ${e?.message ?? e}`);
-      }),
+    // Zotero's notifier ignores our return value, but returning the
+    // promise lets tests `await observer.notify(...)` deterministically.
+    // Wraps in a chain so concurrent batches serialize through the
+    // decision layer (collectionKeyToRelativePath + store lookups).
+    // Errors are caught so the chain isn't poisoned.
+    notify: (event, type, ids, extraData) => {
+      const next = _notifyChain
+        .catch(() => {})
+        .then(() => _onNotify(event, type, ids, extraData))
+        .catch((e) => {
+          Zotero.logError(`[WatchFolder] collectionWatcher notify: ${e?.message ?? e}`);
+        });
+      _notifyChain = next;
+      return next;
+    },
   };
   _observerID = Zotero.Notifier.registerObserver(
     observer,
@@ -89,6 +108,7 @@ export function stop() {
   _coordinator = null;
   _store = null;
   _registered = false;
+  _notifyChain = Promise.resolve();
   Zotero.debug('[WatchFolder] collectionWatcher: unregistered');
 }
 

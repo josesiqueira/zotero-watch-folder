@@ -142,14 +142,14 @@ async function _reinstate(record, ctx) {
     canonicalCollectionKey: record.canonicalCollectionKey ?? syncRoot.collection.key,
     collectionMembershipKeys: Array.from(memberships),
   });
-  try { await store.save(); } catch (_e) { /* logged inside save */ }
+  try { await store.save(); } catch (saveErr) { _reportSaveFailure(saveErr, record); }
   return { ok: true };
 }
 
 async function _keepLocal(record, ctx) {
   const { store } = ctx;
   store.update(record.localPath, { state: STATE.USER_DETACHED });
-  try { await store.save(); } catch (_e) { /* logged */ }
+  try { await store.save(); } catch (saveErr) { _reportSaveFailure(saveErr, record); }
   return { ok: true };
 }
 
@@ -179,7 +179,7 @@ async function _trash(record, ctx) {
     originalHash: record.lastSyncedHash,
   }));
   store.remove(record.localPath);
-  try { await store.save(); } catch (_e) { /* logged */ }
+  try { await store.save(); } catch (saveErr) { _reportSaveFailure(saveErr, record); }
   return { ok: true };
 }
 
@@ -227,7 +227,7 @@ async function _moveOutside(record, ctx) {
     originalHash: record.lastSyncedHash,
   }));
   store.remove(record.localPath);
-  try { await store.save(); } catch (_e) { /* logged */ }
+  try { await store.save(); } catch (saveErr) { _reportSaveFailure(saveErr, record); }
   return movedReason ? { ok: true, reason: movedReason } : { ok: true };
 }
 
@@ -244,6 +244,24 @@ function _filenameOf(p) {
   if (typeof p !== 'string') return '';
   const parts = p.split('/');
   return parts[parts.length - 1] || '';
+}
+
+/**
+ * Surface a tracking-store save() failure through the warning sink so
+ * the user knows their resolution didn't make it to disk. In-memory
+ * mutation has already been applied; a Zotero restart at this point
+ * would silently revert the user's choice. Rollback is a separate
+ * follow-up — for now we just make the failure visible.
+ */
+function _reportSaveFailure(err, record) {
+  reportWarning({
+    category: WARNING_CATEGORY.IO_ERROR,
+    actionType: 'suppression-save',
+    attachmentKey: record?.zoteroAttachmentKey ?? null,
+    path: record?.localPath ?? null,
+    reason: 'tracking-save-failed',
+    message: `Suppression resolution persisted in memory but tracking-v2.json write failed (${err?.message ?? err}). The resolution may not survive a restart.`,
+  });
 }
 
 /**

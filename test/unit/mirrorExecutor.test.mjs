@@ -434,6 +434,42 @@ describe('UT-409: membership updates (no IO)', () => {
   });
 });
 
+// ─── UT-414 (review fix D2) ────────────────────────────────────────────────
+
+describe('UT-414: moveFolder rewrites canonicalLocalPath for multi-collection items', () => {
+  it('updates canonicalLocalPath for a file whose localPath is OUTSIDE the moved subtree', async () => {
+    const store = await makeStore();
+    // Two records for the same attachment in different collections.
+    // Canonical is "Methods/paper.pdf" (in collection A=Methods),
+    // localPath of the OTHER record is "Refs/paper.pdf" (collection B).
+    // Canonical is OUTSIDE the localPath's subtree.
+    store.add(createFileRecord({
+      localPath: 'Refs/paper.pdf',
+      canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'ATT-OTHER',
+      lastSyncedHash: 'h1',
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    // Rename Methods → Methodology. The Refs-side record's localPath
+    // doesn't change, but its canonicalLocalPath must be rewritten.
+    const result = await execute({
+      type: 'moveFolder',
+      payload: {
+        collectionKey: 'METHC',
+        oldRelativePath: 'Methods',
+        newRelativePath: 'Methodology',
+      },
+    });
+    expect(result.ok).toBe(true);
+
+    const rec = store.getByLocalPath('Refs/paper.pdf');
+    expect(rec).toBeTruthy();
+    expect(rec.canonicalLocalPath).toBe('Methodology/paper.pdf');
+  });
+});
+
 // ─── UT-411 (review fix) ───────────────────────────────────────────────────
 
 describe('UT-411: _createFolder preserves existing CollectionRecord state', () => {

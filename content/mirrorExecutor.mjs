@@ -173,6 +173,18 @@ function _absPath(relPath) {
   return PathUtils.join(root, ...segments);
 }
 
+/**
+ * If `path` is `oldRel` or sits under `oldRel + '/'`, rewrite the prefix
+ * to `newRel`. Otherwise return `path` unchanged. Used by moveFolder's
+ * second-pass canonicalLocalPath fixup.
+ */
+function _rewriteIfUnder(path, oldRel, oldPrefix, newRel) {
+  if (typeof path !== 'string' || !path) return path;
+  if (path === oldRel) return newRel;
+  if (path.startsWith(oldPrefix)) return newRel + path.slice(oldRel.length);
+  return path;
+}
+
 // ─── Action handlers ──────────────────────────────────────────────────────
 
 async function _createFolder(payload) {
@@ -287,24 +299,42 @@ async function _moveFolder(payload) {
           : (existing?.parentCollectionKey ?? null),
         state: existing?.state ?? STATE.CLEAN,
       }));
-      // Rewrite child file records. Match on `localPath` either equal to
-      // oldRelativePath OR starting with `oldRelativePath + '/'`.
-      const prefix = oldRelativePath ? oldRelativePath + '/' : '';
+      // Rewrite child file records. Two passes: (1) match on `localPath`
+      // to rewrite the Map key + canonicalLocalPath when it equals
+      // localPath; (2) match on `canonicalLocalPath` only — covers
+      // multi-collection items whose canonical sits under the moved
+      // subtree but whose own localPath does NOT (e.g. file lives in
+      // collection B but its canonical is collection A which just got
+      // renamed). Without pass 2 the canonical pointer would dangle.
+      const prefix = oldRelativePath + '/';
       const files = _store.getAllOfType('file');
+      const rewritten = new Set();
       for (const f of files) {
-        const matchesExact = oldRelativePath && f.localPath === oldRelativePath;
-        const matchesNested = prefix && f.localPath.startsWith(prefix);
+        const matchesExact = f.localPath === oldRelativePath;
+        const matchesNested = f.localPath.startsWith(prefix);
         if (!matchesExact && !matchesNested) continue;
         const suffix = matchesExact ? '' : f.localPath.slice(oldRelativePath.length);
         const newPath = newRelativePath + suffix;
         const wasCanonical = f.canonicalLocalPath === f.localPath;
+        const newCanonical = wasCanonical
+          ? newPath
+          : _rewriteIfUnder(f.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
         // localPath is the Map key — must remove + re-add to re-key.
         _store.remove(f.localPath);
         _store.add(createFileRecord({
           ...f,
           localPath: newPath,
-          canonicalLocalPath: wasCanonical ? newPath : f.canonicalLocalPath,
+          canonicalLocalPath: newCanonical,
         }));
+        rewritten.add(f.zoteroAttachmentKey);
+      }
+      // Pass 2: canonicalLocalPath fixup for records whose localPath is
+      // OUTSIDE the moved subtree (multi-collection items).
+      for (const f of _store.getAllOfType('file')) {
+        if (rewritten.has(f.zoteroAttachmentKey)) continue;
+        const newCanonical = _rewriteIfUnder(f.canonicalLocalPath, oldRelativePath, prefix, newRelativePath);
+        if (newCanonical === f.canonicalLocalPath) continue;
+        _store.update(f.localPath, { canonicalLocalPath: newCanonical });
       }
       try { await _store.save(); } catch (_e) { /* logged */ }
     }
@@ -386,6 +416,18 @@ async function _moveItem(payload) {
               reason: 'missing-file',
               message: `Cannot move "${oldCanonicalPath}" — file not found on disk`,
             });
+          } else if (gate.reason === 'invalid-record' || gate.reason === 'hash-failed' || gate.reason === 'io-error') {
+            // canSafelyMove rejected for a non-conflict reason — surface it
+            // so the user knows the move was dropped. Silent drops here
+            // were a review finding (Phase D follow-up).
+            reportWarning({
+              category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+              actionType: 'moveItem',
+              attachmentKey,
+              path: oldCanonicalPath,
+              reason: gate.reason,
+              message: `Cannot move "${oldCanonicalPath}" — ${gate.reason} (no safety baseline; move skipped)`,
+            });
           }
           Zotero.debug(`[WatchFolder] mirrorExecutor moveItem blocked: ${gate.reason}`);
           return gate;
@@ -441,7 +483,7 @@ async function _addItemMembership(payload) {
   const { attachmentKey, collectionKey } = payload;
   if (!attachmentKey || !collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`attachment:${attachmentKey}`, async () => {
-    if (!_store) return { ok: true, reason: 'no-store' };
+    if (!_store) return { ok: false, reason: 'no-store' };
     const rec = _store.getByAttachmentKey(attachmentKey);
     if (!rec) {
       // The collectionWatcher saw a tracked item that we don't have a
@@ -470,7 +512,7 @@ async function _removeItemMembership(payload) {
   const { attachmentKey, collectionKey } = payload;
   if (!attachmentKey || !collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`attachment:${attachmentKey}`, async () => {
-    if (!_store) return { ok: true, reason: 'no-store' };
+    if (!_store) return { ok: false, reason: 'no-store' };
     const rec = _store.getByAttachmentKey(attachmentKey);
     if (!rec) return { ok: false, reason: 'unknown-attachment' };
     const next = (rec.collectionMembershipKeys || []).filter((k) => k !== collectionKey);
