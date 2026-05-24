@@ -66,7 +66,7 @@ export const STATE = Object.freeze({
  * @property {string} canonicalLocalPath - Single canonical local path for a
  *   Zotero attachment that may belong to multiple collections. Equals
  *   `localPath` until membership changes pick a different canonical.
- * @property {string|null} lastSyncedHash - SHA-256 of first HASH_CHUNK_SIZE bytes.
+ * @property {string|null} lastSyncedHash - Full-file SHA-256 (see utils.getFileHash).
  * @property {number} lastSyncedSize
  * @property {number} lastSyncedMtime
  * @property {string|null} zoteroItemKey - Parent item key, if attachment has one.

@@ -119,7 +119,11 @@ export class MetadataRetriever {
 
     this._queue.push({ itemID, onComplete });
     Zotero.debug(`[WatchFolder] Queued item ${itemID} for metadata retrieval (queue length: ${this._queue.length})`);
-    this._processQueue();
+    // Fire-and-forget kick; catch so an unhandled rejection doesn't get
+    // swallowed silently (bug #14 in the v2.1 punchlist).
+    this._processQueue().catch((e) => {
+      Zotero.logError(`[WatchFolder] metadataRetriever queue (enqueue): ${e?.message ?? e}`);
+    });
   }
 
   /**
@@ -173,8 +177,11 @@ export class MetadataRetriever {
         await delay(this._delayBetween);
       }
 
-      // Process next item
-      this._processQueue();
+      // Process next item — fire-and-forget tail-call; catch so the
+      // recursive chain doesn't drop errors silently.
+      this._processQueue().catch((e) => {
+        Zotero.logError(`[WatchFolder] metadataRetriever queue (tail): ${e?.message ?? e}`);
+      });
     }
   }
 
@@ -367,7 +374,9 @@ export class MetadataRetriever {
   start() {
     this._isRunning = true;
     Zotero.debug('[WatchFolder] MetadataRetriever started');
-    this._processQueue();
+    this._processQueue().catch((e) => {
+      Zotero.logError(`[WatchFolder] metadataRetriever queue (start): ${e?.message ?? e}`);
+    });
   }
 
   /**

@@ -399,6 +399,17 @@ export class WatchFolderService {
       Zotero.logError(e);
       Zotero.debug(`[WatchFolder] Scan error: ${e.message}`);
     } finally {
+      // Backstop save (bug #15). Some inner paths
+      // (`_ensureCollectionRecordsForPath`, dedup-skip in
+      // `_processNewFile`) flip `_dirty=true` and rely on a later
+      // mutation's `save()` to flush. If every file in a scan
+      // dedup-skips, that mutation never happens and a crash before
+      // the next scan loses the added records. TrackingStore.save()
+      // no-ops when not dirty, so this is cheap on the common path.
+      if (this._trackingStore && this._trackingStore.isDirty) {
+        try { await this._trackingStore.save(); }
+        catch (e) { Zotero.debug(`[WatchFolder] backstop save failed: ${e.message}`); }
+      }
       this._scanInProgress = false;
     }
   }

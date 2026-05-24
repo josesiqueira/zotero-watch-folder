@@ -541,9 +541,9 @@ async function _enumerateUnderSyncRoot(syncRoot) {
 
 /**
  * Walk the watch folder and hash every file. Returns a Map<hash, absPath>
- * keyed by SHA-256-of-first-1MB (matches HASH_CHUNK_SIZE in utils.mjs).
- * On hash collision (multiple disk files sharing content), the FIRST
- * encountered path wins; subsequent paths are silently dropped.
+ * keyed by full-file SHA-256 (see utils.getFileHash). On hash collision
+ * (multiple disk files sharing content), the FIRST encountered path
+ * wins; subsequent paths are silently dropped.
  *
  * Used by B.7 hash reconcile in the initial baseline. Skipped in dryRun.
  */

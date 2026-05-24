@@ -107,7 +107,7 @@ If you change `manifest.json` version, also bump `package.json`. Those two are t
 
 ## Don't touch without understanding
 
-- **1 MB hash chunk size — now a single source.** `content/utils.mjs` exports `HASH_CHUNK_SIZE`; `content/duplicateDetector.mjs` imports it and has a module-load assertion. The old "two literals must stay equal" trap is fixed — don't re-duplicate the constant.
+- **Hash strategy is full-file SHA-256 (v2.1+).** `utils.getFileHash` reads the entire file. `duplicateDetector.findByHash` + `storeContentHash` route through the same function — the inline crypto + `HASH_CHUNK_SIZE` invariant assertion is gone. v1 1MB-only hashes stamped into existing Zotero items' Extra fields no longer match; affected users see one round of false re-imports as the new hashes take over. `HASH_VERSION` constant tracks the strategy (`2` today); bump if it ever changes again.
 - **Library hash stamps** (`watchfolder-hash:<sha256>` in item Extra field) remain the fallback when the tracking store is wiped. See `watchFolder.mjs._backfillHashesForExistingItems` (uses v2: `getAllOfType('file')`, `getByLibraryAndKeyAsync`, `record.zoteroAttachmentKey`, `record.lastSyncedHash`).
 - **`_processingFiles` Set** in `WatchFolderService` is the only per-file reentrancy guard for the poll loop. `_scanInProgress` is the second guard at the scan level. Don't bypass either.
 - **`postImportAction='delete'`** records `expectedOnDisk=false` semantics on tracking — used by external-deletion sync to avoid trashing the Zotero item. In Mode 1 the trash branch is gated off entirely; v2.1 keeps Mode 2 warn-only on trash; v2.2 reactivates the propagation.

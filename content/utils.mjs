@@ -12,6 +12,19 @@ export const PREF_PREFIX = 'extensions.zotero.watchFolder.';
  * duplicating the literal. Divergence would silently break dedup for files
  * larger than the chunk.
  */
+/**
+ * Hash strategy version. v1 hashed only the first 1 MB (cheap but bit
+ * by PDFs differing only past the 1 MB boundary). v2 hashes the entire
+ * file — definitive correctness at the cost of one full read per
+ * computed hash. Bump this if the strategy ever changes again so old
+ * stamps can be recognised by version.
+ */
+export const HASH_VERSION = 2;
+
+/**
+ * @deprecated v1 chunk cap. Kept exported only so existing imports
+ * don't fail at module load. v2 reads the whole file — see HASH_VERSION.
+ */
 export const HASH_CHUNK_SIZE = 1024 * 1024;
 
 /**
@@ -88,8 +101,12 @@ export function sanitizeFilename(filename, maxLength = 150) {
  */
 export async function getFileHash(filePath) {
   try {
-    const data = await IOUtils.read(filePath, { maxBytes: HASH_CHUNK_SIZE });
-    // Simple hash using crypto
+    // Full-file SHA-256 (v2 strategy — was first-1MB-only in v1; the
+    // truncated hash collided on PDFs that differed only past the 1 MB
+    // boundary). For very large files this can read tens of MB per
+    // call; callers that hash in tight loops (e.g. baseline.B.7 disk
+    // index) should rate-limit accordingly.
+    const data = await IOUtils.read(filePath);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');

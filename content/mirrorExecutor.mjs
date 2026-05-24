@@ -26,13 +26,9 @@
  * @module mirrorExecutor
  */
 
-import { getPref, getFileHash, HASH_CHUNK_SIZE } from './utils.mjs';
+import { getPref, getFileHash } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
-
-// HASH_CHUNK_SIZE imported so callers reading lastSyncedHash know what byte
-// budget was used. Kept in the import list to make the dependency explicit.
-void HASH_CHUNK_SIZE;
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;

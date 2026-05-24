@@ -13,7 +13,7 @@
  * @module duplicateDetector
  */
 
-import { getPref, HASH_CHUNK_SIZE } from './utils.mjs';
+import { getPref, getFileHash } from './utils.mjs';
 
 // Tag added to items imported despite being duplicates
 const DUPLICATE_TAG = '_duplicate';
@@ -24,12 +24,11 @@ const DEFAULT_TITLE_THRESHOLD = 0.85;
 // Maximum cache size for title cache (LRU eviction)
 const MAX_TITLE_CACHE_SIZE = 10000;
 
-// Guard against silent drift if the constant is ever changed without thinking
-// through the implications: the hash stamped into Zotero's Extra field on import
-// must match the hash recomputed on subsequent imports or dedup breaks.
-if (HASH_CHUNK_SIZE !== 1024 * 1024) {
-  throw new Error(`[WatchFolder] HASH_CHUNK_SIZE invariant violated: ${HASH_CHUNK_SIZE}`);
-}
+// The hash strategy is owned by `utils.getFileHash` (full-file SHA-256
+// in v2 — was first-1MB-only in v1). Old-version stamps (1MB hashes
+// from v1.x users upgrading to v2.1) will no longer match the new
+// hashes — affected users will see one round of false re-imports
+// before the new full-file hashes take over.
 
 /**
  * Result from duplicate detection
@@ -633,12 +632,12 @@ export class DuplicateDetector {
     if (!filePath) return null;
 
     try {
-      // Calculate hash of first 1MB (MUST match utils.mjs getFileHash)
-      const data = await IOUtils.read(filePath, { maxBytes: HASH_CHUNK_SIZE });
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
+      // Single source of truth for the hash function (utils.getFileHash).
+      const hash = await getFileHash(filePath);
+      if (!hash) {
+        Zotero.debug(`[WatchFolder] findByHash: getFileHash returned null for ${filePath}`);
+        return null;
+      }
       Zotero.debug(`[WatchFolder] Calculated file hash: ${hash.substring(0, 16)}...`);
 
       // Search for items with matching hash stored in Extra field
@@ -764,11 +763,13 @@ export class DuplicateDetector {
     if (!item || !filePath) return false;
 
     try {
-      // Calculate hash (MUST match utils.mjs getFileHash - 1MB chunk)
-      const data = await IOUtils.read(filePath, { maxBytes: HASH_CHUNK_SIZE });
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      // Single source of truth (utils.getFileHash). Stamps the same
+      // hash that findByHash + the tracking store will later look up.
+      const hash = await getFileHash(filePath);
+      if (!hash) {
+        Zotero.debug(`[WatchFolder] storeContentHash: getFileHash returned null for ${filePath}`);
+        return false;
+      }
 
       // Get the parent item (if this is an attachment)
       let targetItem = item;
