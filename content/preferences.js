@@ -118,6 +118,90 @@
     }
 
     /**
+     * Refresh the suppressed-items row count.
+     */
+    function refreshSuppressedDisplay() {
+        const row = document.getElementById('watch-folder-suppressed-row');
+        const countEl = document.getElementById('watch-folder-suppressed-count');
+        if (!row || !countEl) return;
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        const records = resolver ? resolver.listSuppressed() : [];
+        countEl.value = String(records.length);
+        row.hidden = records.length === 0;
+    }
+
+    /**
+     * Iterate through suppressed FileRecords and ask the user what to do
+     * for each. Uses Services.prompt.select (an option list) because the
+     * 3-button confirmEx caps at 3 buttons but we need 4 actions + skip.
+     *
+     * For "Move outside watch folder" we open a FilePicker to choose the
+     * target directory. For all others the resolver does the work and we
+     * just refresh the display.
+     */
+    async function resolveSuppressed() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver) {
+            Services.prompt.alert(window, 'Watch Folder', 'Suppression resolver not available — plugin not fully loaded?');
+            return;
+        }
+        const records = resolver.listSuppressed();
+        if (records.length === 0) {
+            Services.prompt.alert(window, 'Watch Folder', 'No suppressed items.');
+            return;
+        }
+
+        const ACTIONS = [
+            { label: 'Re-add to Zotero sync root',         key: resolver.RESOLUTION_ACTION.REINSTATE },
+            { label: 'Keep local file, stop syncing it',   key: resolver.RESOLUTION_ACTION.KEEP_LOCAL },
+            { label: 'Move local file to trash',           key: resolver.RESOLUTION_ACTION.TRASH },
+            { label: 'Move local file outside watch folder', key: resolver.RESOLUTION_ACTION.MOVE_OUTSIDE },
+            { label: 'Skip for now',                       key: null },
+        ];
+        const labels = ACTIONS.map((a) => a.label);
+
+        let i = 0;
+        for (const record of records) {
+            i++;
+            const out = {};
+            const ok = Services.prompt.select(
+                window,
+                `Suppressed item ${i} of ${records.length}`,
+                `"${record.localPath}" lost its last Zotero sync-root membership.\n\nWhat do you want to do?`,
+                labels,
+                out,
+            );
+            if (!ok) break; // user cancelled the whole flow
+            const choice = ACTIONS[out.value];
+            if (!choice || !choice.key) continue; // skip-for-now
+
+            let opts = {};
+            if (choice.key === resolver.RESOLUTION_ACTION.MOVE_OUTSIDE) {
+                const fp = new FilePicker();
+                fp.init(window, 'Pick destination folder (outside watch folder)', fp.modeGetFolder);
+                const fpResult = await fp.show();
+                if (fpResult !== fp.returnOK) continue;
+                opts.targetDir = fp.file;
+            }
+
+            try {
+                const result = await resolver.resolve(record, choice.key, opts);
+                if (!result.ok) {
+                    Services.prompt.alert(
+                        window,
+                        'Watch Folder',
+                        `Failed to ${choice.label.toLowerCase()} for "${record.localPath}":\n${result.reason || ''}${result.error ? '\n' + result.error : ''}`,
+                    );
+                }
+            } catch (e) {
+                Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+            }
+        }
+        refreshSuppressedDisplay();
+        refreshWarningsDisplay();
+    }
+
+    /**
      * Refresh the mode display ("Mode 1 — Import only", etc.).
      */
     function refreshModeDisplay() {
@@ -269,6 +353,7 @@
             refreshSyncRootDisplay();
             refreshModeDisplay();
             refreshWarningsDisplay();
+            refreshSuppressedDisplay();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
@@ -282,6 +367,7 @@
         pickSyncRoot,
         viewWarnings,
         clearWarnings,
+        resolveSuppressed,
         onLoad: init,
     };
 

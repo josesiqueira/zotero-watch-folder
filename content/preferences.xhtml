@@ -77,6 +77,16 @@
       <button id="watch-folder-warnings-clear-btn" data-l10n-id="watch-folder-pref-warnings-clear"
               oncommand="WatchFolderPrefs.clearWarnings()"/>
     </hbox>
+
+    <!-- Suppressed items — Phase B. Items whose last sync-root membership
+         was removed in Zotero; the local file is preserved until the user
+         picks a resolution (Re-add / Keep local / Trash / Move outside). -->
+    <hbox id="watch-folder-suppressed-row" align="center" hidden="true">
+      <label data-l10n-id="watch-folder-pref-suppressed" control="watch-folder-suppressed-count"/>
+      <html:input id="watch-folder-suppressed-count" type="text" style="width: 60px;" readonly="true"/>
+      <button id="watch-folder-suppressed-resolve-btn" data-l10n-id="watch-folder-pref-suppressed-resolve"
+              oncommand="WatchFolderPrefs.resolveSuppressed()"/>
+    </hbox>
   </groupbox>
 
   <!-- Import Mode / Post-Import Action removed from the visible UI.

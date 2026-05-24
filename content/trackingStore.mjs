@@ -33,6 +33,8 @@ export const STATE = Object.freeze({
   PAUSED: 'paused',
   RECOVERABLE: 'recoverable',
   OUT_OF_SCOPE_SUPPRESSED: 'out-of-scope-suppressed',
+  /** User chose "keep local but stop syncing" via the suppression UX. */
+  USER_DETACHED: 'user-detached',
   CONFLICT_BLOCKED: 'conflict-blocked',
   CONFLICT_REFUSED: 'conflict-refused',
   PENDING_ZOTERO_FILE: 'pending-zotero-file',
@@ -420,6 +422,20 @@ export class TrackingStore {
   hasPath(localPath) {
     this._ensureInitialized();
     return this._files.has(localPath);
+  }
+
+  /**
+   * All FileRecords currently flagged OUT_OF_SCOPE_SUPPRESSED — the
+   * input list for the Phase B resolution UX.
+   * @returns {FileRecord[]}
+   */
+  getSuppressedFiles() {
+    this._ensureInitialized();
+    const out = [];
+    for (const rec of this._files.values()) {
+      if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) out.push(rec);
+    }
+    return out;
   }
 
   /** Total file records (for backwards-compat with callers expecting `size`). */
