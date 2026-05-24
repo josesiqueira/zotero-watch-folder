@@ -462,6 +462,24 @@ export class TrackingStore {
   }
 
   /**
+   * All FileRecords currently flagged CONFLICT_BLOCKED. The conflict
+   * gate refuses a move/delete when the file's content has drifted from
+   * the lastSyncedHash; the record is left in this state until the
+   * user picks a resolution (re-stamp baseline / discard local edit /
+   * pause syncing this file). Currently the prefs UI just surfaces
+   * the count — full resolution actions are a follow-up.
+   * @returns {FileRecord[]}
+   */
+  getConflictedFiles() {
+    this._ensureInitialized();
+    const out = [];
+    for (const rec of this._files.values()) {
+      if (rec.state === STATE.CONFLICT_BLOCKED) out.push(rec);
+    }
+    return out;
+  }
+
+  /**
    * All CollectionRecords currently flagged OUT_OF_SCOPE_SUPPRESSED.
    * Mode 2 flips these when Zotero deletes a tracked subcollection
    * (mirrorExecutor._deleteFolder warn-only path). Phase B's full

@@ -118,6 +118,21 @@
     }
 
     /**
+     * Refresh the conflict-blocked row count. Currently a display-only
+     * surface — full conflict-resolution actions are a follow-up.
+     */
+    function refreshConflictedDisplay() {
+        const row = document.getElementById('watch-folder-conflicted-row');
+        const countEl = document.getElementById('watch-folder-conflicted-count');
+        if (!row || !countEl) return;
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        const records = resolver && typeof resolver.listConflicted === 'function'
+            ? resolver.listConflicted() : [];
+        countEl.value = String(records.length);
+        row.hidden = records.length === 0;
+    }
+
+    /**
      * Refresh the suppressed-items row count. Shows file count, and
      * appends "(+M folders)" when there are also suppressed collection
      * records (folder-resolution UX is still pending — surfacing the
@@ -367,6 +382,7 @@
             refreshModeDisplay();
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
+            refreshConflictedDisplay();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {

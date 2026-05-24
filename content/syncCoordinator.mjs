@@ -63,6 +63,8 @@ export class SyncCoordinator {
     this._running = false;
     /** @type {TrackingStore|null} */
     this._trackingStore = null;
+    /** @type {string|null} Pref observer ID for runtime mode changes. */
+    this._modeObserverID = null;
   }
 
   /**
@@ -77,8 +79,36 @@ export class SyncCoordinator {
     // ready before any collection event can land — Zotero may emit
     // notifier events on the very first `add()` after registration.
     mirrorExecutor.init({ trackingStore });
+
+    // Runtime mode-pref observer (review fix C3). When the user toggles
+    // mode at runtime, transition without requiring a restart.
+    try {
+      if (Zotero.Prefs && typeof Zotero.Prefs.registerObserver === 'function') {
+        this._modeObserverID = Zotero.Prefs.registerObserver(
+          'extensions.zotero.watchFolder.mode',
+          () => { this._onModeChanged().catch((e) => Zotero.logError(`[WatchFolder] mode observer: ${e?.message ?? e}`)); },
+          false,
+        );
+      }
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] SyncCoordinator: could not register mode observer - ${e?.message ?? e}`);
+    }
+
     this._initialized = true;
     Zotero.debug('[WatchFolder] SyncCoordinator: initialized (idle until mode2/mode3)');
+  }
+
+  /** Mode pref changed at runtime — start or stop accordingly. */
+  async _onModeChanged() {
+    const mode = getPref('mode') || 'mode1';
+    const enabled = !!getPref('enabled');
+    if (mode === 'mode1' && this._running) {
+      Zotero.debug('[WatchFolder] SyncCoordinator: mode→mode1 at runtime, stopping');
+      await this.stop();
+    } else if (mode !== 'mode1' && !this._running && enabled) {
+      Zotero.debug(`[WatchFolder] SyncCoordinator: mode→${mode} at runtime, starting`);
+      await this.start();
+    }
   }
 
   /**
@@ -128,6 +158,16 @@ export class SyncCoordinator {
   }
 
   /**
+   * Test seam + perf guard. WatchFolderService._scan checks this before
+   * enumerating subdirectories (the enumeration is recursive IO that's
+   * pure overhead in Mode 1). Returns true only when start() has run
+   * and stop() / destroy() haven't.
+   */
+  isRunning() {
+    return this._running;
+  }
+
+  /**
    * Called by `WatchFolderService._scan` once per scan cycle. Bridges the
    * disk-side scan into the Mode 2/3 sync pipeline (A2). No-op when the
    * coordinator hasn't been started (Mode 1, or pre-start).
@@ -155,6 +195,11 @@ export class SyncCoordinator {
       try { collectionWatcher.stop(); } catch (_e) { /* best effort */ }
       try { itemAddHandler.stop(); } catch (_e) { /* best effort */ }
       try { mirrorExecutor.reset(); } catch (_e) { /* best effort */ }
+      if (this._modeObserverID && Zotero.Prefs?.unregisterObserver) {
+        try { Zotero.Prefs.unregisterObserver(this._modeObserverID); }
+        catch (_e) { /* best effort */ }
+      }
+      this._modeObserverID = null;
       this._running = false;
       this._initialized = false;
       this._trackingStore = null;

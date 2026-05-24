@@ -306,12 +306,14 @@ export class WatchFolderService {
       }
 
       // ── A2 — folderEventDetector hook ────────────────────────────────
-      // Bridge the scan cycle into the v2.1 sync pipeline. The coordinator
-      // is idle in Mode 1, so this is a no-op there. In Mode 2/3 it lets
-      // the detector emit deleteFolder MirrorActions for tracked
-      // collections whose disk path vanished. Runs AFTER folder-rename
-      // and empty-folder pickup so the disk-side view is settled.
-      if (this._syncCoordinator) {
+      // Bridge the scan cycle into the v2.1 sync pipeline. Gated on
+      // coordinator.isRunning() so Mode 1 doesn't pay the recursive
+      // _listSubdirectories cost every poll interval (review fix B7).
+      // Runs AFTER folder-rename and empty-folder pickup so the
+      // disk-side view is settled.
+      if (this._syncCoordinator
+          && typeof this._syncCoordinator.isRunning === 'function'
+          && this._syncCoordinator.isRunning()) {
         try {
           const onDiskAbsDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
           await this._syncCoordinator.notifyScanCycle({

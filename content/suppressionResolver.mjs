@@ -63,6 +63,21 @@ export function listSuppressedCollections(store) {
 }
 
 /**
+ * List all FileRecords currently flagged CONFLICT_BLOCKED — files
+ * whose conflict gate refused a move/delete because of local hash
+ * drift. Full conflict-resolution actions are a follow-up; the prefs
+ * UI just surfaces the count so the user knows about them.
+ * @param {object} [store]
+ * @returns {Array}
+ */
+export function listConflicted(store) {
+  const s = store || getTrackingStore();
+  if (!s || typeof s.getConflictedFiles !== 'function') return [];
+  try { return s.getConflictedFiles(); }
+  catch (_e) { return []; }
+}
+
+/**
  * Apply a resolution action to a suppressed FileRecord.
  *
  * @param {object} record - FileRecord with state===OUT_OF_SCOPE_SUPPRESSED.

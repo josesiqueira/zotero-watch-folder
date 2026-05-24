@@ -29,6 +29,7 @@ watch-folder-pref-warnings-view = View
 watch-folder-pref-warnings-clear = Clear
 watch-folder-pref-suppressed = Suppressed items:
 watch-folder-pref-suppressed-resolve = Resolve…
+watch-folder-pref-conflicted = Conflict-blocked:
 
 # Import settings
 watch-folder-pref-import-mode = Import mode:

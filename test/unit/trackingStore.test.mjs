@@ -485,6 +485,27 @@ describe('UT-111: findByHash filters out non-syncing states (review fix)', () =>
   });
 });
 
+// ─── UT-113 (review fix B8) ────────────────────────────────────────────────
+
+describe('UT-113: getConflictedFiles', () => {
+  it('returns only file records in CONFLICT_BLOCKED state', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'B', state: STATE.CONFLICT_BLOCKED,
+    }));
+    store.add(createFileRecord({
+      localPath: 'c.pdf', zoteroAttachmentKey: 'C', state: STATE.CONFLICT_BLOCKED,
+    }));
+    expect(store.getConflictedFiles().map((r) => r.zoteroAttachmentKey).sort()).toEqual(['B', 'C']);
+  });
+});
+
 // ─── UT-112 ────────────────────────────────────────────────────────────────
 
 describe('UT-112: getSuppressedCollections', () => {

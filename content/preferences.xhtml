@@ -87,6 +87,14 @@
       <button id="watch-folder-suppressed-resolve-btn" data-l10n-id="watch-folder-pref-suppressed-resolve"
               oncommand="WatchFolderPrefs.resolveSuppressed()"/>
     </hbox>
+
+    <!-- Conflict-blocked items — Phase D adjunct. Files whose conflict
+         gate refused a move/delete because of local hash drift. Full
+         resolution UX is pending; for now the count is surfaced. -->
+    <hbox id="watch-folder-conflicted-row" align="center" hidden="true">
+      <label data-l10n-id="watch-folder-pref-conflicted" control="watch-folder-conflicted-count"/>
+      <html:input id="watch-folder-conflicted-count" type="text" style="width: 60px;" readonly="true"/>
+    </hbox>
   </groupbox>
 
   <!-- Import Mode / Post-Import Action removed from the visible UI.
