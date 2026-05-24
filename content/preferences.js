@@ -118,16 +118,24 @@
     }
 
     /**
-     * Refresh the suppressed-items row count.
+     * Refresh the suppressed-items row count. Shows file count, and
+     * appends "(+M folders)" when there are also suppressed collection
+     * records (folder-resolution UX is still pending — surfacing the
+     * count keeps the user from being blind to them).
      */
     function refreshSuppressedDisplay() {
         const row = document.getElementById('watch-folder-suppressed-row');
         const countEl = document.getElementById('watch-folder-suppressed-count');
         if (!row || !countEl) return;
         const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
-        const records = resolver ? resolver.listSuppressed() : [];
-        countEl.value = String(records.length);
-        row.hidden = records.length === 0;
+        const files = resolver ? resolver.listSuppressed() : [];
+        const folders = resolver && typeof resolver.listSuppressedCollections === 'function'
+            ? resolver.listSuppressedCollections()
+            : [];
+        countEl.value = folders.length > 0
+            ? `${files.length} (+${folders.length} folders)`
+            : String(files.length);
+        row.hidden = files.length === 0 && folders.length === 0;
     }
 
     /**
@@ -181,7 +189,12 @@
                 fp.init(window, 'Pick destination folder (outside watch folder)', fp.modeGetFolder);
                 const fpResult = await fp.show();
                 if (fpResult !== fp.returnOK) continue;
-                opts.targetDir = fp.file;
+                // FilePicker.file returns an nsIFile; suppressionResolver
+                // expects a string path. Different Zotero builds expose
+                // `.path`; fall back to String() if it's already a string.
+                opts.targetDir = (fp.file && typeof fp.file === 'object' && fp.file.path)
+                    ? fp.file.path
+                    : String(fp.file);
             }
 
             try {

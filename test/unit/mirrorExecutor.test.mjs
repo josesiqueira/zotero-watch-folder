@@ -434,6 +434,98 @@ describe('UT-409: membership updates (no IO)', () => {
   });
 });
 
+// ─── UT-411 (review fix) ───────────────────────────────────────────────────
+
+describe('UT-411: _createFolder preserves existing CollectionRecord state', () => {
+  it('does not clobber OUT_OF_SCOPE_SUPPRESSED with CLEAN on re-emit', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'X', zoteroCollectionKey: 'SUB1', state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    init({ trackingStore: store });
+    const result = await execute({
+      type: 'createFolder',
+      payload: { collectionKey: 'SUB1', relativePath: 'X' },
+    });
+    expect(result.ok).toBe(true);
+    expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+
+  it('uses CLEAN when no existing record', async () => {
+    init({ trackingStore: await makeStore() });
+    await execute({
+      type: 'createFolder',
+      payload: { collectionKey: 'SUB1', relativePath: 'X' },
+    });
+    expect(_getStore().getCollectionRecord('SUB1').state).toBe(STATE.CLEAN);
+  });
+});
+
+// ─── UT-412 (review fix) ───────────────────────────────────────────────────
+
+describe('UT-412: _moveFolder rejects empty oldRelativePath', () => {
+  it('returns invalid-payload when oldRelativePath is empty string', async () => {
+    init({ trackingStore: await makeStore() });
+    const result = await execute({
+      type: 'moveFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: '', newRelativePath: 'X' },
+    });
+    expect(result).toEqual({ ok: false, reason: 'invalid-payload' });
+    expect(IOUtils.move).not.toHaveBeenCalled();
+  });
+
+  it('returns invalid-payload when oldRelativePath is undefined', async () => {
+    init({ trackingStore: await makeStore() });
+    const result = await execute({
+      type: 'moveFolder',
+      payload: { collectionKey: 'SUB1', newRelativePath: 'X' },
+    });
+    expect(result.reason).toBe('invalid-payload');
+    expect(IOUtils.move).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-413 (review fix) ───────────────────────────────────────────────────
+
+describe('UT-413: _removeItemMembership clears canonical on last-membership-removed', () => {
+  it('clears canonicalCollectionKey when next.length === 0', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      canonicalCollectionKey: 'CAN',
+      collectionMembershipKeys: ['CAN'],
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    await execute({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'CAN' },
+    });
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.canonicalCollectionKey).toBe(null);
+    expect(rec.state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+
+  it('also clears canonical when the removed-canonical was the LAST membership but a DIFFERENT collection was the canonical', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      canonicalCollectionKey: 'X',
+      collectionMembershipKeys: ['Y'],
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    await execute({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'Y' },
+    });
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual([]);
+    expect(rec.canonicalCollectionKey).toBe(null);
+    expect(rec.state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+});
+
 // ─── UT-410 ────────────────────────────────────────────────────────────────
 
 describe('UT-410: per-key lock serializes concurrent calls', () => {

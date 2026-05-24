@@ -41,7 +41,25 @@ export const RESOLUTION_ACTION = Object.freeze({
 export function listSuppressed(store) {
   const s = store || getTrackingStore();
   if (!s || typeof s.getSuppressedFiles !== 'function') return [];
-  return s.getSuppressedFiles();
+  // The store throws if init() hasn't been called yet; tolerate that
+  // gracefully so prefs-pane UI doesn't blow up on early load.
+  try { return s.getSuppressedFiles(); }
+  catch (_e) { return []; }
+}
+
+/**
+ * List all currently suppressed CollectionRecords. Mode 2 flips folder
+ * records to OUT_OF_SCOPE_SUPPRESSED on Zotero-side delete; this helper
+ * exposes them to the prefs UI. Full folder-resolution actions are
+ * pending — for now the UI surfaces the count.
+ * @param {object} [store]
+ * @returns {Array}
+ */
+export function listSuppressedCollections(store) {
+  const s = store || getTrackingStore();
+  if (!s || typeof s.getSuppressedCollections !== 'function') return [];
+  try { return s.getSuppressedCollections(); }
+  catch (_e) { return []; }
 }
 
 /**

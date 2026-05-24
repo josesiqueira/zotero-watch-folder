@@ -305,6 +305,32 @@ describe('UT-812: scanner re-import-loop guard', () => {
   });
 });
 
+// ─── UT-813 (review fix) ───────────────────────────────────────────────────
+
+describe('UT-813: listSuppressedCollections + uninitialized-store tolerance', () => {
+  it('returns suppressed CollectionRecords via listSuppressedCollections', async () => {
+    const { listSuppressedCollections } = await import('../../content/suppressionResolver.mjs');
+    const { createCollectionRecord } = await import('../../content/trackingStore.mjs');
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'A', zoteroCollectionKey: 'A', state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.add(createCollectionRecord({
+      localPath: 'B', zoteroCollectionKey: 'B', state: STATE.CLEAN,
+    }));
+    const got = listSuppressedCollections(store);
+    expect(got.map((r) => r.zoteroCollectionKey)).toEqual(['A']);
+  });
+
+  it('listSuppressed tolerates an uninitialized store (returns [])', async () => {
+    const { listSuppressed } = await import('../../content/suppressionResolver.mjs');
+    const { TrackingStore } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    // Deliberately NOT initialized — getSuppressedFiles would throw.
+    expect(listSuppressed(store)).toEqual([]);
+  });
+});
+
 // ─── UT-811 ────────────────────────────────────────────────────────────────
 
 describe('UT-811: MOVE_OUTSIDE cross-FS fallback', () => {

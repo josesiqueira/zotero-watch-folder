@@ -427,4 +427,76 @@ describe('UT-110: STATE enum', () => {
   it('is frozen (immutable)', () => {
     expect(Object.isFrozen(STATE)).toBe(true);
   });
+
+  it('includes USER_DETACHED for Phase B KEEP_LOCAL', () => {
+    expect(STATE.USER_DETACHED).toBe('user-detached');
+  });
+});
+
+// ─── UT-111 ────────────────────────────────────────────────────────────────
+
+describe('UT-111: findByHash filters out non-syncing states (review fix)', () => {
+  it('returns null when the matching record is USER_DETACHED', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'HASHZ', state: STATE.USER_DETACHED,
+    }));
+    expect(store.findByHash('HASHZ')).toBe(null);
+  });
+
+  it('returns null when the matching record is OUT_OF_SCOPE_SUPPRESSED', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'HASHZ', state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    expect(store.findByHash('HASHZ')).toBe(null);
+  });
+
+  it('still returns the record for CLEAN state', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'HASHZ', state: STATE.CLEAN,
+    }));
+    expect(store.findByHash('HASHZ')).toBeTruthy();
+  });
+
+  it('still surfaces detached records via attachment-key lookup', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'A',
+      lastSyncedHash: 'HASHZ', state: STATE.USER_DETACHED,
+    }));
+    expect(store.getByAttachmentKey('A')).toBeTruthy();
+  });
+});
+
+// ─── UT-112 ────────────────────────────────────────────────────────────────
+
+describe('UT-112: getSuppressedCollections', () => {
+  it('returns only collection records in OUT_OF_SCOPE_SUPPRESSED state', async () => {
+    const { TrackingStore, createCollectionRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createCollectionRecord({ localPath: 'A', zoteroCollectionKey: 'A', state: STATE.CLEAN }));
+    store.add(createCollectionRecord({ localPath: 'B', zoteroCollectionKey: 'B', state: STATE.OUT_OF_SCOPE_SUPPRESSED }));
+    store.add(createCollectionRecord({ localPath: 'C', zoteroCollectionKey: 'C', state: STATE.OUT_OF_SCOPE_SUPPRESSED }));
+    const got = store.getSuppressedCollections();
+    expect(got.map((r) => r.zoteroCollectionKey).sort()).toEqual(['B', 'C']);
+  });
 });

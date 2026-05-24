@@ -142,6 +142,37 @@ describe('UT-605: no-op for empty record set', () => {
   });
 });
 
+// ─── UT-607 (review fix) ───────────────────────────────────────────────────
+
+describe('UT-607: skips records already in OUT_OF_SCOPE_SUPPRESSED', () => {
+  it('does not re-emit deleteFolder for an already-suppressed collection record', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'X', state: 'out-of-scope-suppressed' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(IOUtils.exists).not.toHaveBeenCalled();
+  });
+
+  it('still emits for non-suppressed records', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'X', state: 'clean' },
+      { type: 'collection', zoteroCollectionKey: 'B', localPath: 'Y', state: 'out-of-scope-suppressed' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0].payload.collectionKey).toBe('A');
+  });
+});
+
 // ─── UT-606 ────────────────────────────────────────────────────────────────
 
 describe('UT-606: tolerates malformed records', () => {

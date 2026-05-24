@@ -20,6 +20,22 @@ const TRACKING_FILENAME = 'zotero-watch-folder-tracking-v2.json';
 const SCHEMA_VERSION = 2;
 
 /**
+ * States that should remain queryable by content hash for dedup. Any
+ * record state OUTSIDE this set (e.g. user-detached, suppressed,
+ * conflict-blocked) is intentionally excluded from `_byHash` so a fresh
+ * file import does not silently rebind to a Zotero item the user
+ * already chose to stop syncing.
+ */
+function _isHashIndexable(state) {
+  return state === 'clean'
+    || state === 'dirty'
+    || state === 'pending'
+    || state === 'pending-zotero-file'
+    || state === 'pending-hydration'
+    || state === 'external-edit';
+}
+
+/**
  * Valid state values for the `state` field on file / collection / tombstone
  * records. v2.0 (Mode 1) only writes `clean | pending | missing | paused`;
  * the other values are reserved for v2.1 (Mode 2) and v2.2 (Mode 3) and
@@ -292,7 +308,14 @@ export class TrackingStore {
     this._byHash.clear();
     for (const rec of this._files.values()) {
       if (rec.zoteroAttachmentKey) this._byAttachmentKey.set(rec.zoteroAttachmentKey, rec);
-      if (rec.lastSyncedHash) this._byHash.set(rec.lastSyncedHash, rec);
+      // Detached / suppressed / conflict-blocked records are intentionally
+      // OMITTED from _byHash so the hash-dedup path in watchFolder can't
+      // re-link a fresh import to a Zotero item the user explicitly
+      // detached or that's in a frozen state. attachmentKey lookups still
+      // see them (the user may want to resolve via suppression UX).
+      if (rec.lastSyncedHash && _isHashIndexable(rec.state)) {
+        this._byHash.set(rec.lastSyncedHash, rec);
+      }
     }
   }
 
@@ -433,6 +456,23 @@ export class TrackingStore {
     this._ensureInitialized();
     const out = [];
     for (const rec of this._files.values()) {
+      if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) out.push(rec);
+    }
+    return out;
+  }
+
+  /**
+   * All CollectionRecords currently flagged OUT_OF_SCOPE_SUPPRESSED.
+   * Mode 2 flips these when Zotero deletes a tracked subcollection
+   * (mirrorExecutor._deleteFolder warn-only path). Phase B's full
+   * folder-resolution UX is pending; for now the prefs pane just
+   * surfaces the count so the user can act manually.
+   * @returns {CollectionRecord[]}
+   */
+  getSuppressedCollections() {
+    this._ensureInitialized();
+    const out = [];
+    for (const rec of this._collections.values()) {
       if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) out.push(rec);
     }
     return out;

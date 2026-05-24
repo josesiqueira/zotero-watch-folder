@@ -26,6 +26,7 @@
  */
 
 import * as mirrorExecutor from './mirrorExecutor.mjs';
+import { STATE } from './trackingStore.mjs';
 
 /**
  * Run the disk diff against the tracked collection records.
@@ -51,6 +52,11 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     // sync-root-relative paths. Migrating v1 stragglers is out of A2
     // scope — they're effectively invisible to this detector.
     if (rec.localPath.startsWith('/')) continue;
+    // Idempotency guard — a CollectionRecord that's already
+    // OUT_OF_SCOPE_SUPPRESSED has already been emitted to the executor
+    // (and reported once). Re-emitting every scan cycle would flood the
+    // warning ring buffer and rewrite tracking-v2.json on every poll.
+    if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) continue;
 
     const absPath = _toAbs(watchRoot, rec.localPath);
     if (dirSet.has(absPath)) continue;

@@ -199,11 +199,16 @@ async function _createFolder(payload) {
       return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
     }
     if (_store) {
+      // Preserve any existing record's state (e.g. OUT_OF_SCOPE_SUPPRESSED)
+      // rather than clobbering it with CLEAN. A re-emitted add event on a
+      // collection the user previously detached must not silently undo
+      // their suppression decision.
+      const existing = _store.getCollectionRecord(collectionKey);
       _store.add(createCollectionRecord({
         localPath: relativePath,
         zoteroCollectionKey: collectionKey,
-        parentCollectionKey: parentCollectionKey ?? null,
-        state: STATE.CLEAN,
+        parentCollectionKey: parentCollectionKey ?? existing?.parentCollectionKey ?? null,
+        state: existing?.state ?? STATE.CLEAN,
       }));
       try { await _store.save(); } catch (_e) { /* logged inside save() */ }
     }
@@ -219,7 +224,12 @@ async function _moveFolder(payload) {
     newRelativePath,
     newParentCollectionKey,
   } = payload;
-  if (!collectionKey || typeof newRelativePath !== 'string' || newRelativePath === '') {
+  if (!collectionKey
+      || typeof newRelativePath !== 'string' || newRelativePath === ''
+      || typeof oldRelativePath !== 'string' || oldRelativePath === '') {
+    // oldRelativePath MUST be a non-empty string. An empty/undefined value
+    // would resolve to the watch-root itself; the executor would then try
+    // to move the entire watch folder into one of its own subdirectories.
     return { ok: false, reason: 'invalid-payload' };
   }
   return _withLock(`collection:${collectionKey}`, async () => {
@@ -469,9 +479,15 @@ async function _removeItemMembership(payload) {
     }
     const updates = { collectionMembershipKeys: next };
     // If we just removed the last sync-root membership, mark suppressed so
-    // the user can resolve via the suppression UX (Phase B).
+    // the user can resolve via the suppression UX (Phase B). Also clear
+    // canonicalCollectionKey unconditionally — leaving the removed key in
+    // place would mislead suppressionResolver._reinstate + A3 recompute
+    // into treating a now-vanished collection as authoritative.
     if (next.length === 0) {
       updates.state = STATE.OUT_OF_SCOPE_SUPPRESSED;
+      if (rec.canonicalCollectionKey) {
+        updates.canonicalCollectionKey = null;
+      }
     } else if (rec.canonicalCollectionKey === collectionKey) {
       // Canonical was just dropped; clear it so A3 can pick a new one.
       updates.canonicalCollectionKey = null;
