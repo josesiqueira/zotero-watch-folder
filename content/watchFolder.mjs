@@ -514,15 +514,30 @@ export class WatchFolderService {
         await this._trackingStore.save();
       }
 
-      // Step 5a: Stamp the hash into the Zotero item's Extra field. This is
-      // the cross-install dedup anchor that survives a tracking-store wipe.
-      if (hash) {
+      // Step 5a: Stamp the hash into the Zotero item's Extra field — the
+      // cross-install dedup anchor that survives a tracking-store wipe.
+      //
+      // BUT: at this point the import has produced a standalone Zotero
+      // attachment with no parent. Attachments don't carry an `extra`
+      // field — only regular bibliographic items do — so storeContentHash
+      // would log "'extra' is not a valid field for type 'attachment'".
+      // Defer to the metadata-retrieval callback (Step 6) where a parent
+      // bibliographic item will exist after recognition succeeds. If
+      // metadata retrieval is disabled, the startup backfill picks this
+      // up on the next launch.
+      const stampHashWhenPossible = async (resolvedItem) => {
+        if (!hash) return;
         try {
           const detector = getDuplicateDetector();
-          await detector.storeContentHash(item, finalPath);
+          await detector.storeContentHash(resolvedItem, finalPath);
         } catch (stampErr) {
-          Zotero.debug(`[WatchFolder] Failed to stamp content hash on item ${itemID}: ${stampErr.message}`);
+          Zotero.debug(`[WatchFolder] storeContentHash failed for ${itemID}: ${stampErr.message}`);
         }
+      };
+      // If the import already produced a parent-bearing or regular item
+      // (e.g. linked-file import paths in future modes), stamp now.
+      if (hash && (!item.isAttachment() || item.parentID)) {
+        await stampHashWhenPossible(item);
       }
 
       // Step 5b: Smart rules.
@@ -544,6 +559,29 @@ export class WatchFolderService {
             this._trackingStore.update(finalPath, { metadataRetrieved: success });
           }
           Zotero.debug(`[WatchFolder] Metadata retrieval ${success ? 'completed' : 'failed'} for item ${completedItemID}`);
+
+          // Once recognition succeeds, the attachment has gained a parent
+          // bibliographic item — now we can stamp the content hash into
+          // the parent's Extra field. This is the deferred Step 5a from
+          // the import path.
+          if (success && hash) {
+            try {
+              const attachmentItem = await Zotero.Items.getAsync(completedItemID);
+              if (attachmentItem) {
+                // Update the tracking record's zoteroItemKey to reflect
+                // the newly-created parent (was the attachment key as a
+                // placeholder before recognition).
+                if (this._trackingStore && attachmentItem.parentItem) {
+                  this._trackingStore.update(finalPath, {
+                    zoteroItemKey: attachmentItem.parentItem.key,
+                  });
+                }
+                await stampHashWhenPossible(attachmentItem);
+              }
+            } catch (deferredStampErr) {
+              Zotero.debug(`[WatchFolder] Deferred storeContentHash failed: ${deferredStampErr.message}`);
+            }
+          }
 
           if (success && getPref('autoRename') !== false) {
             try {
