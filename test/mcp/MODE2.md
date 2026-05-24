@@ -528,22 +528,29 @@ Bash: rm -rf /tmp/ZoteroWatchTest/inbox2
 | SETUP.M2.1 | ✅ | ModeTwoTest collection key `H79DCAVM`. **MCP gotcha:** bare `await c.saveTx()` in the IIFE wrapper succeeded but returned undefined and didn't persist. Workaround: wrap in `Zotero.DB.executeTransaction(async () => { await c.save(); })`. |
 | BASE.1 (B.6 mkdir) | ✅ | `EmptySub/` created on disk; tracking record `state=clean`, path=`EmptySub` (sync-root-relative). |
 | BASE.2 (B.2 copy) | ⚠️ | File copied (3.4 MB), full-file hash computed, attachment + memberships + canonical correct. **Bug surfaced:** `watchFolder._processNewFile`'s dedup-skip path overwrote baseline's relative-path FileRecord with an absolute-path one. Idempotent `_absPath` (commit `68964a3`) defuses the downstream cascade but the underlying schema drift remains (task #25 deferred). |
-| BASE.3 (B.7 reconcile) | ⬜ | Not run. |
-| ADOPT.1 | ⬜ | Not run. |
-| LATE.1 | ⬜ | Not run. |
+| BASE.3 (B.7 reconcile) | ❌ | Placed `/watch/Misplaced/relocated.pdf` (same hash as JIM735WQ attachment). Reset baseline + reload. Expected: B.7 adopts existing disk file. Actual: scan loop ran BEFORE baseline, processed `relocated.pdf` via dedup-skip path, called `relativePathToCollection('Misplaced', createIfMissing=true)` → CREATED a Zotero subcollection `Misplaced` under the sync root. Then baseline picked Misplaced as canonical for JIM735WQ, copied from Zotero storage to `/watch/Misplaced/Carlini.pdf` → ended up with TWO copies on disk. Tracks bugs #30 (scan races baseline) + #31 (scan loop's createIfMissing not Mode-2-gated). |
+| ADOPT.1 | ✅ | Created `ExternalSub2` outside sync root, added parent 372, then reparented under root. Adopt-into-scope fired: `ExternalSub2/` created on disk + Díaz-Rodríguez PDF (2.5 MB) copied from Zotero storage + FileRecord inserted with correct attachment key (HMWS5URD) and canonical (IHPVWL2H). Trashed parents are correctly skipped (first attempt with parent 373 was in Zotero Trash; adopt saw 0 attachments and exited cleanly). |
+| LATE.1 | ✅ | Created parent item (key UYDJIHVD) in sync root with no attachment. Attached `/tmp/late-test.pdf` via Zotero.Attachments.importFromFile. itemAddHandler fired: file copied to `/watch/late-test.pdf` + FileRecord inserted with correct attachment key (5R7CYVLE), canonical=H79DCAVM, state=clean. |
 | REN.1 | ✅ | `EmptySub/` → `RenamedSub/` on disk; tracking record `localPath` updated. Full notifier → moveFolder → executor pipeline works. |
-| MEM.1 | ⬜ | Not run (covered partially by CONF.1 — re-adding the parent to the sync root triggered canonical recompute correctly). |
+| MEM.1 | ❌ | Attempted: removed parent 358 from ModeTwoTest, added to RenamedSub. Handler couldn't find the attachment's tracking record because the scan loop's Extra-field dedup path (bug #29) had stored the PARENT's key (E8EQ8SBC) in `zoteroAttachmentKey` instead of the actual attachment's key (5H2RK95E). All downstream events for the real attachment silently no-op. Re-test after fix #29. |
 | SUPP.1 | ✅ (after fix) | First run: ❌ state stayed `clean` because remaining `Inbox` (outside sync root) membership wasn't filtered out. Fix in commit `68964a3` (`_removeItemMembership` now filters by `collectionKeyToRelativePath !== null`). Second run: state correctly flipped to `out-of-scope-suppressed`, canonical cleared, Inbox kept in membership list, SUPPRESSED warning with `last-sync-root-membership-removed`. |
 | CONF.1 | ✅ (after fix) | First run: ❌ warning was `missing-file` instead of `hash-drifted` because absolute `oldCanonicalPath` was double-joined with watchRoot. Fix in commit `68964a3` (idempotent `_absPath` returns absolute input unchanged). Second run: `conflict-blocked` / `hash-drifted` warning fires correctly; FileRecord state flips to `conflict-blocked`. |
-| WARN.1 | ⬜ | Partially — warning sink confirmed live via API (`getRecent`, `getCountsByCategory`); prefs UI rows not visually verified in this run. |
+| WARN.1 | ⚠️ | Partial — warning sink confirmed live via API (`getTotalCount`, `getRecent`, `getCountsByCategory`, `clear`); prefs UI rows not visually verified in this run. |
 
 ### Bugs discovered + fixed during this run
 - **`_absPath` not idempotent** (mirrorExecutor + baseline + folderEventDetector + suppressionResolver) — fixed in `68964a3`.
 - **`_removeItemMembership` ignored sync-root scope** when counting remaining memberships — fixed in `68964a3` (+ UT-415 ×2).
 
-### Deferred (tracked separately)
-- **Schema drift in `watchFolder._processNewFile`** — task #25. Scan-loop writes absolute paths to `FileRecord.localPath` and `canonicalLocalPath`. Defensive idempotent `_absPath` makes this non-blocking for v2.1, but a real migration is owed.
-- **MCP bridge flakiness** — `Zotero.DB.executeTransaction(async () => { await x.save(); })` is the reliable save pattern; bare `await x.saveTx()` silently fails in some IIFE contexts. Document in CLAUDE.md MCP section.
+### Bugs discovered + deferred (tracked separately)
+- **Task #25** — schema drift in `watchFolder._processNewFile`. Scan loop writes absolute paths to `FileRecord.localPath`/`canonicalLocalPath`. Defensive idempotent `_absPath` makes it non-blocking for v2.1 but the real migration is owed.
+- **Task #29** — Extra-field dedup in `_processNewFile` stores PARENT's key as `zoteroAttachmentKey` (the matched Zotero item is the parent, not the attachment). Downstream handlers can't find records → events silently no-op. Blocked MEM.1 + obscured BASE.2's full record provenance.
+- **Task #30** — scan loop races baseline. First scan after startup runs before `syncCoordinator.start()` → processes disk files via Mode-1 import flow → creates Zotero sub-collections + records. Then baseline computes a different canonical and copies anyway → double-copy. Surfaced via BASE.3.
+- **Task #31** — `relativePathToCollection(rel, { createIfMissing: true })` in the scan loop is not Mode-2-aware. In Mode 2 the disk→Zotero direction should route via MirrorActions, not direct collection creation. Surfaced via BASE.3 (an arbitrary disk subfolder name became a Zotero subcollection without user intent).
+
+### MCP bridge notes
+- `Zotero.DB.executeTransaction(async () => { await x.save(); })` is the reliable save pattern; bare `await x.saveTx()` silently returns undefined and may not persist in some IIFE contexts.
+- `Zotero.Collection.parentID` is read-only (`_parentID` / `_parentKey` private setters). Use `coll.parentKey = '<key>'` then `await coll.save()` inside an executeTransaction.
+- `JSON.stringify` of objects with multiple nested property accesses sometimes returns `undefined` through the bridge — split into smaller queries or build a flat object first.
 
 Update this table inline as cases are run. Any ❌ should reference the
 relevant log lines / DB queries so a follow-up can diagnose without
