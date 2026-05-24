@@ -749,7 +749,8 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
     expect(service._trackingStore.remove).toHaveBeenCalledWith('/watch/paper.pdf');
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ localPath: '/watch/sub/paper.pdf', zoteroAttachmentKey: 'AK42' })
+      // Post-#25 migration: localPath is now sync-root-relative.
+      expect.objectContaining({ localPath: 'sub/paper.pdf', zoteroAttachmentKey: 'AK42' })
     );
   });
 
@@ -786,7 +787,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     expect(movedItem.removeFromCollection).not.toHaveBeenCalled();
     expect(movedItem.addToCollection).not.toHaveBeenCalled();
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ localPath: '/watch/new-name.pdf' })
+      expect.objectContaining({ localPath: 'new-name.pdf' })
     );
   });
 
@@ -827,10 +828,10 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
 
     expect(service._trackingStore.add).toHaveBeenCalledTimes(2);
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ localPath: '/watch/x/a.pdf', zoteroAttachmentKey: 'AK1' })
+      expect.objectContaining({ localPath: 'x/a.pdf', zoteroAttachmentKey: 'AK1' })
     );
     expect(service._trackingStore.add).toHaveBeenCalledWith(
-      expect.objectContaining({ localPath: '/watch/y/b.pdf', zoteroAttachmentKey: 'AK2' })
+      expect.objectContaining({ localPath: 'y/b.pdf', zoteroAttachmentKey: 'AK2' })
     );
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
   });
@@ -964,16 +965,16 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     expect(fakeCollection.name).toBe('Procedures');
     expect(fakeCollection.saveTx).toHaveBeenCalledTimes(1);
 
-    // Tracking record was rewritten to the new absolute path.
+    // Tracking record was rewritten to the new sync-root-relative path.
     const renamed = service._trackingStore.getCollectionRecord('COL_METHODS');
     expect(renamed).not.toBe(null);
-    expect(renamed.localPath).toBe('/watch/Procedures');
+    expect(renamed.localPath).toBe('Procedures');
 
-    // Descendant file record was rewritten too.
+    // Descendant file record was rewritten too (relative form post-#25).
     expect(service._trackingStore._files.has('/watch/Methods/paper.pdf')).toBe(false);
-    const renamedFile = service._trackingStore._files.get('/watch/Procedures/paper.pdf');
+    const renamedFile = service._trackingStore._files.get('Procedures/paper.pdf');
     expect(renamedFile).toBeTruthy();
-    expect(renamedFile.canonicalLocalPath).toBe('/watch/Procedures/paper.pdf');
+    expect(renamedFile.canonicalLocalPath).toBe('Procedures/paper.pdf');
   });
 
   it('does NOT rename when there are no tracked files under the missing folder (no hash anchor)', async () => {
@@ -1103,17 +1104,17 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
     expect(methodsCollection.name).toBe('Procedures');
     expect(aiCollection.name).toBe('AI');
 
-    // Tracking records (absolute paths now): shallowest (Methods)
-    // processed first, sweeps descendants. AI's localPath rewritten
-    // by the parent's recursive sweep.
+    // Tracking records (sync-root-relative post-#25): shallowest (Methods)
+    // processed first, sweeps descendants. AI's localPath rewritten by
+    // the parent's recursive sweep.
     const methodsRec = service._trackingStore.getCollectionRecord('COL_METHODS');
-    expect(methodsRec.localPath).toBe('/watch/Procedures');
+    expect(methodsRec.localPath).toBe('Procedures');
     const aiRec = service._trackingStore.getCollectionRecord('COL_AI');
-    expect(aiRec.localPath).toBe('/watch/Procedures/AI');
+    expect(aiRec.localPath).toBe('Procedures/AI');
 
-    const aiFile = service._trackingStore._files.get('/watch/Procedures/AI/paper.pdf');
+    const aiFile = service._trackingStore._files.get('Procedures/AI/paper.pdf');
     expect(aiFile).toBeTruthy();
-    expect(aiFile.canonicalLocalPath).toBe('/watch/Procedures/AI/paper.pdf');
+    expect(aiFile.canonicalLocalPath).toBe('Procedures/AI/paper.pdf');
     expect(service._trackingStore._files.has('/watch/Methods/AI/paper.pdf')).toBe(false);
   });
 });
@@ -1184,7 +1185,8 @@ describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
     expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true });
     const record = service._trackingStore.getCollectionRecord('COL_METHODS');
     expect(record).not.toBe(null);
-    expect(record.localPath).toBe('/watch/Methods');
+    // Post-#25: localPath is sync-root-relative.
+    expect(record.localPath).toBe('Methods');
   });
 
   it('does NOT re-create a Zotero subcollection that already has a tracking record', async () => {

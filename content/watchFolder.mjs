@@ -92,6 +92,22 @@ export class WatchFolderService {
   }
 
   /**
+   * Convert an absolute disk path to the sync-root-relative form used
+   * by v2 records (`FileRecord.localPath` / `canonicalLocalPath` /
+   * `CollectionRecord.localPath`). Returns the input unchanged when
+   * the path is already relative or sits outside the watch root.
+   *
+   * @private
+   */
+  _toRelativeForStore(absPath, watchPath) {
+    if (!absPath || !watchPath) return absPath;
+    // Already relative? (no leading '/' and not a Windows drive letter)
+    if (!absPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(absPath)) return absPath;
+    const rel = relativePath(absPath, watchPath);
+    return rel != null ? rel : absPath;
+  }
+
+  /**
    * Resolve a tracked FileRecord/CollectionRecord `localPath` (which the
    * v2 spec says is sync-root-relative, but legacy writers in this
    * module sometimes emit as absolute) into an absolute path. Idempotent:
@@ -368,9 +384,18 @@ export class WatchFolderService {
           continue;
         }
 
-        // Skip if already tracked
-        if (this._trackingStore && this._trackingStore.hasPath(filePath)) {
-          continue;
+        // Skip if already tracked. Check BOTH the absolute and the
+        // sync-root-relative form — v2 spec records use relative paths,
+        // but legacy writers in this module sometimes wrote absolute.
+        // Without the relative check, baseline-written records (which
+        // are properly relative) would be missed and the dedup-skip
+        // path would insert a duplicate at the absolute key (#25).
+        if (this._trackingStore) {
+          if (this._trackingStore.hasPath(filePath)) continue;
+          const relForLookup = relativePath(filePath, watchPath);
+          if (relForLookup != null && this._trackingStore.hasPath(relForLookup)) {
+            continue;
+          }
         }
 
         // Compute the sync-root-relative directory for this file. The sync
@@ -494,11 +519,20 @@ export class WatchFolderService {
         const existingByHash = this._trackingStore.findByHash(hash);
         if (existingByHash) {
           Zotero.debug(`[WatchFolder] File already tracked by hash: ${filePath}`);
+          const watchPath = getPref('sourcePath') || '';
+          const relFile = this._toRelativeForStore(filePath, watchPath);
+          // If the existing record already represents THIS file (same
+          // resolved path), skip the duplicate insert (#25 dedup).
+          const existingAbs = this._resolveTrackedAbs(existingByHash.localPath, watchPath);
+          if (existingAbs === filePath) {
+            Zotero.debug(`[WatchFolder] Dedup-skip: existing record already represents ${filePath}, no duplicate insert`);
+            return;
+          }
           // The new physical copy of an existing tracked item points at the
           // SAME attachment but with a different localPath. canonicalLocalPath
           // stays on the original location (canonical-path rule).
           this._trackingStore.add(createFileRecord({
-            localPath: filePath,
+            localPath: relFile,
             canonicalLocalPath: existingByHash.canonicalLocalPath,
             lastSyncedHash: hash,
             lastSyncedSize,
@@ -562,9 +596,18 @@ export class WatchFolderService {
                   }
                 }
                 if (attachment) {
+                  const watchPath = getPref('sourcePath') || '';
+                  const relFile = this._toRelativeForStore(filePath, watchPath);
+                  // Don't double-track: if a record for this attachment
+                  // at this exact path already exists, skip the insert.
+                  const existing = this._trackingStore.getByAttachmentKey(attachment.key);
+                  if (existing && this._resolveTrackedAbs(existing.localPath, watchPath) === filePath) {
+                    Zotero.debug(`[WatchFolder] Dedup-skip (Extra): existing record for ${attachment.key} already at ${filePath}`);
+                    return;
+                  }
                   this._trackingStore.add(createFileRecord({
-                    localPath: filePath,
-                    canonicalLocalPath: filePath,
+                    localPath: relFile,
+                    canonicalLocalPath: relFile,
                     lastSyncedHash: hash,
                     lastSyncedSize,
                     lastSyncedMtime,
@@ -616,14 +659,17 @@ export class WatchFolderService {
       }
 
       // Step 5: Build the v2 tracking record. localPath is the file's final
-      // disk location (post-move/leave). For 'delete' we keep the original
-      // localPath but flip state so external-deletion detection ignores it.
+      // disk location (post-move/leave) in sync-root-relative form. For
+      // 'delete' we keep the original localPath but flip state so
+      // external-deletion detection ignores it.
       const finalPath = postImportResult.finalPath ?? filePath;
       const wasDeleted = postImportResult.action === 'delete';
       if (this._trackingStore) {
+        const watchPath = getPref('sourcePath') || '';
+        const relFinal = this._toRelativeForStore(finalPath, watchPath);
         this._trackingStore.add(createFileRecord({
-          localPath: finalPath,
-          canonicalLocalPath: finalPath,
+          localPath: relFinal,
+          canonicalLocalPath: relFinal,
           lastSyncedHash: hash,
           lastSyncedSize,
           lastSyncedMtime,
@@ -676,9 +722,13 @@ export class WatchFolderService {
       // Step 6: Queue for metadata retrieval if enabled.
       const autoRetrieveMetadata = getPref('autoRetrieveMetadata');
       if (autoRetrieveMetadata !== false && this._metadataRetriever) {
+        const watchPathForCallback = getPref('sourcePath') || '';
+        const finalRelKey = this._toRelativeForStore(finalPath, watchPathForCallback);
         this._metadataRetriever.queueItem(itemID, async (success, completedItemID) => {
           if (this._trackingStore) {
-            this._trackingStore.update(finalPath, { metadataRetrieved: success });
+            // Use the sync-root-relative key matching what _processNewFile
+            // just wrote (#25 migration).
+            this._trackingStore.update(finalRelKey, { metadataRetrieved: success });
           }
           Zotero.debug(`[WatchFolder] Metadata retrieval ${success ? 'completed' : 'failed'} for item ${completedItemID}`);
 
@@ -751,23 +801,23 @@ export class WatchFolderService {
 
     // Walk from the leaf upward, collecting (collection, segmentPath) pairs.
     // We then iterate top-down to insert records with parent linkage.
-    // localPath is stored as an ABSOLUTE disk path (matching the convention
-    // file records use) so per-prefix comparisons in folder-rename
-    // detection and the recursive sweep work without watch-path
-    // conversion gymnastics.
+    // localPath is sync-root-relative per v2 spec (migrated from absolute
+    // in the #25 schema-drift fix). _detectFolderRenames + the recursive
+    // sweep that consume these records have been updated to translate via
+    // _resolveTrackedAbs / _toRelativeForStore where they need absolute.
     const chain = [];
     let cursor = leafCollection;
     let depth = segments.length;
     while (cursor && depth > 0) {
       const relSegments = segments.slice(0, depth);
-      const absPath = watchPath + '/' + relSegments.join('/');
-      chain.unshift({ collection: cursor, absPath });
+      const relPath = relSegments.join('/');
+      chain.unshift({ collection: cursor, relPath });
       depth--;
       if (!cursor.parentID) break;
       cursor = Zotero.Collections.get(cursor.parentID);
     }
 
-    for (const { collection, absPath } of chain) {
+    for (const { collection, relPath } of chain) {
       const existing = this._trackingStore.getCollectionRecord(collection.key);
       if (existing) continue;
       let parentKey = null;
@@ -778,12 +828,12 @@ export class WatchFolderService {
         }
       }
       this._trackingStore.add(createCollectionRecord({
-        localPath: absPath,
+        localPath: relPath,
         zoteroCollectionKey: collection.key,
         parentCollectionKey: parentKey,
         state: STATE.CLEAN,
       }));
-      Zotero.debug(`[WatchFolder] Tracked new collection record: ${absPath} (key=${collection.key})`);
+      Zotero.debug(`[WatchFolder] Tracked new collection record: ${relPath} (key=${collection.key})`);
     }
   }
 
@@ -833,8 +883,14 @@ export class WatchFolderService {
     const dirs = await this._listSubdirectories(watchPath);
     if (dirs.length === 0) return;
 
+    // Build the tracked-set in ABSOLUTE form for comparison with the
+    // disk `absDir`. CollectionRecord.localPath is now relative
+    // (post-#25 migration), so resolve each through _resolveTrackedAbs;
+    // legacy absolute records still match because the resolver is
+    // idempotent.
     const tracked = new Set(
-      this._trackingStore.getAllOfType('collection').map(r => r.localPath),
+      this._trackingStore.getAllOfType('collection')
+        .map(r => this._resolveTrackedAbs(r.localPath, watchPath)),
     );
 
     for (const absDir of dirs) {
@@ -889,10 +945,20 @@ export class WatchFolderService {
    */
   async _detectFolderRenames(scannedFiles, watchPath) {
     if (!this._trackingStore || !watchPath) return;
-    const collectionRecords = this._trackingStore.getAllOfType('collection');
-    if (collectionRecords.length === 0) return;
+    const rawRecords = this._trackingStore.getAllOfType('collection');
+    if (rawRecords.length === 0) return;
 
-    // ── 1. Build on-disk dir state (ABSOLUTE paths to match record schema) ──
+    // Normalize collection records to ABSOLUTE-path form for this
+    // method's scope. v2 spec stores relative paths in localPath, but
+    // we compare against on-disk absolute paths everywhere here. The
+    // resolver is idempotent so both representations work; we tag each
+    // record with an `_absLocalPath` field used throughout this fn.
+    const collectionRecords = rawRecords.map(r => ({
+      ...r,
+      _absLocalPath: this._resolveTrackedAbs(r.localPath, watchPath),
+    }));
+
+    // ── 1. Build on-disk dir state (ABSOLUTE paths) ────────────────────
     // Include ALL existing subdirs (even empty ones) — otherwise a tracked
     // collection record for an empty folder would be flagged as missing
     // every scan and trigger spurious "no tracked file hashes — skip" log.
@@ -902,8 +968,6 @@ export class WatchFolderService {
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop(); // drop filename
-      // Add this dir + all ancestor dirs as absolute paths (covers the
-      // file-only path for redundancy with the dir walk above).
       for (let i = 1; i <= parts.length; i++) {
         onDiskDirs.add(watchPath + '/' + parts.slice(0, i).join('/'));
       }
@@ -911,13 +975,13 @@ export class WatchFolderService {
 
     // ── 2. Find missing collection records ──────────────────────────────
     const missing = collectionRecords.filter(r =>
-      r.localPath && !onDiskDirs.has(r.localPath));
+      r._absLocalPath && !onDiskDirs.has(r._absLocalPath));
     if (missing.length === 0) return;
 
     // Sort shallowest first so a parent rename is processed before its
     // children — child records get rewritten by the parent's recursive
     // descendant update and won't need a per-child rename.
-    missing.sort((a, b) => a.localPath.split('/').length - b.localPath.split('/').length);
+    missing.sort((a, b) => a._absLocalPath.split('/').length - b._absLocalPath.split('/').length);
 
     const hashCache = new Map();
     const hashOf = async (p) => {
@@ -952,18 +1016,20 @@ export class WatchFolderService {
       // Skip if a prior iteration's recursive descendant sweep already
       // updated this record.
       if (!this._trackingStore.getCollectionRecord(collRecord.zoteroCollectionKey)) continue;
-      const oldPath = collRecord.localPath;
+      const oldPath = collRecord._absLocalPath; // normalized above
       const oldPrefix = oldPath + '/';
 
       // Re-fetch tracked files each iteration — earlier rename sweeps may
-      // have rewritten paths.
+      // have rewritten paths. Resolve each file's localPath to absolute
+      // for comparison (post-#25 records are sync-root-relative).
       const trackedFilesNow = this._trackingStore.getAllOfType('file');
       const trackedShape = new Map(); // hash → tail under oldPath
       for (const f of trackedFilesNow) {
         if (!f.lastSyncedHash) continue;
+        const fAbs = this._resolveTrackedAbs(f.localPath, watchPath);
         let tail;
-        if (f.localPath === oldPath) tail = '';
-        else if (f.localPath.startsWith(oldPrefix)) tail = f.localPath.slice(oldPrefix.length);
+        if (fAbs === oldPath) tail = '';
+        else if (fAbs.startsWith(oldPrefix)) tail = fAbs.slice(oldPrefix.length);
         else continue;
         trackedShape.set(f.lastSyncedHash, tail);
       }
@@ -973,7 +1039,8 @@ export class WatchFolderService {
       }
 
       const trackedDirs = new Set(
-        this._trackingStore.getAllOfType('collection').map(r => r.localPath),
+        this._trackingStore.getAllOfType('collection')
+          .map(r => this._resolveTrackedAbs(r.localPath, watchPath)),
       );
       const candidateDirs = [...onDiskDirs].filter(d =>
         d !== watchPath && !trackedDirs.has(d));
@@ -1015,7 +1082,14 @@ export class WatchFolderService {
    * @private
    */
   async _renameTrackedCollection(oldRecord, newPath) {
-    const oldPath = oldRecord.localPath;
+    // oldRecord may carry _absLocalPath (set by _detectFolderRenames'
+    // normalization pass) or raw localPath that's relative or absolute.
+    // newPath is the new absolute disk path of the renamed dir.
+    const watchPath = getPref('sourcePath') || '';
+    const oldAbs = oldRecord._absLocalPath
+      ?? this._resolveTrackedAbs(oldRecord.localPath, watchPath);
+    const newAbs = newPath;
+    const newRel = this._toRelativeForStore(newAbs, watchPath);
     const newName = newPath.split('/').pop();
     try {
       const syncRoot = await resolveSyncRoot().catch(() => null);
@@ -1039,41 +1113,41 @@ export class WatchFolderService {
     this._trackingStore.removeCollectionRecord(oldRecord.zoteroCollectionKey);
     this._trackingStore.add(createCollectionRecord({
       ...oldRecord,
-      localPath: newPath,
+      localPath: newRel,
     }));
 
     // Recursively update descendants. Iterate snapshots because we mutate
-    // the store while looping.
-    const oldPrefix = oldPath + '/';
-    const newPrefix = newPath + '/';
+    // the store while looping. Comparisons are done in ABSOLUTE form
+    // (idempotent _resolveTrackedAbs handles both abs and rel records).
+    const oldPrefix = oldAbs + '/';
+    const newPrefix = newAbs + '/';
 
     const files = this._trackingStore.getAllOfType('file').slice();
     for (const f of files) {
-      if (f.localPath === oldPath) {
-        const updated = { ...f, localPath: newPath, canonicalLocalPath: newPath };
-        this._trackingStore.remove(f.localPath);
-        this._trackingStore.add(updated);
-      } else if (f.localPath.startsWith(oldPrefix)) {
-        const tail = f.localPath.slice(oldPrefix.length);
-        const newLocal = newPrefix + tail;
-        const updated = { ...f, localPath: newLocal, canonicalLocalPath: newLocal };
-        this._trackingStore.remove(f.localPath);
-        this._trackingStore.add(updated);
-      }
+      const fAbs = this._resolveTrackedAbs(f.localPath, watchPath);
+      let newLocalAbs = null;
+      if (fAbs === oldAbs) newLocalAbs = newAbs;
+      else if (fAbs.startsWith(oldPrefix)) newLocalAbs = newPrefix + fAbs.slice(oldPrefix.length);
+      else continue;
+      const newLocalRel = this._toRelativeForStore(newLocalAbs, watchPath);
+      const updated = { ...f, localPath: newLocalRel, canonicalLocalPath: newLocalRel };
+      this._trackingStore.remove(f.localPath);
+      this._trackingStore.add(updated);
     }
 
     const cols = this._trackingStore.getAllOfType('collection').slice();
     for (const c of cols) {
       if (c.zoteroCollectionKey === oldRecord.zoteroCollectionKey) continue; // already handled
-      if (c.localPath.startsWith(oldPrefix)) {
-        const tail = c.localPath.slice(oldPrefix.length);
-        const newLocal = newPrefix + tail;
-        this._trackingStore.removeCollectionRecord(c.zoteroCollectionKey);
-        this._trackingStore.add(createCollectionRecord({
-          ...c,
-          localPath: newLocal,
-        }));
-      }
+      const cAbs = this._resolveTrackedAbs(c.localPath, watchPath);
+      if (!cAbs.startsWith(oldPrefix)) continue;
+      const tail = cAbs.slice(oldPrefix.length);
+      const newLocalAbs = newPrefix + tail;
+      const newLocalRel = this._toRelativeForStore(newLocalAbs, watchPath);
+      this._trackingStore.removeCollectionRecord(c.zoteroCollectionKey);
+      this._trackingStore.add(createCollectionRecord({
+        ...c,
+        localPath: newLocalRel,
+      }));
     }
   }
 
@@ -1615,16 +1689,18 @@ export class WatchFolderService {
 
       // Update tracking: remove the old record (keyed by localPath) and
       // re-add at the new path with the updated canonical bits.
+      // localPath persisted in sync-root-relative form (#25 migration).
       try {
         const newCanonicalCollectionKey = (newRel != null)
           ? (await relativePathToCollection(newRel, { createIfMissing: false }).catch(() => null))?.key
             ?? record.canonicalCollectionKey
           : record.canonicalCollectionKey;
+        const newRelLocal = this._toRelativeForStore(newPath, watchPath);
         this._trackingStore.remove(record.localPath);
         this._trackingStore.add(createFileRecord({
           ...record,
-          localPath: newPath,
-          canonicalLocalPath: newPath,
+          localPath: newRelLocal,
+          canonicalLocalPath: newRelLocal,
           canonicalCollectionKey: newCanonicalCollectionKey,
         }));
       } catch (e) {
