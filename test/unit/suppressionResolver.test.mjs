@@ -39,6 +39,7 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
   return {
     ...actual,
     resolveSyncRoot: vi.fn(),
+    relativePathToCollection: vi.fn(async () => ({ id: 1, key: 'COL1' })),
   };
 });
 
@@ -732,5 +733,154 @@ describe('UT-827: rollback on save() failure', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('save-failed');
     expect(store.getCollectionRecord('CK').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+});
+
+// ─── UT-830/831: listTrashedFolders + restoreTrashedFolder (v2.2 Track D) ───
+
+describe('UT-830: listTrashedFolders', () => {
+  let listTrashedFolders;
+  beforeEach(async () => {
+    const mod = await import('../../content/suppressionResolver.mjs');
+    listTrashedFolders = mod.listTrashedFolders;
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.getChildren = vi.fn(async () => []);
+    globalThis.IOUtils.stat = vi.fn(async () => ({ type: 'directory' }));
+  });
+
+  it('returns [] when watchRoot is unset', async () => {
+    const res = await listTrashedFolders({ watchRoot: '' });
+    expect(res).toEqual([]);
+  });
+
+  it('returns [] when plugin trash dir does not exist', async () => {
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    const res = await listTrashedFolders({ watchRoot: '/watch' });
+    expect(res).toEqual([]);
+  });
+
+  it('lists directories (skipping files), stripping timestamp collision suffix into originalName', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async () => [
+      '/watch/.zotero-watch-trash/Methods',
+      '/watch/.zotero-watch-trash/Methods.1779671312304',
+      '/watch/.zotero-watch-trash/loose-file.pdf',
+    ]);
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({
+      type: p.endsWith('.pdf') ? 'regular' : 'directory',
+    }));
+
+    const res = await listTrashedFolders({ watchRoot: '/watch' });
+    const names = res.map(e => e.name).sort();
+    expect(names).toEqual(['Methods', 'Methods.1779671312304']);
+    const suffixed = res.find(e => e.name === 'Methods.1779671312304');
+    expect(suffixed.originalName).toBe('Methods');
+    const plain = res.find(e => e.name === 'Methods');
+    expect(plain.originalName).toBe('Methods');
+  });
+});
+
+describe('UT-831: restoreTrashedFolder', () => {
+  let restoreTrashedFolder;
+  let canonicalPath;
+  beforeEach(async () => {
+    const mod = await import('../../content/suppressionResolver.mjs');
+    restoreTrashedFolder = mod.restoreTrashedFolder;
+    canonicalPath = await import('../../content/canonicalPath.mjs');
+    canonicalPath.relativePathToCollection.mockResolvedValue({ id: 2, key: 'NEW' });
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.move = vi.fn(async () => {});
+    globalThis.IOUtils.copy = vi.fn(async () => {});
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+  });
+
+  it('rejects invalid entry', async () => {
+    const r = await restoreTrashedFolder(null, { watchRoot: '/watch' });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('invalid-entry');
+  });
+
+  it('rejects when watchRoot is unset', async () => {
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '' });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('no-watch-root');
+  });
+
+  it('returns trash-source-missing when the src does not exist', async () => {
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('trash-source-missing');
+  });
+
+  it('happy path: moves src → watchRoot/originalName + recreates collection', async () => {
+    // Source exists; destination doesn't (no collision).
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/Methods'
+    );
+    const r = await restoreTrashedFolder({ name: 'Methods', originalName: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(true);
+    expect(r.restoredTo).toBe('Methods');
+    expect(globalThis.IOUtils.move).toHaveBeenCalledWith(
+      '/watch/.zotero-watch-trash/Methods',
+      '/watch/Methods'
+    );
+    expect(canonicalPath.relativePathToCollection).toHaveBeenCalledWith(
+      'Methods', { createIfMissing: true }
+    );
+  });
+
+  it('RST.6 collision: target exists → suffix .restored.<ts>', async () => {
+    globalThis.IOUtils.exists = vi.fn(async () => true); // src + dst both exist
+    const before = Date.now();
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(true);
+    expect(r.restoredTo).toMatch(/^Methods\.restored\.\d+$/);
+    const stamp = parseInt(r.restoredTo.match(/Methods\.restored\.(\d+)$/)[1], 10);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+  });
+
+  it('strips timestamp suffix from `name` when originalName is not provided', async () => {
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/Methods.1779671312304'
+    );
+    const r = await restoreTrashedFolder({ name: 'Methods.1779671312304' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(true);
+    expect(r.restoredTo).toBe('Methods');
+  });
+
+  it('returns ok with `warning` when collection recreation fails', async () => {
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/Methods'
+    );
+    canonicalPath.relativePathToCollection.mockRejectedValueOnce(new Error('boom'));
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(true);
+    expect(r.warning).toMatch(/collection-recreate-failed/);
+  });
+
+  it('cross-FS fallback: IOUtils.move throws → copy + remove path runs', async () => {
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/Methods'
+    );
+    globalThis.IOUtils.move = vi.fn(async () => { throw new Error('EXDEV'); });
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(true);
+    expect(globalThis.IOUtils.copy).toHaveBeenCalled();
+    expect(globalThis.IOUtils.remove).toHaveBeenCalled();
+  });
+
+  it('io-error: both move and copy fail → returns io-error + cleans dst', async () => {
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/Methods'
+    );
+    globalThis.IOUtils.move = vi.fn(async () => { throw new Error('EXDEV'); });
+    globalThis.IOUtils.copy = vi.fn(async () => { throw new Error('ENOSPC'); });
+    const r = await restoreTrashedFolder({ name: 'Methods' }, { watchRoot: '/watch' });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('io-error');
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith(
+      '/watch/Methods',
+      { recursive: true, ignoreAbsent: true }
+    );
   });
 });

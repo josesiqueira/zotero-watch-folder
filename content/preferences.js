@@ -505,6 +505,93 @@
     }
 
     /**
+     * Refresh the trashed-folders row count. Reads from
+     * `Zotero.WatchFolder.suppressionResolver.listTrashedFolders()` which
+     * lists top-level dirs inside `.zotero-watch-trash/` (folders that
+     * mirrorExecutor.deleteFolder moved out of the watch root in Mode 3).
+     */
+    async function refreshTrashedFoldersDisplay() {
+        const row = document.getElementById('watch-folder-trashed-folders-row');
+        const countEl = document.getElementById('watch-folder-trashed-folders-count');
+        if (!row || !countEl) return;
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        let entries = [];
+        if (resolver && typeof resolver.listTrashedFolders === 'function') {
+            try { entries = await resolver.listTrashedFolders(); }
+            catch (_e) { entries = []; }
+        }
+        countEl.value = String(entries.length);
+        row.hidden = entries.length === 0;
+    }
+
+    /**
+     * Iterate trashed folders and offer Restore / Skip per entry.
+     * Restore moves the dir back to its original sync-root-relative path
+     * (RST.6 collision suffix on the target side) and re-creates the
+     * Zotero collection chain via `relativePathToCollection({
+     * createIfMissing: true })`. The next scan cycle picks up the
+     * contained files and imports them.
+     */
+    async function restoreTrashedFolders() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver || typeof resolver.listTrashedFolders !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Folder restore unavailable — plugin not fully loaded?');
+            return;
+        }
+        let entries = [];
+        try { entries = await resolver.listTrashedFolders(); }
+        catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Could not list trashed folders: ${e.message}`);
+            return;
+        }
+        if (entries.length === 0) {
+            Services.prompt.alert(window, 'Watch Folder', 'No trashed folders.');
+            return;
+        }
+
+        const ACTIONS = [
+            { label: 'Restore to sync root', key: 'restore' },
+            { label: 'Skip for now',         key: null },
+        ];
+        const labels = ACTIONS.map(a => a.label);
+
+        let i = 0;
+        for (const entry of entries) {
+            i++;
+            const out = {};
+            const ok = Services.prompt.select(
+                window,
+                `Trashed folder ${i} of ${entries.length}`,
+                `"${entry.name}" is in the plugin trash.\n\nRestore it to "${entry.originalName}" under the sync root?`,
+                labels,
+                out,
+            );
+            if (!ok) break;
+            const choice = ACTIONS[out.value];
+            if (!choice || !choice.key) continue;
+            try {
+                const result = await resolver.restoreTrashedFolder(entry);
+                if (!result.ok) {
+                    Services.prompt.alert(
+                        window,
+                        'Watch Folder',
+                        `Failed to restore "${entry.name}": ${result.reason || ''}${result.error ? '\n' + result.error : ''}`,
+                    );
+                } else if (result.warning) {
+                    Services.prompt.alert(
+                        window,
+                        'Watch Folder',
+                        `Restored to "${result.restoredTo}". Warning: ${result.warning}`,
+                    );
+                }
+            } catch (e) {
+                Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+            }
+        }
+        await refreshTrashedFoldersDisplay();
+    }
+
+    /**
      * Load the current `smartRules` pref into the editor textarea. Pretty-
      * printed for human editing; saved back compacted by the engine.
      */
@@ -618,6 +705,7 @@
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
+            refreshTrashedFoldersDisplay();
 
             // Smart-rules editor — load current pref into the textarea.
             reloadSmartRules();
@@ -658,6 +746,7 @@
         resolveSuppressed,
         resolveSuppressedFolders,
         resolveConflicts,
+        restoreTrashedFolders,
         runSetupWizard,
         reloadSmartRules,
         saveSmartRules,

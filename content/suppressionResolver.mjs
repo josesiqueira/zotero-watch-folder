@@ -35,9 +35,11 @@ import {
   createTombstoneRecord,
   STATE,
 } from './trackingStore.mjs';
-import { resolveSyncRoot } from './canonicalPath.mjs';
+import { resolveSyncRoot, relativePathToCollection } from './canonicalPath.mjs';
 import { getPref, getFileHash } from './utils.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
+
+const TRASH_DIRNAME = '.zotero-watch-trash';
 
 export const RESOLUTION_ACTION = Object.freeze({
   REINSTATE: 'reinstate',
@@ -97,6 +99,125 @@ export function listSuppressedCollections(store) {
  * @param {object} [store]
  * @returns {Array}
  */
+/**
+ * Enumerate top-level directories inside the plugin trash
+ * (`<watchRoot>/.zotero-watch-trash/`). These come from
+ * `mirrorExecutor._deleteFolder` Mode 3 moves: when Zotero deletes a
+ * tracked collection, the local folder lands here so the user can
+ * restore it via the prefs pane.
+ *
+ * The original folder name may have been suffixed with a millisecond
+ * timestamp on collision (e.g. `Methods.1779671312304`). The returned
+ * `originalName` strips that suffix back to the user-meaningful name;
+ * `name` is the on-disk name in plugin trash (the source-of-truth for
+ * the restore move).
+ *
+ * @param {Object} [opts]
+ * @param {string} [opts.watchRoot] - Override the `sourcePath` pref.
+ * @returns {Promise<Array<{name: string, originalName: string, fullPath: string}>>}
+ */
+export async function listTrashedFolders(opts = {}) {
+  const watchRoot = opts.watchRoot ?? getPref('sourcePath');
+  if (!watchRoot) return [];
+  const trashAbs = PathUtils.join(watchRoot, TRASH_DIRNAME);
+  let exists = false;
+  try { exists = await IOUtils.exists(trashAbs); }
+  catch (_e) { return []; }
+  if (!exists) return [];
+  let children = [];
+  try { children = (await IOUtils.getChildren(trashAbs)) || []; }
+  catch (_e) { return []; }
+  const out = [];
+  for (const child of children) {
+    let info;
+    try { info = await IOUtils.stat(child); }
+    catch (_e) { continue; }
+    if (info?.type !== 'directory') continue;
+    const name = PathUtils.filename(child);
+    if (!name) continue;
+    // Strip a trailing `.<ms-timestamp>` collision suffix when present.
+    // mirrorExecutor uses Date.now() (10+ digits, no extension) for dir
+    // collisions, so the stripped name is the original collection name.
+    const m = name.match(/^(.+)\.(\d{10,})$/);
+    const originalName = m ? m[1] : name;
+    out.push({ name, originalName, fullPath: child });
+  }
+  // Newest-first ordering is friendliest in the UI.
+  out.sort((a, b) => b.name.localeCompare(a.name));
+  return out;
+}
+
+/**
+ * Restore a folder out of plugin trash. Moves the directory back to
+ * `<watchRoot>/<originalName>` (RST.6 collision: appends
+ * `.restored.<timestamp>` to the dir name when the target is occupied)
+ * and re-creates the Zotero collection chain via
+ * `relativePathToCollection({createIfMissing: true})`. The next scan
+ * cycle picks up the contained files and imports them into the
+ * recreated collection.
+ *
+ * Returns `{ok: true, restoredTo}` on success or `{ok: false, reason, error?}`
+ * otherwise. Does NOT re-link previously-deleted Zotero attachments —
+ * folder deletes drop tracking + don't tombstone (per spec, collection
+ * removal is a scope change). Re-import happens via the normal scanner.
+ *
+ * @param {{name: string, originalName?: string}} entry
+ *   `name` is the on-disk name inside plugin trash; `originalName`
+ *   (optional) is the user-meaningful name to restore to. When omitted,
+ *   the timestamp-suffix-stripped form of `name` is used.
+ * @param {Object} [opts]
+ * @param {string} [opts.watchRoot]
+ */
+export async function restoreTrashedFolder(entry, opts = {}) {
+  if (!entry || typeof entry.name !== 'string' || !entry.name) {
+    return { ok: false, reason: 'invalid-entry' };
+  }
+  const watchRoot = opts.watchRoot ?? getPref('sourcePath');
+  if (!watchRoot) return { ok: false, reason: 'no-watch-root' };
+
+  const srcAbs = PathUtils.join(watchRoot, TRASH_DIRNAME, entry.name);
+  if (!(await IOUtils.exists(srcAbs).catch(() => false))) {
+    return { ok: false, reason: 'trash-source-missing' };
+  }
+  const stripped = entry.originalName
+    || (entry.name.match(/^(.+)\.(\d{10,})$/)?.[1])
+    || entry.name;
+  let dstRel = stripped;
+  let dstAbs = PathUtils.join(watchRoot, dstRel);
+
+  // RST.6 collision: existing local file/dir at the target → suffix.
+  if (await IOUtils.exists(dstAbs).catch(() => false)) {
+    const stamp = Date.now();
+    dstRel = `${stripped}.restored.${stamp}`;
+    dstAbs = PathUtils.join(watchRoot, dstRel);
+  }
+
+  try {
+    await IOUtils.move(srcAbs, dstAbs);
+  } catch (moveErr) {
+    // Cross-FS fallback (rare for same-watch-root moves).
+    try {
+      await IOUtils.copy(srcAbs, dstAbs, { recursive: true });
+      await IOUtils.remove(srcAbs, { recursive: true });
+    } catch (copyErr) {
+      try { await IOUtils.remove(dstAbs, { recursive: true, ignoreAbsent: true }); }
+      catch (_e) { /* best effort */ }
+      return { ok: false, reason: 'io-error', error: String(copyErr?.message ?? copyErr) };
+    }
+  }
+
+  // Re-create the Zotero collection chain under the sync root. The next
+  // scan cycle picks up the files inside and imports them. Best-effort:
+  // a failure here doesn't roll back the disk move (the user can still
+  // see the folder + work with it manually).
+  try {
+    await relativePathToCollection(dstRel, { createIfMissing: true });
+  } catch (e) {
+    return { ok: true, restoredTo: dstRel, warning: `collection-recreate-failed: ${e?.message ?? e}` };
+  }
+  return { ok: true, restoredTo: dstRel };
+}
+
 export function listConflicted(store) {
   const s = store || getTrackingStore();
   if (!s || typeof s.getConflictedFiles !== 'function') return [];

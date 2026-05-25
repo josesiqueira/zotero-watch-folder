@@ -203,13 +203,14 @@ Bigger scope. Reserve a longer session.
       mock. 3 UT-095 tests: parent intact (RST.5 happy path), parent
       also gone (falls through to normal import), parent is itself
       an attachment (refuses to re-attach, falls through).
-- [ ] **Restore-folder UX in prefs pane.** Mode 3 `_deleteFolder`
-      now moves folders into `.zotero-watch-trash/`, but the only
-      way to recover them today is to manually move the dir out of
-      plugin trash. A "restore folder" button in the prefs pane —
-      listing dirs in `.zotero-watch-trash/` with a Restore action
-      that moves them back + re-creates the collection — would
-      close this loop.
+- [x] **Restore-folder UX in prefs pane.** Added
+      `suppressionResolver.listTrashedFolders()` + `restoreTrashedFolder()`.
+      Prefs UI: new "Trashed folders: N [Restore folders…]" row,
+      hidden when none. Restore loop offers Restore/Skip per entry;
+      moves the dir back to its original (timestamp-stripped) name
+      with RST.6 collision suffix on the target side, then re-creates
+      the Zotero collection chain via `relativePathToCollection({
+      createIfMissing: true })`. 12 new UT-830/831 tests.
 - [x] **Bulk-delete protection for `watchFolder._handleZoteroTrash`
       and `_handleExternalDeletions`.** Extracted `isBulkDelete` +
       `confirmBulkDelete` from mirrorExecutor into

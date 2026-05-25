@@ -108,6 +108,18 @@
       <button id="watch-folder-conflicted-resolve-btn" data-l10n-id="watch-folder-pref-conflicted-resolve"
               oncommand="WatchFolderPrefs.resolveConflicts()"/>
     </hbox>
+
+    <!-- Trashed folders — v2.2 Mode 3. mirrorExecutor.deleteFolder
+         moves deleted folders into .zotero-watch-trash/; the user can
+         restore them back into the sync root + re-create the Zotero
+         collection. Hidden when none. -->
+    <hbox id="watch-folder-trashed-folders-row" align="center" hidden="true">
+      <label data-l10n-id="watch-folder-pref-trashed-folders" control="watch-folder-trashed-folders-count"/>
+      <html:input id="watch-folder-trashed-folders-count" type="text" style="width: 60px;" readonly="true"/>
+      <button id="watch-folder-trashed-folders-restore-btn"
+              data-l10n-id="watch-folder-pref-trashed-folders-restore"
+              oncommand="WatchFolderPrefs.restoreTrashedFolders()"/>
+    </hbox>
   </groupbox>
 
   <!-- Import Mode / Post-Import Action removed from the visible UI.
