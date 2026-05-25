@@ -211,16 +211,14 @@ Bigger scope. Reserve a longer session.
       listing dirs in `.zotero-watch-trash/` with a Restore action
       that moves them back + re-creates the collection — would
       close this loop.
-- [ ] **Bulk-delete protection for `watchFolder._handleZoteroTrash`
-      and `_handleExternalDeletions`.** The new mirrorExecutor
-      protection only covers `_deleteFolder`. The same threshold
-      logic should apply to `_handleZoteroTrash` (large batch of
-      attachment trashes → many disk deletes) and
-      `_handleExternalDeletions` Mode 3 (many missing files →
-      many Zotero-side trashes). Factor `_isBulkDelete` +
-      `_confirmBulkDelete` into a shared module (probably a new
-      `content/bulkGuard.mjs`) so all three callers use the same
-      thresholds.
+- [x] **Bulk-delete protection for `watchFolder._handleZoteroTrash`
+      and `_handleExternalDeletions`.** Extracted `isBulkDelete` +
+      `confirmBulkDelete` from mirrorExecutor into
+      `content/bulkGuard.mjs`. mirrorExecutor + watchFolder now share
+      thresholds (>10 OR >20%). New tests: bulkGuard.test.mjs
+      (UT-110/111) + UT-094 in watchFolder. Decline at the
+      external-deletion guard demotes to "mark missing" (Mode 1/2
+      semantics) instead of aborting silently.
 
 ---
 

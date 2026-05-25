@@ -2017,3 +2017,200 @@ describe('UT-093: _handleZoteroRestore — RST.2 (parent expansion) + RST.4 (sel
     expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-094: bulk-delete protection for the watchFolder.mjs side
+//   _handleZoteroTrash (>10 attachments at once → prompt; decline → no IO)
+//   _handleExternalDeletions Mode 3 (>10 missing files at once → prompt;
+//   decline → demote to "mark missing", Zotero untouched)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-094: _handleZoteroTrash bulk guard', () => {
+  let service;
+  let store;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'plugin_trash';
+      return undefined;
+    });
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const records = [];
+    store = {
+      _records: records,
+      getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      remove: vi.fn((path) => {
+        const i = records.findIndex(r => r.localPath === path);
+        if (i === -1) return false;
+        records.splice(i, 1);
+        return true;
+      }),
+      removeByAttachmentKey: vi.fn(),
+      add: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+    service._moveToPluginTrash = vi.fn(async () => '.zotero-watch-trash/x.pdf');
+    service._moveToOSTrash = vi.fn(async () => {});
+    service._pickWindow = vi.fn(() => null);
+    Services.prompt.confirmEx.mockReturnValue(0); // approve by default
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+  });
+
+  it('prompts when >10 attachments would be disk-deleted', async () => {
+    // 15 attachments, each with a tracked canonical file on disk.
+    const ids = [];
+    for (let i = 0; i < 15; i++) {
+      store._records.push({
+        type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
+        zoteroAttachmentKey: `K${i}`, state: 'clean',
+      });
+      ids.push(100 + i);
+    }
+    const items = new Map();
+    for (let i = 0; i < 15; i++) {
+      items.set(100 + i, { id: 100 + i, key: `K${i}`, isAttachment: () => true });
+    }
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    await service._handleZoteroTrash(ids);
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    // Approved → all 15 plugin_trash moves ran.
+    expect(service._moveToPluginTrash).toHaveBeenCalledTimes(15);
+  });
+
+  it('user decline aborts the batch — no disk move, no tracking change', async () => {
+    Services.prompt.confirmEx.mockReturnValue(1); // Cancel
+    const ids = [];
+    for (let i = 0; i < 15; i++) {
+      store._records.push({
+        type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
+        zoteroAttachmentKey: `K${i}`, state: 'clean',
+      });
+      ids.push(100 + i);
+    }
+    const items = new Map();
+    for (let i = 0; i < 15; i++) {
+      items.set(100 + i, { id: 100 + i, key: `K${i}`, isAttachment: () => true });
+    }
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    await service._handleZoteroTrash(ids);
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    expect(service._moveToPluginTrash).not.toHaveBeenCalled();
+    expect(service._moveToOSTrash).not.toHaveBeenCalled();
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    // Records untouched.
+    expect(store._records).toHaveLength(15);
+  });
+
+  it('skips the prompt when batch is small (≤10 AND ≤20%)', async () => {
+    // 2 attachments out of 20 tracked → 10% < 20%, count ≤ 10 → no prompt.
+    for (let i = 0; i < 20; i++) {
+      store._records.push({
+        type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
+        zoteroAttachmentKey: i < 2 ? `K${i}` : `O${i}`, state: 'clean',
+      });
+    }
+    const items = new Map();
+    items.set(100, { id: 100, key: 'K0', isAttachment: () => true });
+    items.set(101, { id: 101, key: 'K1', isAttachment: () => true });
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    await service._handleZoteroTrash([100, 101]);
+
+    expect(Services.prompt.confirmEx).not.toHaveBeenCalled();
+    expect(service._moveToPluginTrash).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('UT-094: _handleExternalDeletions bulk guard (Mode 3)', () => {
+  let service;
+  let store;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'auto';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue(null);
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const records = [];
+    store = {
+      _records: records,
+      getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getByAttachmentKey: vi.fn((k) => records.find(r => r.zoteroAttachmentKey === k) ?? null),
+      update: vi.fn((path, updates) => {
+        const r = records.find(x => x.localPath === path);
+        if (r) Object.assign(r, updates);
+      }),
+      remove: vi.fn(),
+      removeByAttachmentKey: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+    service._showExternalDeletionPopup = vi.fn();
+
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({
+      key: 'X', deleted: false, saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 't', getField: () => 't',
+    }));
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+    Services.prompt.confirmEx.mockReturnValue(0); // approve by default
+  });
+
+  it('decline → demotes propagation to "mark missing", Zotero untouched', async () => {
+    Services.prompt.confirmEx.mockReturnValue(1); // Cancel
+    // 15 tracked files, all missing on disk.
+    for (let i = 0; i < 15; i++) {
+      store._records.push({
+        type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
+        zoteroAttachmentKey: `K${i}`, lastSyncedHash: 'h', state: 'clean',
+      });
+    }
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    // All 15 flipped to MISSING — no Zotero.Items lookup happened.
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledTimes(15);
+    for (const call of store.update.mock.calls) {
+      expect(call[1]).toEqual({ state: 'missing' });
+    }
+  });
+
+  it('approve → falls through to normal per-record propagation', async () => {
+    Services.prompt.confirmEx.mockReturnValue(0); // approve
+    for (let i = 0; i < 15; i++) {
+      store._records.push({
+        type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
+        zoteroAttachmentKey: `K${i}`, lastSyncedHash: 'h', state: 'clean',
+      });
+    }
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    // 15 attachment lookups (one per record going through the Mode-3 path).
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).toHaveBeenCalledTimes(15);
+  });
+});

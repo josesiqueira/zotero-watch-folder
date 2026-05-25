@@ -12,6 +12,7 @@ import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
+import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
 import {
   resolveSyncRoot,
   relativePathToCollection,
@@ -1463,6 +1464,39 @@ export class WatchFolderService {
     // from the same mount as the original, which matters for network
     // shares / external drives where the OS trash isn't reachable.
     const deletable = plans.filter(p => p.canonicalDiskPath);
+
+    // Bulk-delete guard: when a single Zotero-trash event covers >10
+    // files (or >20% of the tracked tree), prompt before any disk
+    // mutation. Counts canonical files only — shadows are dropped
+    // from tracking but not disk-touched, so they don't count toward
+    // the threshold. Refusal aborts the whole batch.
+    if (deletable.length > 0) {
+      const totalTracked = this._trackingStore.getAllOfType('file').length;
+      if (isBulkDelete(deletable.length, totalTracked)) {
+        const approved = await confirmBulkDelete({
+          action: 'disk-trash on Zotero trash',
+          path: `${deletable.length} attachment(s)`,
+          affectedCount: deletable.length,
+          totalTracked,
+        });
+        if (!approved) {
+          for (const p of plans) {
+            try {
+              reportWarning({
+                category: WARNING_CATEGORY.SUPPRESSED,
+                actionType: 'zotero-trash',
+                attachmentKey: p.attachmentKey,
+                path: p.canonical.localPath,
+                reason: 'bulk-confirm-denied',
+                message: `Bulk Zotero-trash refused (${deletable.length}/${totalTracked} disk files would be touched). Tracking + disk left untouched for "${p.canonical.localPath}".`,
+              });
+            } catch (_e) { /* sink unavailable */ }
+          }
+          return;
+        }
+      }
+    }
+
     let action = getPref('diskDeleteOnTrash') || 'plugin_trash';
     if (action === 'ask' && deletable.length > 0) {
       action = this._promptDiskDelete(
@@ -2047,6 +2081,47 @@ export class WatchFolderService {
 
     // Mode 3 — safe-delete propagation (v2.2).
     Zotero.debug(`[WatchFolder] Detected ${stillMissing.length} externally-deleted file(s) (mode=${mode})`);
+
+    // Bulk-delete guard: if a single scan cycle detected many missing
+    // files, prompt before propagating any of them to Zotero. Common
+    // trigger: the user moved a big folder OUT of the watch root in
+    // the file manager — without this guard, the next scan would
+    // trash every contained attachment in Zotero silently. Counts use
+    // the full stillMissing list (shadow protection further down only
+    // SKIPS the propagation per-record; the user should still be
+    // warned about the scale).
+    if (stillMissing.length > 0) {
+      const totalTracked = this._trackingStore.getAllOfType('file').length;
+      if (isBulkDelete(stillMissing.length, totalTracked)) {
+        const approved = await confirmBulkDelete({
+          action: 'trash in Zotero (external-deletion sync)',
+          path: `${stillMissing.length} missing file(s)`,
+          affectedCount: stillMissing.length,
+          totalTracked,
+        });
+        if (!approved) {
+          // Demote propagation to "mark missing" (the Mode 1/2 path):
+          // tracking flips to MISSING so we don't re-detect, but the
+          // Zotero side stays intact and the user can resolve manually.
+          for (const record of stillMissing) {
+            this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+            try {
+              reportWarning({
+                category: WARNING_CATEGORY.MISSING_FILE,
+                actionType: 'external-deletion',
+                attachmentKey: record.zoteroAttachmentKey,
+                path: record.localPath,
+                reason: 'bulk-confirm-denied',
+                message: `Bulk external-deletion refused (${stillMissing.length}/${totalTracked} missing). Marked "${record.localPath}" missing; Zotero attachment untouched.`,
+              });
+            } catch (_e) { /* sink unavailable */ }
+          }
+          try { await this._trackingStore.save(); } catch (_) {}
+          return;
+        }
+      }
+    }
+
     const trashed = [];
     for (const record of stillMissing) {
       // Cascading-trash protection: a record is a SHADOW when its
