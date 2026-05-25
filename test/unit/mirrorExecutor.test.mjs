@@ -864,3 +864,124 @@ describe('UT-410: per-key lock serializes concurrent calls', () => {
     await Promise.all([p1, p2]);
   });
 });
+
+// ─── UT-419 (Track C — _deleteFolder Mode 3 plugin trash) ───────────────────
+
+describe('UT-419: _deleteFolder Mode 3 routes through plugin trash', () => {
+  beforeEach(() => {
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode3';
+      return undefined;
+    });
+  });
+
+  it('recursive-moves the folder into .zotero-watch-trash/<rel> and drops collection + child file records', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'h', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Methods/sub/b.pdf', canonicalLocalPath: 'Methods/sub/b.pdf',
+      zoteroAttachmentKey: 'K2', lastSyncedHash: 'h', state: STATE.CLEAN,
+    }));
+    // A file OUTSIDE the deleted folder — must stay tracked.
+    store.add(createFileRecord({
+      localPath: 'Other/c.pdf', canonicalLocalPath: 'Other/c.pdf',
+      zoteroAttachmentKey: 'K3', lastSyncedHash: 'h', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    // Source dir exists; destination doesn't (no collision).
+    IOUtils.exists.mockImplementation(async (p) => p === '/watch/Methods');
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.trashPath).toBe('.zotero-watch-trash/Methods');
+    expect(IOUtils.move).toHaveBeenCalledWith(
+      '/watch/Methods',
+      '/watch/.zotero-watch-trash/Methods',
+      expect.anything()
+    );
+    expect(store.getCollectionRecord('SUB1')).toBe(null);
+    expect(store.getByLocalPath('Methods/a.pdf')).toBe(null);
+    expect(store.getByLocalPath('Methods/sub/b.pdf')).toBe(null);
+    // Outside the subtree — untouched.
+    expect(store.getByLocalPath('Other/c.pdf')).not.toBe(null);
+  });
+
+  it('collision: suffixes dst dir with millisecond timestamp', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    // Both source AND existing plugin-trash destination exist.
+    IOUtils.exists.mockImplementation(async (p) =>
+      p === '/watch/Methods' || p === '/watch/.zotero-watch-trash/Methods'
+    );
+    const before = Date.now();
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.trashPath).toMatch(/^\.zotero-watch-trash\/Methods\.\d+$/);
+    const stamp = parseInt(result.trashPath.match(/Methods\.(\d+)$/)[1], 10);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+  });
+
+  it('source already missing → drops tracking + returns ok with already-missing reason', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    IOUtils.exists.mockResolvedValue(false);
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBe('already-missing');
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(store.getCollectionRecord('SUB1')).toBe(null);
+  });
+
+  it('Mode 2 still warn-only (collection state flipped, no IO)', async () => {
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode2';
+      return undefined;
+    });
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('warn-only-mode2');
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
+});

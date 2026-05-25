@@ -137,11 +137,19 @@ Bigger scope. Reserve a longer session.
         top-level item. Falls through to import-as-new when the parent
         is also gone.
       - RST.6 (collision suffix) — shipped previously.
-- [ ] **`mirrorExecutor.deleteFolder` Mode 3 wiring.** Currently
-      warn-only in both Mode 2 and Mode 3. Mode 3 should route folder
-      deletes through plugin trash too — recursive move into
-      `.zotero-watch-trash/<original-subpath>/` with the same
-      collision policy.
+- [x] **`mirrorExecutor.deleteFolder` Mode 3 wiring.** Mode 3 now
+      recursive-moves the folder into `.zotero-watch-trash/<rel>`
+      via `_moveWithFallback`. Collision policy mirrors
+      `_moveToPluginTrash` (RST.6) — suffix the dir name with a
+      ms timestamp. Drops the collection record + every FileRecord
+      under the path (the contained Zotero attachments are NOT
+      individually tombstoned because they aren't trashed —
+      collection removal is a scope change, not content deletion).
+      Source-already-missing path drops tracking + returns
+      `already-missing` instead of erroring. Mode 2 warn-only
+      behavior unchanged. 4 new UT-419 tests cover all branches.
+      Restore-folder UX is filed under Track D — for now users
+      recover by manually moving the dir out of plugin trash.
 - [ ] **Bulk-delete protection.** Pause + confirm prompt when >10 files
       or >20% of the tree would be deleted, or when the watch volume
       goes offline. Add in `mirrorExecutor` before any bulk destructive
@@ -156,6 +164,13 @@ Bigger scope. Reserve a longer session.
       describe block in `watchFolder.test.mjs`. Live MCP path covers
       it indirectly. Add a focused test or stand up a small
       `_processNewFile` test harness.
+- [ ] **Restore-folder UX in prefs pane.** Mode 3 `_deleteFolder`
+      now moves folders into `.zotero-watch-trash/`, but the only
+      way to recover them today is to manually move the dir out of
+      plugin trash. A "restore folder" button in the prefs pane —
+      listing dirs in `.zotero-watch-trash/` with a Restore action
+      that moves them back + re-creates the collection — would
+      close this loop.
 
 ---
 

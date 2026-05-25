@@ -15,7 +15,7 @@
  *
  *   createFolder            — mkdir under watch root; insert CollectionRecord
  *   moveFolder              — rename/move local dir; rewrite child file paths
- *   deleteFolder            — Mode 2 warns only; Mode 3 deferred to v2.2
+ *   deleteFolder            — Mode 2 warns only; Mode 3 recursive-moves into plugin trash
  *   moveItem                — gated by conflict-gate; move single file
  *   addItemMembership       — tracking-only (collectionMembershipKeys union)
  *   removeItemMembership    — tracking-only (collectionMembershipKeys minus)
@@ -383,31 +383,151 @@ async function _deleteFolder(payload) {
   const { collectionKey, oldRelativePath } = payload;
   if (!collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`collection:${collectionKey}`, async () => {
-    // Mode 2 (v2.1) policy: warn only — do NOT delete the local folder.
-    // Mark the collection record as out-of-scope-suppressed so the user
-    // can resolve via the suppression UX (Phase B). Mode 3 (v2.2) will
-    // add safe trash to `.zotero-watch-trash/`.
-    if (_store) {
-      const existing = _store.getCollectionRecord(collectionKey);
-      if (existing) {
-        _store.add(createCollectionRecord({
-          ...existing,
-          state: STATE.OUT_OF_SCOPE_SUPPRESSED,
-        }));
-        try { await _store.save(); } catch (_e) { /* logged */ }
+    const mode = getPref('mode') || 'mode1';
+
+    // Mode 1 doesn't run the coordinator, so this path isn't reached
+    // there. Mode 2 keeps warn-only semantics — local folder untouched,
+    // collection record flipped to suppressed, user can resolve via the
+    // Phase B folder-resolution UX.
+    if (mode !== 'mode3') {
+      if (_store) {
+        const existing = _store.getCollectionRecord(collectionKey);
+        if (existing) {
+          _store.add(createCollectionRecord({
+            ...existing,
+            state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+          }));
+          try { await _store.save(); } catch (_e) { /* logged */ }
+        }
+      }
+      reportWarning({
+        category: WARNING_CATEGORY.SUPPRESSED,
+        actionType: 'deleteFolder',
+        collectionKey,
+        path: oldRelativePath || null,
+        reason: 'warn-only-mode2',
+        message: `Folder deletion suppressed (Mode 2): "${oldRelativePath || collectionKey}"`,
+      });
+      Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath || collectionKey} suppressed (Mode 2 warn-only)`);
+      return { ok: false, reason: 'warn-only-mode2' };
+    }
+
+    // Mode 3 — safe-delete: recursive move into plugin trash, drop the
+    // collection record + child file records. The contained files are
+    // NOT individually tombstoned (the Zotero attachments weren't
+    // trashed — only their collection membership was removed; they may
+    // still live in other collections). Recovery for "I want this
+    // folder back" is via the file manager moving the dir out of
+    // `.zotero-watch-trash/`; future work could add a "restore folder"
+    // UX in prefs (filed under Track D).
+    if (!oldRelativePath) {
+      // No path → can't compute a destination. Fall back to dropping
+      // tracking + warning the user.
+      if (_store) _store.removeCollectionRecord(collectionKey);
+      try { if (_store) await _store.save(); } catch (_e) { /* logged */ }
+      reportWarning({
+        category: WARNING_CATEGORY.SUPPRESSED,
+        actionType: 'deleteFolder',
+        collectionKey,
+        path: null,
+        reason: 'no-path',
+        message: `Folder deletion: no local path recorded for collection ${collectionKey} — tracking dropped, disk untouched.`,
+      });
+      return { ok: true, reason: 'no-path' };
+    }
+
+    const TRASH_DIRNAME = '.zotero-watch-trash';
+    let srcAbs;
+    try { srcAbs = _absPath(oldRelativePath); }
+    catch (e) { return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) }; }
+
+    // Source already gone? Just drop tracking + return success — the
+    // disk is already in the desired post-delete state.
+    const srcExists = await IOUtils.exists(srcAbs).catch(() => false);
+    if (!srcExists) {
+      _dropCollectionAndChildren(collectionKey, oldRelativePath);
+      try { if (_store) await _store.save(); } catch (_e) { /* logged */ }
+      Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath} — source already missing, tracking dropped`);
+      return { ok: true, reason: 'already-missing' };
+    }
+
+    // Compute destination under plugin trash. Collision policy mirrors
+    // _moveToPluginTrash (RST.6): never overwrite — suffix with a
+    // millisecond timestamp on the folder name.
+    let dstRel = `${TRASH_DIRNAME}/${oldRelativePath}`;
+    let dstAbs;
+    try { dstAbs = _absPath(dstRel); }
+    catch (e) { return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) }; }
+    if (await IOUtils.exists(dstAbs).catch(() => false)) {
+      const stamp = Date.now();
+      dstRel = `${TRASH_DIRNAME}/${oldRelativePath}.${stamp}`;
+      dstAbs = _absPath(dstRel);
+    }
+
+    // Pre-create parent so a cross-parent move works.
+    const parent = PathUtils.parent(dstAbs);
+    if (parent && parent !== dstAbs) {
+      try {
+        await IOUtils.makeDirectory(parent, { ignoreExisting: true, createAncestors: true });
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] mirrorExecutor deleteFolder mkparent ${parent}: ${e?.message ?? e}`);
+        reportWarning({
+          category: WARNING_CATEGORY.IO_ERROR,
+          actionType: 'deleteFolder',
+          collectionKey,
+          path: oldRelativePath,
+          reason: 'mkparent-failed',
+          message: `Failed to create plugin-trash parent for "${oldRelativePath}": ${e?.message ?? e}`,
+        });
+        return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
       }
     }
+
+    const moveResult = await _moveWithFallback(srcAbs, dstAbs, /* recursive */ true);
+    if (!moveResult.ok) {
+      reportWarning({
+        category: WARNING_CATEGORY.IO_ERROR,
+        actionType: 'deleteFolder',
+        collectionKey,
+        path: oldRelativePath,
+        reason: moveResult.reason,
+        message: `Failed to move folder "${oldRelativePath}" to plugin trash: ${moveResult.error || moveResult.reason}`,
+      });
+      return moveResult;
+    }
+
+    _dropCollectionAndChildren(collectionKey, oldRelativePath);
+    try { if (_store) await _store.save(); } catch (_e) { /* logged */ }
     reportWarning({
       category: WARNING_CATEGORY.SUPPRESSED,
       actionType: 'deleteFolder',
       collectionKey,
-      path: oldRelativePath || null,
-      reason: 'warn-only-mode2',
-      message: `Folder deletion suppressed (Mode 2): "${oldRelativePath || collectionKey}"`,
+      path: oldRelativePath,
+      reason: 'moved-to-plugin-trash',
+      message: `Folder "${oldRelativePath}" moved to plugin trash → "${dstRel}". Tracking dropped; restore by moving the folder out of .zotero-watch-trash/.`,
     });
-    Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath || collectionKey} suppressed (Mode 2 warn-only)`);
-    return { ok: false, reason: 'warn-only-mode2' };
+    Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath} → ${dstRel} ok (Mode 3 plugin trash)`);
+    return { ok: true, reason: moveResult.reason || 'moved-to-plugin-trash', trashPath: dstRel };
   });
+}
+
+/**
+ * Drop the collection record and every FileRecord whose localPath sits
+ * under `relativePath`. Called by `_deleteFolder` after a successful
+ * (or already-missing) folder removal. No-op when `_store` is null.
+ */
+function _dropCollectionAndChildren(collectionKey, relativePath) {
+  if (!_store) return;
+  _store.removeCollectionRecord(collectionKey);
+  if (!relativePath) return;
+  const prefix = relativePath + '/';
+  const toRemove = [];
+  for (const r of _store.getAllOfType('file')) {
+    if (r.localPath === relativePath || (typeof r.localPath === 'string' && r.localPath.startsWith(prefix))) {
+      toRemove.push(r.localPath);
+    }
+  }
+  for (const p of toRemove) _store.remove(p);
 }
 
 async function _moveItem(payload) {
