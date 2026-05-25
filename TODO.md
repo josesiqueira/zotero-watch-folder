@@ -80,13 +80,15 @@ mostly orthogonal to v2.2.
 
 Bigger scope. Reserve a longer session.
 
-- [x] **Fix cascading-trash bug first** (see Track B). Done — both
+- [x] **Cascading-trash bug fixed first.** Both
       `_handleExternalDeletions` and `_handleZoteroTrash` v2 rewrite
       shipped with full test coverage. Mode 3 can now propagate safely.
-- [ ] **`_handleZoteroTrash` v2 rewrite** with the safe-delete predicate
-      (hash-clean check + attachment-key mapping). Lives in
-      `content/watchFolder.mjs` ~line 1085+. Currently gated off in Mode
-      1/2; v2.2 turns it on.
+- [x] **`_handleZoteroTrash` v2 rewrite.** Done as part of the
+      cascading-trash fix. Translates numeric IDs → attachment keys,
+      collapses per-attachment, disk-deletes only canonical paths,
+      drops shadows from tracking without disk action. Mode 2 warn-only
+      path implemented too. Routes through plugin trash by default in
+      Mode 3.
 - [x] **`.zotero-watch-trash/` local trash dir.** `_moveToPluginTrash`
       moves files into `.zotero-watch-trash/<sync-root-relative-path>`,
       preserving subpath for restore. RST.6 collision handling via
@@ -96,33 +98,51 @@ Bigger scope. Reserve a longer session.
       `diskDeleteOnTrash` policy + replaces "Move to OS trash" as the
       default-recoverable button in `_promptDiskDelete`. Tombstone
       records emitted on successful trash (plugin or OS) so RST.1/RST.3
-      can re-link. Still pending for Mode 3 folder-delete:
-      `mirrorExecutor.deleteFolder` wiring (separate item).
+      can re-link.
+- [x] **Tombstone-aware dedup.** `trackingStore.findTombstoneByHash`
+      added; `_processNewFile` step 3a consults tombstones before
+      regular hash-dedup. Match → un-trash Zotero attachment if still
+      trashed, re-create FileRecord, drop tombstone. Attachment purged
+      → drop tombstone, fall through to import-as-new.
+- [~] **Restore matrix — partial.** RST.1 (Zotero attachment restored
+      → move file out of plugin trash; new `_handleZoteroRestore` on
+      `'modify'` notifier, gated on tombstones-existing pre-filter),
+      RST.3 (local file reappears → re-link via tombstone-aware
+      dedup), RST.6 (collision suffix `<name>.restored.<ts>.<ext>`).
+      Still pending: RST.2 (multi-attachment parent restore), RST.4
+      (parent restored without attachment), RST.5 (local-restore after
+      parent was deleted).
+- [ ] **`mirrorExecutor.deleteFolder` Mode 3 wiring.** Currently
+      warn-only in both Mode 2 and Mode 3. Mode 3 should route folder
+      deletes through plugin trash too — recursive move into
+      `.zotero-watch-trash/<original-subpath>/` with the same
+      collision policy.
 - [ ] **Bulk-delete protection.** Pause + confirm prompt when >10 files
       or >20% of the tree would be deleted, or when the watch volume
       goes offline. Add in `mirrorExecutor` before any bulk destructive
       op runs.
-- [ ] **Restore matrix (RST.1–RST.6 in `updates_22_05_26.md`).**
-      Restoring a Zotero attachment from Trash should restore the local
-      file from plugin trash; restoring a local file should re-link to
-      its tombstone.
-- [ ] **Tombstone-aware dedup.** `trackingStore.findByHash` should also
-      consult tombstones so a restored local file relinks instead of
-      importing as new.
 
 ---
 
 ## Project state at-a-glance
 
 - **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **Tests:** 19 files / 475 passing + 21 skipped (`npm test`).
+- **`main` is ahead of the tag** with v2.1 Track A polish + v2.2 in-progress
+  (cascading-trash fix, `.zotero-watch-trash/`, restore matrix RST.1/3/6,
+  tombstone-aware dedup, singleton-store fix). Bump to `v2.2.0-alpha.1`
+  once the remaining Track C items land (`_deleteFolder` Mode 3,
+  bulk-delete protection, RST.2/4/5).
+- **Tests:** 19 files / 486 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
-  (v2.1) ✅ except WARN.1 visual UI step.
+  (v2.1) ✅ WARN.1 visual UI step completed via MCP screenshot pass.
+  `MODE3.md` runbook still pending for Mode 3 / restore matrix
+  live-validation.
 - **Auto-update:** `update.json` on `main` points at the v2.1 XPI;
   existing v2.0 installs auto-discover.
 - **Architecture docs:** `CLAUDE.md` (project layout + invariants),
   `updates_22_05_26.md` (v2 sync-model spec, source of truth for
-  behavior), `docs/CODEBASE_OVERVIEW.md`.
+  behavior), `docs/CODEBASE_OVERVIEW.md` (long-form module tour —
+  partially stale; see CLAUDE.md for the current state).
 
 ## Quick commands
 
@@ -165,6 +185,21 @@ When working with the live Zotero MCP bridge:
     sync-root-relative throughout watchFolder.mjs.
   - 15 review findings + 8 live-MCP bugs fixed in commits
     `fb371c4`..`2a98adf`.
+- **v2.1 Track A polish (on main, post-tag)** — `9fc1dde`, `71ca635`:
+  - Folder + conflict resolution UX in suppressionResolver
+    (resolveCollection / resolveConflict) + prefs UI Resolve buttons.
+  - mirrorExecutor `_moveItem` stale-path race fix; `_moveFolder`
+    per-attachment locks during child rewrite.
+  - Resolver `save()` rollback across all 11 handlers.
+  - Singleton TrackingStore fix — WatchFolderService now shares the
+    suppressionResolver's singleton via `initTrackingStore()`.
+- **v2.2 in-progress (on main, unreleased)** — `39ea420`, `7a8ad88`,
+  `a7e0bd1`:
+  - Cascading-trash bug fix: `_handleExternalDeletions` shadow guard +
+    `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
+  - `.zotero-watch-trash/` plugin trash dir + `'plugin_trash'` action
+    + tombstone emission on recoverable trash.
+  - Restore matrix RST.1 + RST.3 + RST.6 + tombstone-aware dedup.
 - **Pre-v2** — Phase 1 (watch folder, auto-import, metadata retrieval,
   file renaming, first-run flow, post-import actions), Phase 2
   (collection ↔ folder mirroring), Phase 3 (smart rules, duplicate
