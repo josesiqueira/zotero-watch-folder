@@ -64,10 +64,13 @@ mostly orthogonal to v2.2.
         9 new UT-090 tests cover both directions across Mode 1/2/3
         and edge cases (missing canonical, non-attachment items,
         diskDeleteOnTrash=never).
-- [ ] **Phase 3 bulk ops** (`reorganizeAll`, `retryAllMetadata`,
-      `applyRulesToAll`) — no UI hook AND not reachable via
-      `Zotero.WatchFolder.hooks`. Effectively dormant. Decide: delete
-      from `content/bulkOperations.mjs` or wire up via prefs.
+- [x] **Phase 3 bulk ops** — deleted `content/bulkOperations.mjs`
+      entirely (was 738 lines). The v1-era operations were unreachable
+      via `Zotero.WatchFolder.hooks` under v2 and superseded by the
+      sync-coordinator pipeline. Removed UT-040 from
+      `test/unit/fileScanner.test.mjs` (the only consumer outside the
+      module itself was the test for one private helper). Doc cleanup
+      in `test/README.md` + `test/mcp/INDEX.md`.
 - [ ] **Smart rules editor UI.** Engine in `content/smartRules.mjs`
       works but rules are JSON in `about:config`. A small prefs-pane
       editor would make the feature usable for non-developers.

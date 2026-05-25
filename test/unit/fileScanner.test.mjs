@@ -7,16 +7,18 @@
  * watchers under the new sync-root architecture; tests against those
  * land then.
  *
+ * v2.2 cleanup: removed UT-040 (BulkOperations._hasGoodMetadata) because
+ * bulkOperations.mjs was deleted — the v1-era bulk ops were unreachable
+ * via Zotero.WatchFolder.hooks under the v2 sync model.
+ *
  * Surviving sections:
  *   UT-037: hasFileChanged (fileScanner.mjs)
  *   UT-039: isSupportedFileType / filterSupportedFiles (fileImporter.mjs)
- *   UT-040: BulkOperations._hasGoodMetadata (bulkOperations.mjs)
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { hasFileChanged } from '../../content/fileScanner.mjs';
 import { isSupportedFileType, filterSupportedFiles } from '../../content/fileImporter.mjs';
-import { BulkOperations } from '../../content/bulkOperations.mjs';
 
 // ─── UT-037: hasFileChanged ──────────────────────────────────────────────────
 
@@ -92,63 +94,9 @@ describe('filterSupportedFiles', () => {
   });
 });
 
-// ─── UT-040: BulkOperations._hasGoodMetadata ─────────────────────────────────
-
-describe('BulkOperations._hasGoodMetadata', () => {
-  let bulkOps;
-
-  beforeEach(() => {
-    bulkOps = new BulkOperations();
-  });
-
-  function makeItem(title, creators = []) {
-    return {
-      getField: (field) => (field === 'title' ? title : ''),
-      getCreators: () => creators
-    };
-  }
-
-  // UT-040a: real title + creator → true
-  it('UT-040a: returns true for meaningful title (no extension) with 1 creator', () => {
-    const item = makeItem('Deep Learning', [{ lastName: 'Smith' }]);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(true);
-  });
-
-  // UT-040b: title looks like filename (has .pdf extension) → false
-  it('UT-040b: returns false when title looks like a filename (ends with .pdf)', () => {
-    const item = makeItem('paper.pdf', [{ lastName: 'Smith' }]);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(false);
-  });
-
-  // UT-040c: empty title → false
-  it('UT-040c: returns false for empty title', () => {
-    const item = makeItem('', [{ lastName: 'Smith' }]);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(false);
-  });
-
-  // UT-040d: null title + no creators → false
-  it('UT-040d: returns false for null title with no creators', () => {
-    const item = makeItem(null, []);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(false);
-  });
-
-  // UT-040e: short title (<=5 chars) + no creators → false
-  it('UT-040e: returns false for short title (<=5 chars) with no creators', () => {
-    const item = makeItem('AI', []);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(false);
-  });
-
-  // UT-040f: short title (<=5 chars) + has creator → true
-  it('UT-040f: returns true for short title (<=5 chars) when has at least 1 creator', () => {
-    const item = makeItem('AI', [{ lastName: 'Smith' }]);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(true);
-  });
-
-  it('UT-040-epub: returns false when title ends with .epub', () => {
-    const item = makeItem('mybook.epub', [{ lastName: 'Doe' }]);
-    expect(bulkOps._hasGoodMetadata(item)).toBe(false);
-  });
-});
-
+// UT-040 (BulkOperations._hasGoodMetadata) removed — bulkOperations.mjs
+// deleted in v2.2 cleanup. The v1-era reorganize/retry/applyRules surface
+// was unreachable via Zotero.WatchFolder.hooks under the v2 sync model.
+//
 // UT-041 (CollectionWatcher) removed — collectionWatcher.mjs deleted in
 // Phase E. v2.1 will rebuild a sync-root-aware replacement.

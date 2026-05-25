@@ -13,7 +13,6 @@ v2.1 added 9 new files covering the Mode 2 pipeline: collectionWatcher, folderEv
 **Known coverage gaps** (deliberate):
 - `index.mjs` — bootstrap lifecycle, 0 tests
 - `metadataRetriever.mjs` — async queue, 0 tests
-- `bulkOperations.mjs` — 1/3 operations covered
 
 ## `mcp/` — MCP runbooks, real Zotero, Claude-driven
 

@@ -32,7 +32,7 @@ Status legend: `✅ pass` · `❌ fail` · `🐛 known-bug` · `⬜ unverified` 
 | Phase 1 — core | [P1.md](./P1.md) | 1.1 – 1.12 (incl. 1.11.a–f, 1.12.a–d) | **Run 2026-05-22 (v1.2.3):** 1.6 ✅ · 1.8 ✅ · others ⬜. Many cases reference v1 schema fields and need a v2 re-pass. |
 | Edge cases | [EDGE.md](./EDGE.md) | E.1 – E.6 | **Run 2026-05-22 (v1.2.3):** E.1 ✅ · E.4 ⚠️ · others ⬜. |
 | ~~Phase 2 — collection sync~~ | — | — | **Deleted in Phase E** along with `collectionSync.mjs` & siblings. v2.1's MODE2.md covers the new surface. |
-| ~~Phase 3 — advanced~~ | — | — | **Deleted in Phase E**. `reorganizeAll` removed; `retryAllMetadata` + `applyRulesToAll` survived. Reduced surface — no separate runbook now. |
+| ~~Phase 3 — advanced~~ | — | — | **Fully deleted (v2.2 cleanup).** `bulkOperations.mjs` removed — the entire v1-era bulk-ops surface (`reorganizeAll`, `retryAllMetadata`, `applyRulesToAll`) was unreachable via `Zotero.WatchFolder.hooks` under v2 and superseded by the sync-coordinator pipeline. |
 
 ### Notes from 2026-05-22 run
 
