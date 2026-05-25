@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zotero Watch Folder — Inclusion / Exclusion cases</title>
+<meta name="description" content="Every behavior of the Zotero Watch Folder plugin in one of two columns: what gets included (imported / synced / restored) and what gets excluded (skipped / refused / suppressed).">
+
+<style>
+:root {
+  --ink: #14110f;
+  --paper: #f4efe7;
+  --paper-warm: #ebe3d4;
+  --muted: #6b625a;
+  --accent: #c44536;
+  --ok: #3b6e3a;
+  --ok-soft: rgba(59,110,58,.10);
+  --ok-line: rgba(59,110,58,.25);
+  --no: #c44536;
+  --no-soft: rgba(196,69,54,.08);
+  --no-line: rgba(196,69,54,.25);
+  --shadow: 0 1px 0 rgba(0,0,0,.04), 0 12px 32px -16px rgba(20,17,15,.18);
+  --serif: ui-serif, "Iowan Old Style", "Source Serif Pro", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box }
+html { scroll-behavior: smooth }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px }
+a:hover { color: var(--accent) }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px }
+
+/* ---------- top nav ---------- */
+nav.top {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(244,239,231,.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(20,17,15,.08);
+}
+nav.top .row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px; max-width: 1240px; margin: 0 auto;
+}
+nav.top .brand { font-family: var(--serif); font-weight: 600; font-size: 18px; letter-spacing: -0.01em }
+nav.top .brand .glyph { color: var(--accent); margin-right: 6px }
+nav.top .brand a { text-decoration: none }
+nav.top ul { display: flex; gap: 18px; list-style: none; margin: 0; padding: 0; font-size: 13.5px }
+nav.top a { text-decoration: none; color: var(--muted) }
+nav.top a:hover { color: var(--ink) }
+@media (max-width: 880px) { nav.top ul { display: none } }
+
+/* ---------- hero ---------- */
+header.hero {
+  padding: 72px 0 48px;
+  position: relative;
+}
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 18px;
+}
+.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(32px, 4.5vw, 48px);
+  line-height: 1.05;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+  max-width: 22ch;
+}
+h1 em { font-style: italic; color: var(--accent); font-weight: 500 }
+.lede {
+  font-size: 17px; line-height: 1.55; color: #2c2520;
+  max-width: 70ch; margin: 0 0 28px;
+}
+.lede b { font-weight: 600 }
+
+/* ---------- summary bar ---------- */
+.summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 28px;
+}
+@media (max-width: 720px) { .summary { grid-template-columns: 1fr } }
+.summary-card {
+  padding: 22px 26px;
+  border-radius: 8px;
+  border: 1px solid;
+  box-shadow: var(--shadow);
+}
+.summary-card.ok {
+  background: var(--ok-soft);
+  border-color: var(--ok-line);
+}
+.summary-card.no {
+  background: var(--no-soft);
+  border-color: var(--no-line);
+}
+.summary-card .label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.summary-card.ok .label { color: var(--ok) }
+.summary-card.no .label { color: var(--no) }
+.summary-card h2 {
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+.summary-card p {
+  font-size: 14.5px;
+  margin: 0;
+  color: #2c2520;
+  line-height: 1.55;
+}
+.summary-card .ct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+/* ---------- columns ---------- */
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 48px;
+}
+@media (max-width: 980px) { .columns { grid-template-columns: 1fr; gap: 32px } }
+
+.column h3 {
+  font-family: var(--serif);
+  font-size: clamp(22px, 2.6vw, 28px);
+  font-weight: 600;
+  margin: 0 0 18px;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 0 4px;
+}
+.column h3 .glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  border: 2px solid;
+}
+.column.ok h3 .glyph { color: var(--ok); border-color: var(--ok); background: #fff }
+.column.no h3 .glyph { color: var(--no); border-color: var(--no); background: #fff }
+.column h3 .count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  margin-left: auto;
+}
+
+.case {
+  background: #fff;
+  border-radius: 6px;
+  padding: 14px 18px 14px 22px;
+  border: 1px solid rgba(20,17,15,.06);
+  border-left: 4px solid;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow);
+}
+.column.ok .case { border-left-color: var(--ok) }
+.column.no .case { border-left-color: var(--no) }
+
+.case-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.column.ok .case-id { color: var(--ok) }
+.column.no .case-id { color: var(--no) }
+
+.case h4 {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  line-height: 1.3;
+}
+.case .when {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 0 0 8px;
+  font-style: italic;
+}
+.case .when::before { content: "When: "; font-family: var(--mono); font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 600; }
+.case .then {
+  font-size: 14.5px;
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.55;
+}
+.case .then::before {
+  content: "Result: ";
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.case .note {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(20,17,15,.10);
+  font-style: italic;
+}
+.case code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--paper);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.case .mode-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  background: var(--paper-warm);
+  color: var(--muted);
+  vertical-align: 2px;
+}
+.case .mode-tag.m1 { background: rgba(59,110,58,.14); color: var(--ok) }
+.case .mode-tag.m2 { background: rgba(176,124,30,.16); color: #8a6018 }
+.case .mode-tag.m3 { background: rgba(196,69,54,.12); color: var(--no) }
+.case .mode-tag.all { background: rgba(20,17,15,.08); color: var(--muted) }
+
+/* ---------- intro block ---------- */
+.how-to {
+  background: #fff;
+  border-radius: 8px;
+  padding: 22px 28px;
+  border: 1px solid rgba(20,17,15,.06);
+  box-shadow: var(--shadow);
+  margin-top: 28px;
+}
+.how-to h3 {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.how-to p { margin: 0; font-size: 15px; line-height: 1.65; color: #2c2520 }
+
+@media print {
+  nav.top { display: none }
+  header.hero { padding: 20px 0 }
+  .how-to, .summary-card { box-shadow: none }
+  .case { break-inside: avoid; page-break-inside: avoid; box-shadow: none }
+  .columns { grid-template-columns: 1fr 1fr; gap: 12px }
+  body { font-size: 11.5px }
+}
+
+footer {
+  padding: 40px 0 32px;
+  border-top: 1px solid rgba(20,17,15,.12);
+  background: var(--paper-warm);
+  font-size: 13.5px;
+  color: var(--muted);
+  margin-top: 56px;
+}
+footer .row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px }
+footer a { color: var(--muted); text-decoration: none }
+footer a:hover { color: var(--ink) }
+footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="row">
+    <div class="brand"><a href="index.html"><span class="glyph">✦</span>Zotero Watch Folder</a></div>
+    <ul>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="index.html#modes">Modes</a></li>
+      <li><a href="index.html#features">Features</a></li>
+      <li><a href="test-plan.html">What to try</a></li>
+      <li><a href="test-cases.html"><b>Inclusion / Exclusion</b></a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow"><span class="dot"></span>Inclusion / Exclusion · the two-column behavior spec</div>
+    <h1>Two columns. <em>Every behavior, classified.</em></h1>
+    <p class="lede">
+      The Watch Folder plugin only ever does two things: it <b>includes</b> some
+      things (imports them, syncs them, restores them) and it <b>excludes</b>
+      others (skips them, refuses them, suppresses them). Every behavior in
+      the plugin lands in one column or the other. If a scenario isn't on this
+      page, it's a gap — either in the plugin or in the spec.
+    </p>
+
+    <div class="summary">
+      <div class="summary-card ok">
+        <div class="label">✓ Inclusion</div>
+        <h2>Things the plugin acts on</h2>
+        <p>Files arriving, items being added or moved, restores after a trash, baseline reconciles. The plugin <em>does</em> something visible — imports, copies, renames, mkdirs, recovers.</p>
+        <div class="ct">20 cases</div>
+      </div>
+      <div class="summary-card no">
+        <div class="label">✕ Exclusion</div>
+        <h2>Things the plugin refuses</h2>
+        <p>Duplicates, wrong file types, files in reserved dirs, deletes that shouldn't propagate, conflicts, bulk operations needing confirmation, items outside scope. The plugin <em>holds back</em>.</p>
+        <div class="ct">23 cases</div>
+      </div>
+    </div>
+
+    <div class="how-to">
+      <h3>How to read</h3>
+      <p>
+        Each case follows the same shape — <b>When</b> (the trigger), <b>Result</b>
+        (what the plugin does), and a small note where mode-specific behavior matters.
+        Mode tags (<span class="mode-tag m1">M1</span> <span class="mode-tag m2">M2</span>
+        <span class="mode-tag m3">M3</span> <span class="mode-tag all">ALL</span>) sit beside
+        the case title when behavior depends on which sync mode you're in.
+        Print-friendly — the two columns stay side-by-side on paper.
+      </p>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="columns">
+
+    <!-- ============================================================== -->
+    <!-- INCLUSION COLUMN                                                -->
+    <!-- ============================================================== -->
+    <div class="column ok" id="inclusion">
+      <h3><span class="glyph">✓</span>Inclusion<span class="count">20 cases</span></h3>
+
+      <div class="case">
+        <div class="case-id">I.1 <span class="mode-tag all">ALL</span></div>
+        <h4>File dropped at watch-folder root</h4>
+        <p class="when">A new PDF appears at the top level of the watch folder.</p>
+        <p class="then">Imported as an item in the sync-root collection. Metadata fetched. Renamed via template.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.2 <span class="mode-tag all">ALL</span></div>
+        <h4>File dropped in a subfolder</h4>
+        <p class="when">A new PDF appears in <code>WatchFolder/X/Y/</code>.</p>
+        <p class="then">Subcollections <code>X</code> and <code>Y</code> are created under the sync root. Item filed in the leaf.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.3 <span class="mode-tag all">ALL</span></div>
+        <h4>Empty subfolder on disk</h4>
+        <p class="when">A subfolder exists but has no scannable files in it.</p>
+        <p class="then">A matching empty subcollection is created in Zotero. No items in it.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.4 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>New subcollection in Zotero</h4>
+        <p class="when">User creates a subcollection under the sync root.</p>
+        <p class="then">A matching disk folder is created. If items are then added to that collection, their files are placed there.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.5 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Zotero subcollection renamed</h4>
+        <p class="when">A tracked subcollection is renamed in Zotero.</p>
+        <p class="then">Matching disk folder is renamed atomically. Child file records' paths are rewritten.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.6 <span class="mode-tag all">ALL</span></div>
+        <h4>Disk subfolder renamed</h4>
+        <p class="when">A tracked disk subfolder is renamed.</p>
+        <p class="then">Matching Zotero collection renamed (same key, new name). Works in all three modes.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.7 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Item moved between Zotero collections</h4>
+        <p class="when">A tracked item is added to (or moved between) sync-root collections.</p>
+        <p class="then">The file follows on disk. Canonical-collection rule picks the location when an item belongs to multiple collections.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.8 <span class="mode-tag all">ALL</span></div>
+        <h4>File moved between disk subfolders</h4>
+        <p class="when">A tracked file disappears from one subfolder and an untracked file with the same hash appears elsewhere.</p>
+        <p class="then">Treated as a move (not a delete + new). Tracking record's path updates. Zotero item relocates to matching collection.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.9 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Late-attached file in Zotero</h4>
+        <p class="when">User attaches a PDF to an existing in-scope parent item by hand.</p>
+        <p class="then">The file is copied out to the appropriate disk subfolder. A FileRecord is created.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.10 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Baseline copy — Zotero attachment with no disk file</h4>
+        <p class="when">First-run baseline pass finds a Zotero attachment whose file lives in Zotero storage but not on disk.</p>
+        <p class="then">File is copied out of Zotero storage to the canonical disk path. FileRecord created.</p>
+        <p class="note">Items without any attached file are silently skipped.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.11 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Baseline reconcile — existing file at non-canonical path</h4>
+        <p class="when">Same file (same SHA-256) exists in both Zotero storage AND on disk at a different path.</p>
+        <p class="then">Linked in place at the disk path. No copy, no duplicate.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.12 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Populated collection moved into sync root</h4>
+        <p class="when">An existing populated collection is re-parented under the sync root.</p>
+        <p class="then">Adopt-into-scope path: subfolder mkdir'd, child attachment files copied out, FileRecords created.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.13 <span class="mode-tag m3">M3</span></div>
+        <h4>Restore trashed attachment</h4>
+        <p class="when">A trashed Zotero attachment is un-trashed by setting <code>deleted = false</code>.</p>
+        <p class="then">File moved out of <code>.zotero-watch-trash/</code> back to canonical path. FileRecord re-created. Tombstone removed.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.14 <span class="mode-tag m3">M3</span></div>
+        <h4>Restore trashed parent (with attachments)</h4>
+        <p class="when">A trashed parent item is un-trashed.</p>
+        <p class="then">All its child attachments are un-trashed too. All their files are restored from plugin trash. Tombstones removed.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.15 <span class="mode-tag m3">M3</span></div>
+        <h4>File reappears, matching tombstone hash</h4>
+        <p class="when">A file is copied or recreated on disk whose hash matches an existing tombstone.</p>
+        <p class="then">Zotero attachment is un-trashed automatically. FileRecord re-created at the new disk path. Tombstone dropped.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.16 <span class="mode-tag m3">M3</span></div>
+        <h4>Re-attach to live parent (purged attachment)</h4>
+        <p class="when">Tombstone matches by hash, the Zotero attachment was permanently erased, BUT the parent item still exists.</p>
+        <p class="then">File re-attached as a new child of that parent via <code>importFromFile({parentItemID})</code>. No duplicate standalone item.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.17 <span class="mode-tag m3">M3</span></div>
+        <h4>Restore collision handled with suffix</h4>
+        <p class="when">A restore would land at a path occupied by a different file.</p>
+        <p class="then">Restore writes to <code>&lt;name&gt;.restored.&lt;ms&gt;.&lt;ext&gt;</code>. Existing file is left alone.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.18 <span class="mode-tag m3">M3</span></div>
+        <h4>Folder restored from plugin trash</h4>
+        <p class="when">User clicks "Restore folders…" in prefs and picks a trashed dir.</p>
+        <p class="then">Folder moved back from <code>.zotero-watch-trash/</code>. Zotero collection re-created. FileRecords re-attached.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.19 <span class="mode-tag all">ALL</span></div>
+        <h4>Metadata recognized + file renamed</h4>
+        <p class="when">An imported PDF is recognizable by Zotero's metadata recognizer.</p>
+        <p class="then">Parent item created with title / authors / year / DOI. File renamed via the template (default: <code>{firstCreator} - {year} - {title}</code>).</p>
+        <p class="note">Failures get a <code>_needs-review</code> tag; the file still imports.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.20 <span class="mode-tag all">ALL</span></div>
+        <h4>Smart-rule match on import</h4>
+        <p class="when">A smart rule's match criteria (title / author / DOI / filename / etc.) succeeds against a newly-imported item.</p>
+        <p class="then">Configured actions fire — add-tag, add-to-collection, set-field, skip-import — in rule order.</p>
+      </div>
+
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- EXCLUSION COLUMN                                                -->
+    <!-- ============================================================== -->
+    <div class="column no" id="exclusion">
+      <h3><span class="glyph">✕</span>Exclusion<span class="count">23 cases</span></h3>
+
+      <div class="case">
+        <div class="case-id">E.1 <span class="mode-tag all">ALL</span></div>
+        <h4>Duplicate by content hash</h4>
+        <p class="when">A new file's SHA-256 matches an existing tracking record OR the hash-stamp in a Zotero item's Extra field.</p>
+        <p class="then">Skipped. No second Zotero item. No second tracking record at the same path.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.2 <span class="mode-tag all">ALL</span></div>
+        <h4>Wrong file extension</h4>
+        <p class="when">A file's extension isn't in the <code>fileTypes</code> pref (default <code>pdf</code>).</p>
+        <p class="then">Ignored. No tracking, no import.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.3 <span class="mode-tag all">ALL</span></div>
+        <h4>Files inside <code>.zotero-watch-trash/</code></h4>
+        <p class="when">Files exist inside the plugin trash directory.</p>
+        <p class="then">Skipped by the scanner. They will never be re-imported while they live there.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.4 <span class="mode-tag all">ALL</span></div>
+        <h4>Files inside <code>imported/</code></h4>
+        <p class="when">Files exist inside the post-import "move" destination subtree.</p>
+        <p class="then">Skipped by the scanner — they're already processed.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.5 <span class="mode-tag m1">M1</span></div>
+        <h4>Zotero-side trash in Mode 1</h4>
+        <p class="when">User trashes an attachment in Zotero while in Mode 1.</p>
+        <p class="then">No propagation to disk. File untouched. Log line: "Mode 1: ignoring trash event".</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.6 <span class="mode-tag m1">M1</span></div>
+        <h4>Disk-side delete in Mode 1</h4>
+        <p class="when">User deletes a tracked file from disk while in Mode 1.</p>
+        <p class="then">Zotero attachment NOT trashed. Tracking record flips to <code>state: missing</code>.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.7 <span class="mode-tag m2">M2</span></div>
+        <h4>Any delete in Mode 2</h4>
+        <p class="when">User deletes anything on either side in Mode 2.</p>
+        <p class="then">Warn-only. No disk-side or Zotero-side destructive action. Entry added to the warning sink.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.8 <span class="mode-tag m3">M3</span></div>
+        <h4>Shadow-record cascading-trash guard</h4>
+        <p class="when">User keeps two copies of the same file (dedup-skip created a shadow record) and deletes one.</p>
+        <p class="then">Only the shadow's tracking is dropped. Canonical file is left alone. Zotero attachment is NOT trashed.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.9 <span class="mode-tag m3">M3</span></div>
+        <h4>Bulk delete needs confirmation</h4>
+        <p class="when">A single op would affect more than 10 files OR more than 20% of tracked items.</p>
+        <p class="then">A confirmation dialog appears. Cancel → tracking marked "missing", no destructive action. Headless context (no UI thread) → refuses entirely.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.10 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Conflict gate on hash drift</h4>
+        <p class="when">A file's content (hash) has changed since the last sync, and a move is requested.</p>
+        <p class="then">Move refused. State flips to <code>conflict-blocked</code>. Warning sink records <code>hash-drifted</code>. User resolves in prefs.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.11 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Last sync-root collection removed</h4>
+        <p class="when">An item is removed from its only sync-root collection.</p>
+        <p class="then">File stays on disk. State flips to <code>out-of-scope-suppressed</code>. User resolves via prefs: Re-instate / Keep local / Trash / Move outside.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.12 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>USER_DETACHED records stay detached</h4>
+        <p class="when">User picked "Keep local" in the suppression resolver, and later the item is re-added to a sync-root collection.</p>
+        <p class="then">State stays USER_DETACHED. The auto-clear-on-re-add safety net excludes USER_DETACHED on purpose — it's an explicit user choice.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.13 <span class="mode-tag all">ALL</span></div>
+        <h4>Out-of-scope subfolders</h4>
+        <p class="when">The watch folder happens to be larger than the sync-root scope (e.g. user picked a single sub-collection but the folder has more).</p>
+        <p class="then">Files outside the sync-root subtree are NOT propagated to Zotero. The sync root anchors what's in scope.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.14 <span class="mode-tag all">ALL</span></div>
+        <h4>Special / virtual Zotero collections</h4>
+        <p class="when">Trash, Duplicates, Unfiled, My Publications, saved searches.</p>
+        <p class="then">Filtered out by <code>isSpecialCollection</code>. Never used as a canonical collection or a sync target.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.15 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Trashed sync-root collection</h4>
+        <p class="when">The sync-root collection itself has been moved to Zotero's trash.</p>
+        <p class="then">Items in it are effectively out of scope (Zotero's <code>getCollections()</code> filters trashed collections). The plugin can't see them as in-scope members.</p>
+        <p class="note">Restoring the sync-root collection from trash brings everything back into scope.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.16 <span class="mode-tag all">ALL</span></div>
+        <h4>File still growing on disk</h4>
+        <p class="when">A file is mid-download (size still changing).</p>
+        <p class="then">File-stability check refuses to import until the file's size is stable across at least one extra check.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.17 <span class="mode-tag all">ALL</span></div>
+        <h4>Cloud placeholder / zero-byte file</h4>
+        <p class="when">A cloud-sync client (Dropbox / iCloud / OneDrive) hasn't materialized the file yet, so it's 0 bytes or a placeholder.</p>
+        <p class="then">Skipped — fails stability check. Will be picked up once the file is fully synced down locally.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.18 <span class="mode-tag all">ALL</span></div>
+        <h4>Drive disconnected — global pause</h4>
+        <p class="when">The watch-folder root itself isn't reachable (drive unplugged, network share gone, cloud client logged out).</p>
+        <p class="then">All tracking records flip to <code>paused</code>. No destructive ops run. Sync resumes when the root is reachable again.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.19 <span class="mode-tag all">ALL</span></div>
+        <h4>v1 tracking files refused</h4>
+        <p class="when">An old v1-format tracking file exists from a prior plugin version.</p>
+        <p class="then">Refused — clean break. The plugin builds a fresh v2 tracking store. Library-side hash stamps still catch dedup.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.20 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Metadata-only Zotero items at baseline</h4>
+        <p class="when">A Zotero item in the sync root has no file attached (just bibliographic metadata).</p>
+        <p class="then">Skipped silently at baseline. No "missing file" warning, no false sync target.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.21 <span class="mode-tag all">ALL</span></div>
+        <h4>Detached records excluded from hash dedup</h4>
+        <p class="when">A FileRecord is in USER_DETACHED / OUT_OF_SCOPE_SUPPRESSED / CONFLICT_BLOCKED / etc.</p>
+        <p class="then">Excluded from the <code>_byHash</code> index. A fresh import won't accidentally re-link to a Zotero item the user already chose to stop syncing.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.22 <span class="mode-tag all">ALL</span></div>
+        <h4>Dedup-skip: existing record at same path</h4>
+        <p class="when">A scan finds a file whose existing tracking record points at exactly the same absolute path.</p>
+        <p class="then">Skipped — no second record inserted, no re-import. The existing record is reused.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.23 <span class="mode-tag all">ALL</span></div>
+        <h4>Postimport-deleted records ignored by deletion sync</h4>
+        <p class="when">A FileRecord has <code>state: missing</code> because <code>postImportAction = delete</code> ran (or any other deliberate-removal state).</p>
+        <p class="then">External-deletion sync skips it. The "missing" state isn't treated as a user deletion to propagate.</p>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.3.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-26</div>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="test-plan.html">What to try</a></li>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

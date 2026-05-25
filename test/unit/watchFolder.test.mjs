@@ -1158,9 +1158,11 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     });
   });
 
-  it('skips non-attachment items', async () => {
+  it('skips non-attachment items WITHOUT child attachments', async () => {
+    // A plain non-attachment item with no children is silently dropped.
     globalThis.Zotero.Items.get = vi.fn((id) => ({
       id, key: `K${id}`, isAttachment: () => false,
+      getAttachments: () => [],
     }));
     store._records.push(
       { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
@@ -1170,6 +1172,61 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
 
     expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
     expect(store.remove).not.toHaveBeenCalled();
+  });
+
+  it('expands PARENT items to their child attachments (RST.2 / parent-trash bug)', async () => {
+    // When Zotero trashes a parent item, the notifier fires only once
+    // (for the parent ID); the child attachments inherit the deleted
+    // state but never get their own trash event. The handler must
+    // walk parent.getAttachments(true) and include each attachment
+    // key, otherwise parent-level trashes silently leak past Mode 3.
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean' },
+      { type: 'file', localPath: 'B.pdf', canonicalLocalPath: 'B.pdf', zoteroAttachmentKey: 'ATTB', state: 'clean' },
+    );
+
+    const attA = { id: 501, key: 'ATTA', isAttachment: () => true };
+    const attB = { id: 502, key: 'ATTB', isAttachment: () => true };
+    const parent = {
+      id: 500, key: 'PARENT1', isAttachment: () => false,
+      getAttachments: () => [501, 502],
+    };
+    globalThis.Zotero.Items.get = vi.fn((id) => {
+      if (id === 500) return parent;
+      if (id === 501) return attA;
+      if (id === 502) return attB;
+      return null;
+    });
+
+    await service._handleZoteroTrash([500]); // parent ID only
+
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledTimes(2);
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/B.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('B.pdf');
+  });
+
+  it('parent expansion includes already-trashed child attachments (getAttachments(true))', async () => {
+    // Selective restore (RST.4) and partial trashes mean some children
+    // may already be `deleted=true` before the parent trash. They must
+    // still be picked up so disk + tracking are kept consistent.
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean' },
+    );
+
+    const attA = { id: 501, key: 'ATTA', isAttachment: () => true };
+    const parent = {
+      id: 500, key: 'PARENT1', isAttachment: () => false,
+      // Spy: ensure called with `true` (include trashed)
+      getAttachments: vi.fn(() => [501]),
+    };
+    globalThis.Zotero.Items.get = vi.fn((id) => id === 500 ? parent : attA);
+
+    await service._handleZoteroTrash([500]);
+
+    expect(parent.getAttachments).toHaveBeenCalledWith(true);
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
   });
 
   it('handles missing canonical file gracefully (drops tracking, no remove call)', async () => {

@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Zotero plugin that polls a folder, imports new PDFs into a target collection, dedupes them, and optionally moves/renames the source files. Targets Zotero 7/8/9 (`strict_min_version: 6.999`).
+Zotero plugin that polls a folder, imports new PDFs into a target collection, dedupes them, and optionally moves/renames the source files. Targets Zotero 7/8/9 (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4 (platform 140.10.0) — see "Zotero 9 verification" note below.
 
-Plugin ID: `watch-folder@zotero-plugin.org`. Version lives in `package.json` AND `manifest.json` — keep them in sync.
+Plugin ID: `watch-folder@zotero-plugin.org`. Version lives in `package.json` AND `manifest.json` — keep them in sync. **Current: `2.3.0`** (stable; no alpha suffix). 2.3.0 closed three bugs over 2.2.0-alpha.1: RecognizePDF reparenting suppression, parent-trash propagation, and a setup-wizard mode-3 gap.
 
 ## v2 status — read this before editing
 
@@ -36,6 +36,8 @@ The codebase has completed the v2 rewrite from the library-root-scoped model to 
 
 **Mode 2 flow** (sync-root scoped, mirror without delete): install → set sync root + mode in prefs → enable → SyncCoordinator runs baseline (B.2/B.6/B.7), registers collectionWatcher + itemAddHandler, bridges into the scan loop. Disk changes flow through `_detectFolderRenames` + `folderEventDetector`; Zotero changes flow through `collectionWatcher` + `itemMembershipHandler`. All mutations go through `mirrorExecutor` with per-key locks + conflict gate. Zotero-side trash → `_handleZoteroTrash` warns + drops tracking + reports to warningSink (no disk action).
 
+**v2.3.0 (shipped 2026-05-26) — stable cut.** Drops the `alpha` suffix. Closes the RecognizePDF reparenting suppression bug + the parent-trash propagation bug discovered during the 2026-05-25 / 26 live verification passes, lands the C1 wizard Mode-3 update, and live-verifies the whole stack on Zotero 9.0.4 (no Zotero-9-specific code changes needed). UT count: 532 across 20 files. Same code surface as 2.2.0-alpha.1 + a 2-method patch set.
+
 **v2.2 (shipped as `v2.2.0-alpha.1`, tag `v2.2.0-alpha.1`) — Mode 3 — safe delete, end-to-end:**
 - **Cascading-trash bug fixed.** Two patches stop a chain that would activate the moment Mode 3 turned on:
   - `_handleExternalDeletions` Mode 3 branch — when a SHADOW record (`localPath !== canonicalLocalPath`, produced by dedup-skip) is missing but its canonical sibling is still on disk, drops only the shadow tracking; never trashes the Zotero attachment.
@@ -51,11 +53,47 @@ The codebase has completed the v2 rewrite from the library-root-scoped model to 
 - **`warningSink.clear()` contract documented** — listeners survive `clear()` so the prefs-pane subscriber doesn't get silently dropped.
 
 **Still pending (Track D-style follow-ups; nothing release-blocking):**
-- C1 full setup wizard (multi-step pane; the C2 minimal picker + first-run nudge is in place).
-- Phase E `test/mcp/MODE2.md` runbook for live-Zotero validation.
-- DEL.2 minor record-lifecycle deviation (the shadow-guard path leaves the shadow record as `out-of-scope-suppressed` rather than fully removed, most likely because of a concurrent notifier path; the critical no-cascade invariant holds — see `test/mcp/MODE3.md` "Run 2026-05-25b").
+- C1 full setup wizard as a single multi-step XHTML pane. The existing modal-sequence `runSetupWizard` (`content/index.mjs`) now covers all three modes with per-mode safety descriptions + a mode-specific safety note in the confirm step — functionally complete, only the single-window UX rewrite is missing.
+- **Trashed sync-root collection hardening.** When the user trashes the sync-root collection itself in Zotero, `parent.getCollections()` filters it out (Zotero's API contract), which means the reparenting guard can't recognize in-scope items there. The plugin should detect this state at coordinator start and pause sync + surface a warning instead of silently mis-classifying every import as out-of-scope. Discovered live during the 2026-05-26 Zotero 9 verification pass (not a regression — same behavior on 8).
+
+**Zotero 9 verification (2026-05-26):** Live-tested on Zotero 9.0.4 (platform 140.10.0). Same code path as Zotero 8 — no Zotero-9-specific changes needed in the plugin. Notifier event order, `parent.getCollections()`, `Zotero.Items.getByLibraryAndKeyAsync`, `Zotero.DB.executeTransaction`, `IOUtils.*`, `Services.prompt.*` all behave identically. Tested SETUP, BASE.1, MEM.1, REN.1, SUPP.1, the reparenting guard, and the addItemMembership safety-net auto-clear — all green. `manifest.json` declares `strict_max_version: 9.*`, no bump needed.
+
+**Closed since v2.2 tag:**
+- **RecognizePDF reparenting bug** (was filed as "DEL.2 shadow lifecycle quirk", root cause was broader). Every freshly-imported file ended up `out-of-scope-suppressed` after metadata recognition. Mechanism: Zotero's RecognizePDF creates a parent in the sync-root collection, reparents the attachment under it, and fires a `collection-item` REMOVE for the attachment leaving the collection (per Zotero's data model where only parents live in collections). `itemMembershipHandler._handleRemove` mis-interpreted this as a user un-sync. Fix: reparenting guard in `_handleRemove` (returns early when `item.parentItem` is in the same collection) + safety-net in `mirrorExecutor._addItemMembership` that auto-clears OUT_OF_SCOPE_SUPPRESSED → CLEAN when a sync-root collection is re-added (USER_DETACHED stays detached). UT-512 + extended UT-409 cover both. **530 unit tests passing (was 523).**
 
 **Three sync modes** (`mode` pref): `mode1` (import only — Phase A v2.0), `mode2` (mirror without delete — v2.1), `mode3` (mirror with safe delete — v2.2).
+
+## Keep `index.html`, `test-plan.html`, and `test-cases.html` in sync at every checkpoint
+
+Three user-facing HTML pages at the repo root:
+- `index.html` — landing page (overview, features, configure, FAQ, roadmap).
+- `test-plan.html` — user-story walkthrough in five chapters (setting up, day-to-day, something looks off, changing setup, second device). Source: drilled down from the technical runbooks and the inclusion/exclusion matrix.
+- `test-cases.html` — the two-column behavior spec: every plugin behavior classified as **Inclusion** (something the plugin acts on — imports, copies, restores) or **Exclusion** (something the plugin refuses — duplicates, wrong types, conflicts, suppression). 20 + 23 cases. Coverage is enforced: if a behavior isn't on this page, it's a gap in the plugin OR a gap in the spec.
+
+**Whenever you complete a checkpoint** — feature ships, version bumps, TODO items close, mode behavior changes, scenarios added/changed in the MCP runbooks — refresh both pages so they reflect reality. The pages must never describe features or scenarios that don't ship in the current bundle.
+
+Things to refresh on a checkpoint (index.html):
+- Version badge in the hero eyebrow + footer (`v2.2.0-alpha.1` today).
+- Hero meta strip (test count, sync modes, prefs count, release-blocking count).
+- Modes section (`#modes`) — what each mode does in the current bundle.
+- Features grid (`#features`) — only list capabilities that work end-to-end.
+- Configure table (`#configure`) — pref keys + defaults + behavior, mirrored from `prefs.js`.
+- Roadmap list (`#roadmap`) — move items between Done / Next / Future as TODO.md evolves.
+- Footer "Last updated" date.
+
+Things to refresh on a checkpoint (test-plan.html):
+- Chapter story counts in the TOC + each chapter's "N stories" sub-label.
+- Story cards — add when new user-visible behavior ships; update the "What should happen" lines when behavior changes.
+- Per-story technical-case footnote (`Covers:`) — keep aligned with current MCP runbook case IDs.
+- Footer "Last updated" date + version.
+
+Things to refresh on a checkpoint (test-cases.html):
+- Add a new case to **Inclusion** when the plugin starts acting on a new kind of input; add to **Exclusion** when a new "refuse / skip / suppress" path is added.
+- Mode tags (`m1` / `m2` / `m3` / `all`) — keep accurate when modes diverge.
+- Top-of-page counts in the summary cards + column headers.
+- Footer "Last updated" date + version.
+
+All three are hand-authored single-file HTML (embedded CSS, no JS, no build step). Edit directly; don't introduce a generator.
 
 ## Layout
 
@@ -79,13 +117,17 @@ The codebase has completed the v2 rewrite from the library-root-scoped model to 
 - `dist/content/scripts/watchFolder.js` — esbuild IIFE bundle output. **What Zotero actually runs.**
 - `prefs.js` — **29 default preference keys** under `extensions.zotero.watchFolder.*` (added `baselineCompletedForRoot` in v2.1). `diskDeleteOnTrash` v2.2 values: `"ask"` (default) | `"plugin_trash"` | `"os_trash"` | `"permanent"` | `"never"`.
 - `build/{bundle,build,package,release-upload}.mjs` — release pipeline.
-- `test/unit/*.test.mjs` + `test/setup/geckoMocks.js` — Vitest, currently **523 passing across 20 files**. v2.1 added: collectionWatcher / folderEventDetector / itemMembershipHandler / mirrorExecutor / mirrorExecutor_warnings / itemAddHandler / warningSink / suppressionResolver / baseline. v2.2 added: bulkGuard, plus UT-090 cascading-trash + `_handleZoteroTrash` v2, UT-091 `_moveToPluginTrash` + `'plugin_trash'` + tombstone, UT-092 `_handleZoteroRestore` + RST.6, UT-093 RST.2/RST.4 parent-expand, UT-094 bulk-delete guard for `_handleZoteroTrash` + `_handleExternalDeletions`, UT-095 RST.5 re-attach, UT-107 tombstone queries on trackingStore, UT-110/111 bulkGuard, UT-419/420 deleteFolder Mode 3 + bulk-delete protection, UT-830/831 restore-folder UX. The v1-schema UT-050/UT-051 placeholder describe.skip blocks were removed in the v2.2 cleanup.
+- `test/unit/*.test.mjs` + `test/setup/geckoMocks.js` — Vitest, currently **532 passing across 20 files**. v2.1 added: collectionWatcher / folderEventDetector / itemMembershipHandler / mirrorExecutor / mirrorExecutor_warnings / itemAddHandler / warningSink / suppressionResolver / baseline. v2.2 added: bulkGuard, plus UT-090 cascading-trash + `_handleZoteroTrash` v2, UT-091 `_moveToPluginTrash` + `'plugin_trash'` + tombstone, UT-092 `_handleZoteroRestore` + RST.6, UT-093 RST.2/RST.4 parent-expand, UT-094 bulk-delete guard for `_handleZoteroTrash` + `_handleExternalDeletions`, UT-095 RST.5 re-attach, UT-107 tombstone queries on trackingStore, UT-110/111 bulkGuard, UT-419/420 deleteFolder Mode 3 + bulk-delete protection, UT-830/831 restore-folder UX. The v1-schema UT-050/UT-051 placeholder describe.skip blocks were removed in the v2.2 cleanup.
 - `test/mcp/` — MCP runbooks against a live Zotero. Entry: `test/mcp/INDEX.md`. `MODE2.md` runbook pending (Phase E). A `.claude/skills/zotero-mcp-warmup/` skill triggers permission prompts for the 15 read-only Zotero MCP tools so they can be approved on PC before going mobile (mobile doesn't render the prompts — GH #35637).
 - `test_pdfs/` — local PDF fixtures for manual / MCP runs (gitignored content, present locally).
 - `docs/` — `ARCHITECTURE.md` (Zotero 8 platform notes), `CODEBASE_OVERVIEW.md` (long-form per-module tour with file:line refs), `MODULE_DEPENDENCIES.md`, `PHASE{1,2,3}_DESIGN.md`.
 - `updates_22_05_26.md` — v2 sync-model spec. **Source of truth for new behavior.**
 - `behavior_updates.md` — case-template spec (`INCLUSION` / `EXCLUSION` matrices). Mostly stub; expand here as cases are pinned down.
 - `tools/hooks/commit-msg` — strips AI co-author trailers. Install with `git config core.hooksPath tools/hooks` (per-clone).
+- `index.html` — user-facing landing page (single-file, embedded CSS, no JS).
+- `test-plan.html` — user-story walkthrough (5 chapters: setup / day-to-day / something off / changing setup / second device).
+- `test-cases.html` — two-column inclusion/exclusion behavior spec (20 + 23 cases). The canonical "every behavior of the plugin in one place" reference.
+- All three: single-file HTML, embedded CSS, no JS, no build step. Keep in sync at every checkpoint — see the "Keep ... in sync" section above.
 
 ## Build & dev commands
 
@@ -137,6 +179,7 @@ If you change `manifest.json` version, also bump `package.json`. Those two are t
   - Runtime: `syncCoordinator._modeObserverID` watches the mode pref and starts/stops on the fly — no restart required.
 - **Per-key executor locks** — `mirrorExecutor._withLock(key, fn)` serializes ops by `collection:<key>` / `attachment:<key>`. Replaces v1 Phase-2's coarse `_isSyncing` global. Don't bypass; don't reintroduce a global lock.
 - **Notifier callback chains** — `collectionWatcher` and `itemAddHandler` each have a module-level promise chain (`_notifyChain`) that serializes their notify calls. Zotero fires events as fire-and-forget; concurrent batches would otherwise interleave through async `canonicalPath` lookups and read inconsistent store snapshots.
+- **RecognizePDF reparenting guard** in `itemMembershipHandler._handleRemove`. Zotero's RecognizePDF emits `collection-item` REMOVE for an attachment leaving its sync-root collection after a parent item absorbs it; the parent is in that collection so the file's logical membership is unchanged. The handler returns early when `item.isAttachment() && item.parentItem.getCollections().includes(collection.id)`. Don't remove this guard — without it every freshly-imported file ends up OUT_OF_SCOPE_SUPPRESSED with empty memberships. Paired safety-net in `mirrorExecutor._addItemMembership`: re-adding a sync-root membership auto-clears OUT_OF_SCOPE_SUPPRESSED → CLEAN. USER_DETACHED is exempt (it's an explicit user choice via the suppression resolver).
 - **`_byHash` excludes detached states** — `trackingStore._rebuildIndexes` only indexes records whose state is `clean/dirty/pending/pending-zotero-file/pending-hydration/external-edit`. USER_DETACHED, OUT_OF_SCOPE_SUPPRESSED, CONFLICT_BLOCKED, etc. are deliberately excluded so the hash-dedup path can't re-link a fresh import to a Zotero item the user already chose to stop syncing.
 - **Tombstones are NOT in `_byHash`** but are queryable via `findTombstoneByHash` — the v2.2 restore matrix consults them BEFORE the live-record dedup (`_processNewFile` step 3a). A new file whose hash matches a tombstone un-trashes the Zotero attachment and re-creates the FileRecord; if the attachment was permanently purged, the tombstone is dropped and import falls through.
 - **Shadow records (dedup-skip)** — `_processNewFile` creates a second FileRecord with the same `zoteroAttachmentKey` and a different `localPath` when the user puts two copies of the same file under the watch root. Canonical is the one where `localPath === canonicalLocalPath`; shadows are the rest. **Cascading-trash guards** in both `_handleExternalDeletions` (Mode 3) and `_handleZoteroTrash` (v2 rewrite) ensure shadow paths are NEVER disk-deleted — only canonical paths are, and tracking for shadows is dropped without disk action. Don't write a code path that disk-deletes "all records for this attachment key" without the canonical/shadow split.
@@ -148,7 +191,7 @@ If you change `manifest.json` version, also bump `package.json`. Those two are t
 
 Three layers — see [`test/README.md`](./test/README.md) for the overview.
 
-- **`test/unit/`** — Vitest, **523 passing across 20 files** (zero skipped after the v2.2 cleanup). `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, `crypto.subtle`. New test file: `test/unit/<module>.test.mjs` — import the SUT from `../../content/<module>.mjs`, mock deps per-file with `vi.mock(...)`, reset in `beforeEach`.
+- **`test/unit/`** — Vitest, **532 passing across 20 files** (zero skipped after the v2.2 cleanup; UT-512 added 2026-05-25 for the RecognizePDF reparenting guard). `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, `crypto.subtle`. New test file: `test/unit/<module>.test.mjs` — import the SUT from `../../content/<module>.mjs`, mock deps per-file with `vi.mock(...)`, reset in `beforeEach`.
 - **`test/mcp/`** — MCP runbooks Claude executes against a live Zotero via the bridge. Entry point: [`test/mcp/INDEX.md`](./test/mcp/INDEX.md). Replaces the old manual `TEST_PLAN.md` checklist for day-to-day work. Run **SMOKE.md S.1–S.7** before tagging a release.
 - Zero unit coverage on `bulkOperations.mjs`, `metadataRetriever.mjs`, `index.mjs` — gaps are intentional, not invitations to skip.
 
@@ -159,6 +202,8 @@ Living lists: `updates_22_05_26.md` (v2 spec), `TODO.md`, `test/mcp/INDEX.md` no
 - **Resolver save() rollback for FS mutations** — Track A added rollback for tracking-store save failures across all 11 suppression-resolver handlers. For TRASH / MOVE_OUTSIDE the FS mutation is NOT reversible (file is already trashed/moved); only the tracking-store mutations roll back. Documented inline; not a bug, but worth knowing when investigating "I trashed it, then save failed, where's my file" reports.
 
 **Recently fixed (don't re-introduce):**
+- ~~Parent-trash silently no-ops~~ — fixed 2026-05-25. Zotero's notifier fires a `trash` event for a parent item ID only; the child attachments inherit `deleted=true` but never get their own event. `_handleZoteroTrash` now expands non-attachment items to their child attachments via `getAttachments(true)` (include trashed). UT-090 extended with 3 new cases (parent-expand + already-trashed-children + zero-children no-op preserved).
+- ~~RecognizePDF reparenting universally suppresses imports~~ — fixed 2026-05-25 in `itemMembershipHandler._handleRemove` (parent-in-collection guard) + `mirrorExecutor._addItemMembership` (auto-clear OUT_OF_SCOPE_SUPPRESSED on sync-root re-add). The original ticket was filed as a DEL.2 shadow-lifecycle quirk; the true scope was every freshly-imported file losing its membership after recognition.
 - ~~Cascading-trash bug~~ — fixed in `_handleExternalDeletions` (Mode 3 shadow guard) + `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
 - ~~Singleton tracking store divergence~~ — fixed by routing `WatchFolderService` through `initTrackingStore()`.
 - ~~`_moveItem` cross-action stale `oldCanonicalPath`~~ — fixed; reads live record after lock acquisition.

@@ -1,0 +1,885 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zotero Watch Folder — what to try, what should happen</title>
+<meta name="description" content="A plain-language walkthrough of every situation a Zotero Watch Folder user will hit — first install, day-to-day use, when things look off, changing the setup, and second-computer / cloud-folder scenarios.">
+
+<style>
+:root {
+  --ink: #14110f;
+  --paper: #f4efe7;
+  --paper-warm: #ebe3d4;
+  --rule: #2a2521;
+  --muted: #6b625a;
+  --accent: #c44536;
+  --accent-soft: #e3a59c;
+  --ok: #3b6e3a;
+  --warn: #b07c1e;
+  --setup: #5a4dad;
+  --daily: #3b6e3a;
+  --off: #c44536;
+  --change: #b07c1e;
+  --device: #2a6ea0;
+  --shadow: 0 1px 0 rgba(0,0,0,.04), 0 12px 32px -16px rgba(20,17,15,.18);
+  --serif: ui-serif, "Iowan Old Style", "Source Serif Pro", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box }
+html { scroll-behavior: smooth }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px }
+a:hover { color: var(--accent) }
+
+.wrap { max-width: 900px; margin: 0 auto; padding: 0 28px }
+.wrap-wide { max-width: 1080px; margin: 0 auto; padding: 0 28px }
+
+/* ---------- top nav ---------- */
+nav.top {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(244,239,231,.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(20,17,15,.08);
+}
+nav.top .row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px; max-width: 1080px; margin: 0 auto;
+}
+nav.top .brand { font-family: var(--serif); font-weight: 600; font-size: 18px; letter-spacing: -0.01em }
+nav.top .brand .glyph { color: var(--accent); margin-right: 6px }
+nav.top .brand a { text-decoration: none }
+nav.top ul { display: flex; gap: 18px; list-style: none; margin: 0; padding: 0; font-size: 13.5px }
+nav.top a { text-decoration: none; color: var(--muted) }
+nav.top a:hover { color: var(--ink) }
+@media (max-width: 880px) { nav.top ul { display: none } }
+
+/* ---------- hero ---------- */
+header.hero {
+  padding: 80px 0 48px;
+  position: relative;
+  overflow: hidden;
+}
+header.hero::before {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(196,69,54,.08), transparent 40%),
+    radial-gradient(circle at 5% 90%, rgba(90,77,173,.07), transparent 40%);
+  pointer-events: none;
+}
+.hero-inner { position: relative }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 18px;
+}
+.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(34px, 5vw, 52px);
+  line-height: 1.05;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 22px;
+  max-width: 22ch;
+}
+h1 em { font-style: italic; color: var(--accent); font-weight: 500 }
+.lede {
+  font-size: 19px; line-height: 1.55; color: #2c2520;
+  max-width: 64ch; margin: 0 0 28px;
+}
+
+/* ---------- TOC ---------- */
+.toc {
+  background: #fff;
+  border-radius: 8px;
+  padding: 22px 26px;
+  border: 1px solid rgba(20,17,15,.06);
+  box-shadow: var(--shadow);
+  margin: 32px 0 8px;
+}
+.toc h3 {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+.toc-list {
+  margin: 0; padding: 0;
+  list-style: none;
+  font-size: 15px;
+}
+.toc-list li {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(20,17,15,.06);
+}
+.toc-list li:first-child { border-top: 0 }
+.toc-list .num {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.toc-list a { text-decoration: none; color: var(--ink) }
+.toc-list a:hover { color: var(--accent) }
+.toc-list .ct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---------- chapter section ---------- */
+section.chapter {
+  padding: 64px 0 24px;
+  border-top: 1px solid rgba(20,17,15,.10);
+}
+section.chapter:first-of-type { border-top: 0 }
+section.chapter .chapter-intro {
+  margin-bottom: 36px;
+}
+section.chapter h2 {
+  font-family: var(--serif);
+  font-size: clamp(28px, 3.4vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin: 0 0 6px;
+  display: flex; align-items: baseline; gap: 14px;
+  scroll-margin-top: 80px;
+}
+section.chapter h2 .num {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0.05em;
+}
+section.chapter .chapter-blurb {
+  font-size: 17px;
+  color: #2c2520;
+  margin: 8px 0 0;
+  max-width: 60ch;
+}
+
+/* ---------- story card ---------- */
+.story {
+  background: #fff;
+  border-radius: 10px;
+  padding: 28px 32px;
+  border: 1px solid rgba(20,17,15,.06);
+  box-shadow: var(--shadow);
+  margin-bottom: 20px;
+  position: relative;
+  scroll-margin-top: 80px;
+}
+.story-tag {
+  position: absolute; top: -10px; left: 28px;
+  background: var(--ink); color: var(--paper);
+  padding: 3px 10px; border-radius: 4px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+section.chapter.s-setup  .story-tag { background: var(--setup) }
+section.chapter.s-daily  .story-tag { background: var(--daily) }
+section.chapter.s-off    .story-tag { background: var(--off) }
+section.chapter.s-change .story-tag { background: var(--change) }
+section.chapter.s-device .story-tag { background: var(--device) }
+
+.story h3 {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  margin: 4px 0 10px;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+.story .voice {
+  font-family: var(--serif);
+  font-style: italic;
+  color: #2c2520;
+  font-size: 17px;
+  margin: 0 0 18px;
+  padding-left: 14px;
+  border-left: 3px solid var(--paper-warm);
+}
+.story .voice::before { content: "\201C"; font-size: 28px; color: var(--accent); line-height: 0; vertical-align: -8px; margin-right: 4px }
+.story .voice::after { content: "\201D"; font-size: 28px; color: var(--accent); line-height: 0; vertical-align: -8px; margin-left: 2px }
+.story .row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px dashed rgba(20,17,15,.10);
+  align-items: baseline;
+}
+.story .row:first-of-type { border-top: 0; padding-top: 6px }
+.story .row .label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.story .row .body { font-size: 15.5px; line-height: 1.6 }
+.story .row.expected .body { color: var(--ink); font-weight: 500 }
+.story .row.offnote .body { color: var(--muted); font-size: 14.5px }
+.story .row.alt .body { color: var(--muted); font-size: 14.5px; font-style: italic }
+.story .row .body code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--paper);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.story .row .body b { font-weight: 600 }
+
+.story .ref {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(20,17,15,.08);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+.story .ref b { color: #2c2520; font-weight: 600; margin-right: 6px; letter-spacing: 0.06em }
+
+@media (max-width: 640px) {
+  .story { padding: 24px 22px }
+  .story .row { grid-template-columns: 1fr; gap: 4px }
+}
+
+/* ---------- how-to intro ---------- */
+.how-to {
+  background: #fff;
+  border-radius: 8px;
+  padding: 22px 28px;
+  border: 1px solid rgba(20,17,15,.06);
+  box-shadow: var(--shadow);
+  margin: 28px 0 0;
+}
+.how-to h3 {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.how-to p { margin: 0; font-size: 15.5px; line-height: 1.65; color: #2c2520 }
+.how-to .swatches {
+  display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px;
+  font-size: 13px;
+}
+.sw { display: inline-flex; align-items: center; gap: 6px }
+.sw .dot { width: 10px; height: 10px; border-radius: 2px }
+.sw.s-setup .dot { background: var(--setup) }
+.sw.s-daily .dot { background: var(--daily) }
+.sw.s-off .dot { background: var(--off) }
+.sw.s-change .dot { background: var(--change) }
+.sw.s-device .dot { background: var(--device) }
+
+/* ---------- print ---------- */
+@media print {
+  nav.top { display: none }
+  header.hero { padding: 20px 0 }
+  .how-to, .toc { box-shadow: none }
+  .story { break-inside: avoid; page-break-inside: avoid; box-shadow: none }
+  body { font-size: 12px }
+  section.chapter { padding: 28px 0 16px }
+}
+
+/* ---------- footer ---------- */
+footer {
+  padding: 48px 0 40px;
+  border-top: 1px solid rgba(20,17,15,.12);
+  background: var(--paper-warm);
+  font-size: 13.5px;
+  color: var(--muted);
+  margin-top: 56px;
+}
+footer .row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px }
+footer a { color: var(--muted); text-decoration: none }
+footer a:hover { color: var(--ink) }
+footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="row">
+    <div class="brand"><a href="index.html"><span class="glyph">✦</span>Zotero Watch Folder</a></div>
+    <ul>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="index.html#modes">Modes</a></li>
+      <li><a href="index.html#features">Features</a></li>
+      <li><a href="test-plan.html"><b>What to try</b></a></li>
+      <li><a href="test-cases.html">Inclusion / Exclusion</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ========== HERO ========== -->
+<header class="hero">
+  <div class="wrap hero-inner">
+    <div class="eyebrow"><span class="dot"></span>What to try · what should happen</div>
+    <h1>The full set of situations, in <em>plain language.</em></h1>
+    <p class="lede">
+      Five chapters covering the entire user journey — from first install, to
+      day-to-day use, to "wait, something looks off." Each story has
+      what you'd be doing, what should happen if it's working, and what to
+      check if it isn't. Print-friendly. Walk through it like a book.
+    </p>
+
+    <div class="how-to">
+      <h3>How to read this</h3>
+      <p>
+        Every story below is the same three lines: <b>I want to…</b> (what you'd
+        be doing as the user), <b>What should happen</b> (the expected outcome),
+        and <b>If something looks off</b> (what to check first). Modes that
+        behave differently are called out where it matters. At the bottom of
+        each story there's a small footnote with the technical case IDs that
+        cover the same behavior — so a developer can cross-reference back to
+        <code>test/mcp/*.md</code>.
+      </p>
+      <div class="swatches">
+        <span class="sw s-setup"><span class="dot"></span>Chapter 1 — setting it up</span>
+        <span class="sw s-daily"><span class="dot"></span>Chapter 2 — day to day</span>
+        <span class="sw s-off"><span class="dot"></span>Chapter 3 — something looks off</span>
+        <span class="sw s-change"><span class="dot"></span>Chapter 4 — changing the setup</span>
+        <span class="sw s-device"><span class="dot"></span>Chapter 5 — second computer / cloud / drive</span>
+      </div>
+    </div>
+
+    <div class="toc">
+      <h3>Stories</h3>
+      <ol class="toc-list" style="list-style:none; counter-reset: chap">
+
+        <li><span class="num">1</span><a href="#ch-setup"><b>Setting it up for the first time</b></a><span class="ct">6 stories</span></li>
+        <li><span class="num">2</span><a href="#ch-daily"><b>Using it day to day</b></a><span class="ct">11 stories</span></li>
+        <li><span class="num">3</span><a href="#ch-off"><b>When something looks off</b></a><span class="ct">12 stories</span></li>
+        <li><span class="num">4</span><a href="#ch-change"><b>Changing how I use it</b></a><span class="ct">10 stories</span></li>
+        <li><span class="num">5</span><a href="#ch-device"><b>Second computer, cloud, or removable drive</b></a><span class="ct">4 stories</span></li>
+      </ol>
+    </div>
+  </div>
+</header>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 1 — SETTING IT UP                                              -->
+<!-- ====================================================================== -->
+
+<section class="chapter s-setup" id="ch-setup">
+  <div class="wrap">
+    <div class="chapter-intro">
+      <h2><span class="num">Chapter 1</span>Setting it up for the first time</h2>
+      <p class="chapter-blurb">
+        These are the six starting states a new user can land in.
+        Match yours to the closest story and walk through what should happen.
+      </p>
+    </div>
+
+    <div class="story" id="setup-fresh">
+      <div class="story-tag">1.1 · fresh start</div>
+      <h3>My folder is empty and my Zotero library is empty</h3>
+      <p class="voice">I just installed the plugin. I want to set things up so it's ready when I start downloading papers.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Open settings, point the plugin at a folder I'll be dropping PDFs into, pick a Zotero collection where new items should land, pick a mode, turn it on.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">A four-step wizard offers me: pick the local folder → pick the Zotero collection → pick a mode → confirm. Defaults work for most people. After "Enable", the plugin is running. Nothing visible happens yet on disk or in Zotero because there's nothing to sync.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">No wizard appears → check that <code>setupCompleted</code> isn't already true from a previous attempt. Open prefs and re-run setup via "Re-run setup wizard…".</span></div>
+      <div class="ref"><b>Covers:</b> S.1, S.4, SETUP.1, P1.1, P1.2, P1.10</div>
+    </div>
+
+    <div class="story" id="setup-files-only">
+      <div class="story-tag">1.2 · disk-side already organized</div>
+      <h3>My folder has PDFs in it, but my Zotero library is empty</h3>
+      <p class="voice">I've been saving papers into <code>~/Papers</code> for years. I want Zotero to catch up with what I already have.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Point the plugin at my existing folder, let it import everything I already have, and preserve the way I've organized subfolders.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Within a few scan cycles, every PDF in the folder appears as an item in my sync-root collection. Subfolders become subcollections (<code>Papers/Methods/AI/</code> → <code>SyncRoot › Methods › AI</code>). Metadata gets fetched for each file. Failures get a <code>_needs-review</code> tag.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Some files imported, some didn't → check <code>fileTypes</code> matches your extensions (default is <code>pdf</code> only). Big folders take longer because metadata retrieval is throttled — give it a few minutes.</span></div>
+      <div class="ref"><b>Covers:</b> ADD.1, ADD.2, ADD.3, E.4, P1.3, P1.4, P1.5, P1.8</div>
+    </div>
+
+    <div class="story" id="setup-zotero-only">
+      <div class="story-tag">1.3 · zotero-side already organized</div>
+      <h3>My Zotero library has items, but my folder is empty</h3>
+      <p class="voice">I've been using Zotero for ages. I want a folder on my computer that reflects my library so I can browse my papers as normal files.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Pick Mode 2 or Mode 3, point the plugin at an empty folder, and have my library "materialized" out to disk on first run.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">A first-run baseline runs. Each item with an attached file gets its file copied out of Zotero's storage to the equivalent path on disk. Subcollections become subfolders. Items without files (metadata-only entries) are skipped silently.</span></div>
+      <div class="row alt"><span class="label">In Mode 1</span><span class="body">Mode 1 is import-only and won't write anything to disk. Switch to Mode 2 or Mode 3 if you want your library mirrored locally.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Nothing copies out → confirm the mode is mode2 or mode3, and that <code>baselineCompletedForRoot</code> is empty (clear it to force a re-run). Disk space concern: consider <code>importMode = linked</code> for new items instead of copying.</span></div>
+      <div class="ref"><b>Covers:</b> BASE.1 (B.6 mkdir), BASE.2 (B.2 copy)</div>
+    </div>
+
+    <div class="story" id="setup-both-match">
+      <div class="story-tag">1.4 · both sides mostly agree</div>
+      <h3>Both sides have stuff, and they mostly match</h3>
+      <p class="voice">Some of these PDFs are already in Zotero (with attached files), but some are loose on disk. Don't make duplicates of anything.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The plugin to recognize what's the same and what's new, and only act on the differences.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">For each file on disk, the plugin computes a SHA-256 hash. Matches against an existing Zotero attachment? Link to it — don't duplicate, don't move. Match a hash that's stamped in a Zotero item's Extra field but no live attachment? Treat as a re-link to that item. No match? Import as new.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Duplicates appeared → confirm <code>duplicateCheck</code> and <code>duplicateMatchHash</code> are both on (defaults). If you see a duplicate that's clearly the same file, the hash stamp in the parent item's Extra field may be missing — let the plugin run for a scan cycle, it back-stamps existing items.</span></div>
+      <div class="ref"><b>Covers:</b> BASE.3 (B.7 hash reconcile), DUP.1</div>
+    </div>
+
+    <div class="story" id="setup-both-mismatch">
+      <div class="story-tag">1.5 · both sides disagree</div>
+      <h3>Both sides have stuff, and the structure doesn't match at all</h3>
+      <p class="voice">My folder layout is one thing; my Zotero collections are another. Don't force them to match.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The plugin to reconcile sanely without trashing anything or force-rewriting either side's structure.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Files only on disk get imported into the Zotero collection matching their subfolder path. Items only in Zotero get their files copied out (Mode 2/3). Files that match by hash on both sides are linked in place — the plugin won't force-move a file to its "canonical" path just to make the structures align.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Feels overwhelming → create a fresh empty collection in Zotero, pick that as the sync root, and let the plugin build up from there. You can re-baseline by clearing <code>baselineCompletedForRoot</code>.</span></div>
+      <div class="ref"><b>Covers:</b> ADOPT.1, BASE.3</div>
+    </div>
+
+    <div class="story" id="setup-linked-existing">
+      <div class="story-tag">1.6 · linked attachments already</div>
+      <h3>I'd already set up Zotero with "link to file" pointing into this folder</h3>
+      <p class="voice">My Zotero items already link to PDFs in <code>~/Papers</code>. The plugin shouldn't re-import them as duplicates.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">My existing linked-file setup to keep working, and the plugin to recognize those files as already-known.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The hash-based dedup catches matches against the linked-file items. No duplicates created. The plugin tracks them at their existing on-disk paths.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Duplicates appeared → check the parent items' Extra field for <code>watchfolder-hash:&lt;sha256&gt;</code> stamps. If they're missing, the plugin's back-stamping pass should populate them on the next launch.</span></div>
+      <div class="ref"><b>Covers:</b> BASE.3, P1.9</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 2 — DAY TO DAY                                                 -->
+<!-- ====================================================================== -->
+
+<section class="chapter s-daily" id="ch-daily">
+  <div class="wrap">
+    <div class="chapter-intro">
+      <h2><span class="num">Chapter 2</span>Using it day to day</h2>
+      <p class="chapter-blurb">
+        The everyday motions. Most of these "just work" — but it's useful to
+        know <em>what</em> just works, so you can spot if something's off.
+      </p>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.1 · the main use case</div>
+      <h3>I just downloaded a paper to my watch folder</h3>
+      <p class="voice">I clicked download in my browser, the PDF landed in my watch folder. Now I want to see it in Zotero, with the title and authors filled in.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Open Zotero a few seconds later and see the new paper, recognized and named.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Within ~5 seconds the file shows up as an item in my sync-root collection. Title, authors, year, DOI get populated. The file is renamed via the template (default: <code>{firstCreator} - {year} - {title}.pdf</code>) — both on disk and on the attachment.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Item appeared but metadata is missing → look for a <code>_needs-review</code> tag; Zotero's recognizer didn't find a match. You can run "Retrieve Metadata for PDF" manually. Filename didn't get rewritten → check <code>autoRename</code> is on and the template variables resolved (some fields like <code>{DOI}</code> are empty for non-DOI papers).</span></div>
+      <div class="ref"><b>Covers:</b> S.2, P1.3, P1.4, P1.5</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.2 · drop in bulk</div>
+      <h3>I dropped twenty papers at once</h3>
+      <p class="voice">I just downloaded a batch from a results page. I want them all imported, but I don't want Zotero hammering the metadata API for all twenty at the same time.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">All twenty to end up in Zotero with metadata, on a polite schedule.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">All twenty files import within a couple of scan cycles. Metadata retrieval is throttled to <code>maxConcurrentMetadata</code> at a time (default 2). Big batches may take a few minutes total, but nothing is lost.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Some files appeared as imports but not all → wait one more scan cycle, very large files sit through a "stability" check before they're considered done copying.</span></div>
+      <div class="ref"><b>Covers:</b> E.4</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.3 · accidental re-save</div>
+      <h3>I accidentally re-saved a paper I already have</h3>
+      <p class="voice">I downloaded the same paper from a different page. I don't want a duplicate Zotero item — but I also don't want my file deleted off disk.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Quietly skip the import. Leave my existing Zotero item alone.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The plugin computes the new file's SHA-256, matches it against the existing tracking record (or the hash stamp in Zotero's Extra field), and skips the import. Both copies of the file may coexist on disk under different names; only one is the "canonical" one in Zotero's view.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Duplicate did appear → check <code>duplicateCheck = true</code> and <code>duplicateAction = skip</code> (the default). If your existing item is missing the hash stamp, the live tracking store catches it instead.</span></div>
+      <div class="ref"><b>Covers:</b> S.3, DUP.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.4 · organize by subfolder</div>
+      <h3>I want to organize PDFs into subfolders on disk</h3>
+      <p class="voice">I create <code>Methods/</code> in my watch folder and drag some PDFs into it. I want a matching Zotero subcollection.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Subfolders to drive Zotero's collection tree.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The moment I create a subfolder (or move files into one), a matching subcollection appears in Zotero under the sync root. Items get filed there. Empty subfolders create empty collections.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Subcollection isn't appearing → confirm the subfolder is under the watch root (not its parent or sibling). Special folders (like <code>.zotero-watch-trash/</code> and <code>imported/</code>) are reserved and skipped.</span></div>
+      <div class="ref"><b>Covers:</b> ADD.2, ADD.3</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.5 · organize by collection</div>
+      <h3>I want to organize by creating a collection in Zotero</h3>
+      <p class="voice">I create <code>Research › Methodology</code> in Zotero and drag some items into it.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">A matching folder to appear on disk, and the files of items I move into the collection to follow.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the subfolder appears on disk almost immediately. Items moved into the collection have their files moved to the matching subfolder on the next scan.</span></div>
+      <div class="row alt"><span class="label">In Mode 1</span><span class="body">Mode 1 is one-way (disk → Zotero). Collection changes in Zotero don't propagate to disk in Mode 1.</span></div>
+      <div class="ref"><b>Covers:</b> BASE.1, MEM.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.6 · rename in Zotero</div>
+      <h3>I want to rename a subcollection in Zotero</h3>
+      <p class="voice">I rename <code>Methods</code> to <code>Methodology</code> in Zotero. The disk folder should follow.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Both sides to keep agreeing without me doing anything else.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the disk folder gets renamed atomically. The tracked paths inside (FileRecords) get rewritten to match.</span></div>
+      <div class="ref"><b>Covers:</b> REN.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.7 · rename on disk</div>
+      <h3>I want to rename a subfolder on disk</h3>
+      <p class="voice">I rename <code>Methods</code> to <code>Methodology</code> in my file manager.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The matching Zotero collection to rename.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">On the next scan, the Zotero collection gets renamed (same key, new name). All tracked files inside follow. Works in all three modes.</span></div>
+      <div class="ref"><b>Covers:</b> RENAME.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.8 · move between collections</div>
+      <h3>I want to move an item between Zotero collections</h3>
+      <p class="voice">A paper I categorized as "Methods" should really be in "Theory". I drag it across in Zotero.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Its file to follow on disk.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the file moves on disk to the new collection's subfolder. The old location is empty afterward. Items that live in multiple collections at once keep one "canonical" location (usually the first one) and that's where the file lives.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">File didn't move → make sure both source and target are under the sync root (collections outside the sync root don't count).</span></div>
+      <div class="ref"><b>Covers:</b> MEM.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.9 · weird filenames</div>
+      <h3>The file I'm importing has special characters or a very long name</h3>
+      <p class="voice">The download was <code>"Doe &amp; Smith (2024) — § étude.pdf"</code>, with spaces, ampersands, and Unicode.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">It to import cleanly without confusing the filesystem.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Imports work fine. Special characters are preserved on the tracking side. If autoRename is on, the rename template sanitizes anything the OS can't handle and caps the length at <code>maxFilenameLength</code> (default 150).</span></div>
+      <div class="ref"><b>Covers:</b> E.1, E.2</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.10 · late attachment</div>
+      <h3>I attached a PDF to an existing Zotero item by hand</h3>
+      <p class="voice">I had a citation in Zotero without a file; I just attached the PDF via "Add Attachment".</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The file to appear on disk like everything else under the sync root.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the plugin copies the file out to the appropriate subfolder (matching the parent item's collection). A FileRecord is created.</span></div>
+      <div class="ref"><b>Covers:</b> LATE.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">2.11 · smart rules</div>
+      <h3>I want incoming papers to be auto-tagged or routed</h3>
+      <p class="voice">I want any paper with "transformer" in the title tagged <code>nlp</code> automatically.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Set up rules once and have them apply to every new import.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Open prefs → Smart Rules section → enable → paste JSON (or click "Insert example") → Save. New imports get matching rules applied. Bad JSON shows a parse error inline.</span></div>
+      <div class="ref"><b>Covers:</b> SR.1</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 3 — WHEN SOMETHING LOOKS OFF                                   -->
+<!-- ====================================================================== -->
+
+<section class="chapter s-off" id="ch-off">
+  <div class="wrap">
+    <div class="chapter-intro">
+      <h2><span class="num">Chapter 3</span>When something looks off</h2>
+      <p class="chapter-blurb">
+        The "uh-oh, did something break?" scenarios. Most have clean recovery paths
+        — the plugin is designed to refuse destructive operations rather than
+        silently do them.
+      </p>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.1 · disk-side delete</div>
+      <h3>I deleted a PDF from my watch folder by accident</h3>
+      <p class="voice">I cleaned up my downloads folder a bit too aggressively and lost a paper I had in Zotero.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Get it back without losing my metadata.</span></div>
+      <div class="row expected"><span class="label">What should happen (Mode 3)</span><span class="body">The file gets moved to <code>.zotero-watch-trash/</code> under the watch root before propagating. The Zotero attachment gets moved to Zotero's Bin. To restore: un-trash the attachment in Zotero (file moves back), or copy the file out of plugin trash yourself (the plugin recognizes it by hash and re-links).</span></div>
+      <div class="row alt"><span class="label">In Mode 1 or 2</span><span class="body">Nothing dramatic. The tracking record flips to "missing." Zotero leaves the item alone. To restore, just put the file back.</span></div>
+      <div class="ref"><b>Covers:</b> DEL.1, RST.1, RST.3, LD.1, S.6, P1.12</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.2 · zotero-side trash</div>
+      <h3>I accidentally trashed a paper in Zotero</h3>
+      <p class="voice">I right-clicked → Move to Trash without thinking.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Get it back, including the file on disk.</span></div>
+      <div class="row expected"><span class="label">What should happen (Mode 3, default settings)</span><span class="body">A dialog asks: Plugin trash (recoverable, default) / OS trash / Permanent / Keep on disk. "Keep" leaves the file alone. "Plugin trash" moves it to <code>.zotero-watch-trash/</code> — restore by un-trashing the attachment in Zotero later.</span></div>
+      <div class="row alt"><span class="label">In Mode 1 or 2</span><span class="body">File stays on disk untouched. Item goes to the Bin. Restore the item in Zotero; the file is unaffected.</span></div>
+      <div class="ref"><b>Covers:</b> S.5, ZA.1, P1.11</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.3 · duplicate copies</div>
+      <h3>I had two copies of the same paper, and I deleted one</h3>
+      <p class="voice">I'd duplicated a paper into two folders by accident. I deleted the second copy. I don't want my "main" copy to disappear too.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Only the file I actually deleted to go away. Leave the main copy alone, and leave the Zotero item alone.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The plugin recognizes the deleted file as a "shadow" (same content hash as the canonical record). It drops the shadow from tracking, leaves the canonical file on disk, leaves the Zotero attachment alone.</span></div>
+      <div class="ref"><b>Covers:</b> DEL.2</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.4 · folder delete</div>
+      <h3>I deleted a whole subfolder by mistake</h3>
+      <p class="voice">I dragged <code>Methods/</code> to the trash without realizing what was in it.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Get the whole folder back.</span></div>
+      <div class="row expected"><span class="label">What should happen (Mode 3)</span><span class="body">The folder and all its files are moved into <code>.zotero-watch-trash/&lt;folder&gt;/</code>. Tracking for that collection (and child files) is dropped. Zotero attachments are NOT trashed — they just lose their membership in the deleted collection. To restore: prefs pane → "Trashed folders" row → "Restore folders…" → pick the one you want. The dir moves back, the Zotero collection is re-created, FileRecords are re-attached.</span></div>
+      <div class="row alt"><span class="label">In Mode 2</span><span class="body">Mode 2 is warn-only on folder delete. Nothing actually gets moved; the collection tracking flips to "suppressed" and shows up in the prefs pane for you to act on.</span></div>
+      <div class="ref"><b>Covers:</b> FDEL.1, FRST.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.5 · bulk safety</div>
+      <h3>I just deleted a lot of files at once</h3>
+      <p class="voice">I cleared out an old folder, or one of those file syncs got weird and removed twenty files. I do NOT want my Zotero library shredded as a side effect.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">A safety stop. Make me confirm before something this big happens.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">If a single operation would affect more than 10 files <em>or</em> more than 20% of your tracked items, a confirmation dialog appears. Cancel → tracking flips to "missing" but nothing destructive happens. Proceed → normal propagation runs. If the confirm dialog can't render (no UI thread available), the plugin refuses rather than silently executing.</span></div>
+      <div class="ref"><b>Covers:</b> DEL.3, FDEL.2</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.6 · content drift</div>
+      <h3>I annotated a PDF — will the sync clobber my annotations?</h3>
+      <p class="voice">I opened a paper in my PDF reader and added notes. Now the file's hash on disk is different from what Zotero thinks it should be.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Be warned. Don't silently overwrite my edits.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Any sync operation that would move or overwrite the file refuses. The FileRecord state flips to "conflict-blocked" and shows up in the prefs pane under conflicts. You resolve via the prefs UI: re-stamp the new content as the baseline / discard the local changes / pause sync for this file.</span></div>
+      <div class="ref"><b>Covers:</b> CONF.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.7 · last-collection-removed</div>
+      <h3>I removed an item from its only sync-root collection</h3>
+      <p class="voice">I cleaned up the categorization in Zotero and now an item isn't in any of my sync-root collections. What happened to its file on disk?</p>
+      <div class="row"><span class="label">I want to</span><span class="body">My file to stay on disk. Don't delete things just because I reorganized.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The file stays on disk. The FileRecord flips to "out-of-scope-suppressed." A "Suppressed items" row appears in prefs. From there I can: re-instate (put back), keep local (stop syncing but keep the file), trash, or move outside the watch root.</span></div>
+      <div class="ref"><b>Covers:</b> SUPP.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.8 · drive unplugged</div>
+      <h3>My watch folder is on a drive that's not connected</h3>
+      <p class="voice">My watch folder lives on an external SSD that I've unplugged. I don't want the plugin to think every file got deleted.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The plugin to wait quietly until the drive is back.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The plugin notices the watch root itself is unreachable and pauses globally. Every tracking record flips to "paused" — no destructive operations run. When the drive comes back, the next scan resumes normally.</span></div>
+      <div class="ref"><b>Covers:</b> FM.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.9 · parent-trash restore</div>
+      <h3>I trashed a parent item that had multiple attachments — can I bring them all back?</h3>
+      <p class="voice">I trashed an item that had a PDF plus a supplementary file. Both files are now in plugin trash. I want everything back.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">A single un-trash on the parent to restore everything.</span></div>
+      <div class="row expected"><span class="label">What should happen (Mode 3)</span><span class="body">Un-trash the parent in Zotero. Every child attachment is un-trashed too. Every file is moved out of plugin trash back to its original path.</span></div>
+      <div class="ref"><b>Covers:</b> RST.2, RST.4</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.10 · re-attach</div>
+      <h3>I permanently erased an attachment, but the citation is still in Zotero</h3>
+      <p class="voice">I emptied the Bin and the attachment is gone for good. But the bibliographic item it was attached to is still in my library. Now I want the file back.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Drop the file back and have it re-attach to the existing parent — not create a new standalone item.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The plugin matches the file's hash against a tombstone record, sees the parent item still exists, and attaches the file as a new child of that parent (via Zotero's <code>importFromFile({parentItemID})</code>). No duplicate standalone item is created.</span></div>
+      <div class="ref"><b>Covers:</b> RST.5</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.11 · restore collision</div>
+      <h3>I'm restoring a file but a different file is at that path now</h3>
+      <p class="voice">Between trashing the file and restoring it, a different file with the same name landed at the canonical path.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Not lose either file. Don't overwrite.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The restore lands at <code>&lt;name&gt;.restored.&lt;timestamp&gt;.&lt;ext&gt;</code>. The existing file is unchanged. Both are now tracked.</span></div>
+      <div class="ref"><b>Covers:</b> RST.6</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">3.12 · status check</div>
+      <h3>I want to see what the plugin tried and what it refused</h3>
+      <p class="voice">Something feels off. I want a list of recent warnings.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Open prefs and see at a glance how much weirdness is queued up.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">A "Sync warnings" row in prefs shows the count + a per-category breakdown (conflict, missing file, I/O error, suppressed, unknown target). Click "View" for the recent 100 entries. Click "Clear" to reset (listeners survive Clear, so the prefs pane keeps tracking).</span></div>
+      <div class="ref"><b>Covers:</b> WARN.1</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 4 — CHANGING THE SETUP                                         -->
+<!-- ====================================================================== -->
+
+<section class="chapter s-change" id="ch-change">
+  <div class="wrap">
+    <div class="chapter-intro">
+      <h2><span class="num">Chapter 4</span>Changing how I use it</h2>
+      <p class="chapter-blurb">
+        Settings I might change after the plugin has been running for a while.
+      </p>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.1 · switch modes</div>
+      <h3>I want to try a different sync mode</h3>
+      <p class="voice">I started in Mode 1 (safe) and now I want to try Mode 3 (full mirror, recoverable trash).</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Switch modes without restarting Zotero.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>mode</code> in prefs. The plugin's mode-pref observer reacts in-process: starts the sync coordinator if moving to Mode 2/3, stops it if moving back to Mode 1. A baseline pass runs on first activation of Mode 2/3 to reconcile state.</span></div>
+      <div class="ref"><b>Covers:</b> SETUP.M2.1, SETUP.M3.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.2 · disable temporarily</div>
+      <h3>I want to disable the plugin temporarily</h3>
+      <p class="voice">I'm doing something tricky in Zotero or on disk and I want the watcher paused while I work.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Pause without uninstalling, and pick up cleanly when I re-enable.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Uncheck "Enable Watch Folder" in prefs. The scanner stops, the coordinator stops. Files added during the disabled period are picked up the next time I re-enable (no need to restart Zotero).</span></div>
+      <div class="ref"><b>Covers:</b> S.7, E.5</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.3 · move the folder</div>
+      <h3>I want to point the plugin at a different watch folder</h3>
+      <p class="voice">I'm moving from <code>~/Papers</code> to <code>~/Documents/Library</code>.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Retarget without losing my Zotero side, and without re-importing what's already linked.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>sourcePath</code> in prefs. To get a clean baseline against the new location, also clear <code>baselineCompletedForRoot</code>. On next start, the plugin re-runs the baseline pass — existing Zotero items are matched against files in the new location by hash, so no duplicates.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">The plugin keeps complaining about missing files → make sure you actually moved the files too, not just retargeted the pref. Or accept it and use the suppression resolver to clean up.</span></div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.4 · change sync root</div>
+      <h3>I want to use a different Zotero collection as the sync root</h3>
+      <p class="voice">I started syncing against <code>Inbox</code>, but I really want everything under <code>Research</code>.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Re-anchor the sync to a different collection.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>syncRootCollectionKey</code> in prefs (or use the picker in the prefs pane). Clear <code>baselineCompletedForRoot</code> so the baseline re-runs against the new root.</span></div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.5 · smart-rule edits</div>
+      <h3>I want to edit my smart rules</h3>
+      <div class="row"><span class="label">I want to</span><span class="body">Open the rule editor in prefs, edit JSON, save, and have it take effect.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Smart Rules section in prefs: textarea + Save + Insert example + Reload. Save validates per-rule shape (e.g. that the action is one of the supported types). Bad rules show an inline error and the rest don't save.</span></div>
+      <div class="ref"><b>Covers:</b> SR.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.6 · zotero restart</div>
+      <h3>I just restarted Zotero</h3>
+      <div class="row"><span class="label">I want to</span><span class="body">The plugin to pick up where it left off without me doing anything.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">On Zotero relaunch, the plugin auto-starts. Tracking is restored from <code>zotero-watch-folder-tracking-v2.json</code>. New files dropped during the restart are picked up on the first scan.</span></div>
+      <div class="ref"><b>Covers:</b> E.6</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.7 · deletion policy</div>
+      <h3>I want a different default for what happens when I trash in Zotero</h3>
+      <p class="voice">I don't want to be asked every time. I want trashes to always go to plugin trash (recoverable).</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Pre-set the action so the dialog doesn't show.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>diskDeleteOnTrash</code> to one of: <code>plugin_trash</code> (recoverable), <code>os_trash</code>, <code>permanent</code>, <code>never</code>, or <code>ask</code> (the default, shows the dialog).</span></div>
+      <div class="ref"><b>Covers:</b> P1.11</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.8 · file types</div>
+      <h3>I want to import EPUBs too, not just PDFs</h3>
+      <div class="row"><span class="label">I want to</span><span class="body">Extend the extension filter without changing anything else.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>fileTypes</code> from <code>pdf</code> to <code>pdf,epub</code>. New EPUBs drop straight in. Existing EPUBs in the watch folder are picked up on the next scan.</span></div>
+      <div class="ref"><b>Covers:</b> P1.8</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.9 · linked vs stored</div>
+      <h3>I want to link to files instead of copying into Zotero storage</h3>
+      <p class="voice">Storage is at a premium. I'd rather have Zotero point to the file in my watch folder than copy it.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Use Zotero's "Link to file" mode for new imports.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>importMode</code> to <code>linked</code>. New imports become linked-file attachments. The original PDF stays in the watch folder. No copy in Zotero storage.</span></div>
+      <div class="ref"><b>Covers:</b> P1.9</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">4.10 · post-import behavior</div>
+      <h3>I want my source PDFs deleted (or moved) after import</h3>
+      <p class="voice">I want the watch folder to act like an inbox — files leave once they're processed.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Either delete the source after a successful import, or move it into a "done" subtree.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body"><code>postImportAction = delete</code> removes the source after import (tracking flags <code>expectedOnDisk=false</code> so the missing file doesn't trigger anything). <code>postImportAction = move</code> shuffles the file into a sibling <code>imported/</code> subtree preserving the subdirectory path. <code>leave</code> (the default) keeps the source in place.</span></div>
+      <div class="ref"><b>Covers:</b> P1.6, P1.7</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 5 — SECOND COMPUTER / CLOUD / DRIVE                            -->
+<!-- ====================================================================== -->
+
+<section class="chapter s-device" id="ch-device">
+  <div class="wrap">
+    <div class="chapter-intro">
+      <h2><span class="num">Chapter 5</span>Second computer, cloud, or removable drive</h2>
+      <p class="chapter-blurb">
+        Less-common but legitimate setups: multi-device, cloud-synced folders,
+        and external drives that come and go.
+      </p>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">5.1 · second computer</div>
+      <h3>I installed Zotero on my desktop too, with Zotero Sync turned on</h3>
+      <p class="voice">My laptop is already set up with the plugin. Now I'm setting up the desktop. My Zotero library is already pulled down via Zotero Sync, but the desktop's watch folder is empty.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Install the plugin on the desktop and have my library mirrored locally — without re-importing every item as a new one.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">This is effectively the "Zotero populated, folder empty" case from Chapter 1. Pick the same sync root collection in the wizard. The baseline writes attachment files out to the desktop's watch folder. Hash stamps in items' Extra fields prevent any cross-device duplicates.</span></div>
+      <div class="ref"><b>Covers:</b> BASE.2, BASE.3 (cross-device variant)</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">5.2 · cloud folder</div>
+      <h3>My watch folder is in Dropbox / iCloud / Syncthing</h3>
+      <p class="voice">I keep my Papers folder in cloud sync so I can read on my tablet. I want the plugin to treat it like any other folder.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">It to work without surprises.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">It works fine as long as files are materialized locally (not cloud placeholders). If your cloud client uses "online-only" placeholders that are zero bytes until accessed, the plugin will skip them (the file-stability check refuses to import a file that's still growing or empty). Once the file is fully downloaded, the next scan picks it up.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Conflicts after another machine edits the same file → the conflict gate catches it; resolve via the prefs pane's "Resolve…" buttons.</span></div>
+      <div class="ref"><b>Covers:</b> CONF.1, FM.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">5.3 · external drive</div>
+      <h3>My watch folder is on a drive I sometimes unplug</h3>
+      <p class="voice">My PDFs live on an external SSD. I plug it in when I'm at my desk, unplug it when I travel.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">The plugin to not panic when the drive is gone.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">When the drive isn't connected, the plugin notices the watch root is unreachable, flips every tracking record to "paused," and stops processing. When the drive comes back, the next scan resumes normally. No destructive operations run during the offline period.</span></div>
+      <div class="ref"><b>Covers:</b> FM.1</div>
+    </div>
+
+    <div class="story">
+      <div class="story-tag">5.4 · long absence</div>
+      <h3>I haven't used this in months. Did things drift?</h3>
+      <p class="voice">I set this up a year ago and forgot about it. I want to come back, see what happened, and clean up anything weird.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">A quick overview of the plugin's recent activity and any unresolved state.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Open prefs. Check the "Sync warnings" row count. Click View — recent warnings (capped at 100) show what was refused or skipped and why. Check the "Suppressed items" and "Trashed folders" rows — both list things you may want to act on. Resolution is per-item via the dialogs.</span></div>
+      <div class="ref"><b>Covers:</b> WARN.1, SUPP.1, FRST.1</div>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  <div class="wrap-wide">
+    <div class="row">
+      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.3.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-26</div>
+      <ul>
+        <li><a href="index.html">Back to overview</a></li>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder/tree/main/test/mcp">Technical runbooks</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

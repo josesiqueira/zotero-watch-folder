@@ -1,0 +1,1074 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zotero Watch Folder — drop a PDF, it lands in Zotero</title>
+<meta name="description" content="A Zotero 7/8/9 plugin that watches a folder, imports new PDFs into the right collection, fetches metadata, renames files, mirrors your collection tree to disk, and safely two-way-syncs deletes with a recoverable trash.">
+
+<style>
+:root {
+  --ink: #14110f;
+  --paper: #f4efe7;
+  --paper-warm: #ebe3d4;
+  --rule: #2a2521;
+  --muted: #6b625a;
+  --accent: #c44536;        /* burnt red, like a wax seal */
+  --accent-soft: #e3a59c;
+  --ok: #3b6e3a;
+  --warn: #b07c1e;
+  --code-bg: #14110f;
+  --code-ink: #f4efe7;
+  --shadow: 0 1px 0 rgba(0,0,0,.04), 0 12px 32px -16px rgba(20,17,15,.18);
+  --serif: ui-serif, "Iowan Old Style", "Source Serif Pro", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box }
+html { scroll-behavior: smooth }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px }
+a:hover { color: var(--accent) }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px }
+.wrap-narrow { max-width: 760px; margin: 0 auto; padding: 0 28px }
+
+/* ---------- top nav ---------- */
+nav.top {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(244,239,231,.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(20,17,15,.08);
+}
+nav.top .row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px; max-width: 1080px; margin: 0 auto;
+}
+nav.top .brand { font-family: var(--serif); font-weight: 600; font-size: 18px; letter-spacing: -0.01em }
+nav.top .brand .glyph { color: var(--accent); margin-right: 6px }
+nav.top ul { display: flex; gap: 22px; list-style: none; margin: 0; padding: 0; font-size: 14px }
+nav.top a { text-decoration: none; color: var(--muted) }
+nav.top a:hover { color: var(--ink) }
+@media (max-width: 720px) { nav.top ul { display: none } }
+
+/* ---------- hero ---------- */
+header.hero {
+  padding: 96px 0 64px;
+  position: relative;
+  overflow: hidden;
+}
+header.hero::before {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(196,69,54,.10), transparent 40%),
+    radial-gradient(circle at 5% 90%, rgba(176,124,30,.08), transparent 40%);
+  pointer-events: none;
+}
+.hero-grid {
+  display: grid; grid-template-columns: 1.4fr 1fr; gap: 56px; align-items: center;
+}
+@media (max-width: 880px) { .hero-grid { grid-template-columns: 1fr; gap: 32px } }
+
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 22px;
+}
+.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px rgba(59,110,58,.15) }
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(40px, 6vw, 64px);
+  line-height: 1.04;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 24px;
+}
+h1 em { font-style: italic; color: var(--accent); font-weight: 500 }
+.lede {
+  font-size: 19px; line-height: 1.55; color: #2c2520;
+  max-width: 56ch; margin: 0 0 32px;
+}
+.lede b { font-weight: 600 }
+
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 20px; border-radius: 6px;
+  font-weight: 600; font-size: 15px;
+  text-decoration: none;
+  transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.btn-primary {
+  background: var(--ink); color: var(--paper);
+  box-shadow: 0 1px 0 #000, 0 10px 24px -10px rgba(20,17,15,.4);
+}
+.btn-primary:hover { transform: translateY(-1px); color: var(--paper) }
+.btn-ghost {
+  background: transparent; color: var(--ink);
+  border: 1px solid var(--ink);
+}
+.btn-ghost:hover { background: var(--ink); color: var(--paper) }
+
+.hero-meta {
+  display: flex; flex-wrap: wrap; gap: 18px 28px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  margin-top: 8px;
+}
+.hero-meta span b { color: var(--ink); font-weight: 600 }
+
+/* hero illustration: a tiny animated "drop into folder" diagram */
+.hero-art {
+  background: var(--ink); color: var(--paper);
+  padding: 28px; border-radius: 12px;
+  font-family: var(--mono); font-size: 13px; line-height: 1.7;
+  box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+.hero-art .bar {
+  display: flex; gap: 6px; margin-bottom: 18px;
+}
+.hero-art .bar i {
+  width: 11px; height: 11px; border-radius: 50%; background: #2a2521; display: inline-block;
+}
+.hero-art .bar i:nth-child(1) { background: #c44536 }
+.hero-art .bar i:nth-child(2) { background: #b07c1e }
+.hero-art .bar i:nth-child(3) { background: #3b6e3a }
+.hero-art pre { margin: 0; white-space: pre-wrap; font-family: inherit }
+.hero-art .k { color: #e3a59c }
+.hero-art .v { color: #fff8e7 }
+.hero-art .c { color: #88837c; font-style: italic }
+.hero-art .arrow { color: #c44536 }
+
+/* ---------- sections ---------- */
+section { padding: 80px 0; border-top: 1px solid rgba(20,17,15,.08) }
+section h2 {
+  font-family: var(--serif);
+  font-size: clamp(28px, 3.4vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin: 0 0 12px;
+}
+section .section-eyebrow {
+  font-family: var(--mono); font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.16em;
+  color: var(--muted); margin-bottom: 14px;
+}
+section .section-lede {
+  font-size: 18px; max-width: 64ch; color: #2c2520; margin: 0 0 48px;
+}
+
+/* ---------- problem / solution ---------- */
+.split {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 40px;
+}
+@media (max-width: 760px) { .split { grid-template-columns: 1fr } }
+.card {
+  background: #fff; border-radius: 10px; padding: 28px;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(20,17,15,.06);
+}
+.card h3 {
+  font-family: var(--serif); font-size: 22px; margin: 0 0 12px; font-weight: 600;
+}
+.card .label {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.16em; margin-bottom: 8px;
+}
+.card.bad .label { color: var(--accent) }
+.card.good .label { color: var(--ok) }
+.card ul { margin: 12px 0 0; padding-left: 20px }
+.card li { margin: 6px 0 }
+
+/* ---------- modes table ---------- */
+.modes-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px;
+  margin-top: 8px;
+}
+@media (max-width: 880px) { .modes-grid { grid-template-columns: 1fr } }
+.mode {
+  background: #fff; padding: 28px; border-radius: 10px;
+  border: 1px solid rgba(20,17,15,.08);
+  box-shadow: var(--shadow);
+  position: relative;
+  display: flex; flex-direction: column;
+}
+.mode .tag {
+  position: absolute; top: -10px; left: 24px;
+  background: var(--ink); color: var(--paper);
+  padding: 3px 10px; border-radius: 4px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.mode.m1 .tag { background: var(--ok) }
+.mode.m2 .tag { background: var(--warn) }
+.mode.m3 .tag { background: var(--accent) }
+.mode h3 { font-family: var(--serif); font-size: 24px; margin: 0 0 6px; font-weight: 600 }
+.mode .sub { color: var(--muted); font-size: 14px; margin-bottom: 18px }
+.mode ul { list-style: none; padding: 0; margin: 0; flex-grow: 1 }
+.mode li { padding: 8px 0; border-top: 1px solid rgba(20,17,15,.06); font-size: 15px }
+.mode li:first-child { border-top: 0 }
+.mode li .check { color: var(--ok); margin-right: 6px; font-weight: 700 }
+.mode li .x     { color: #b3b0aa; margin-right: 6px; font-weight: 700 }
+.mode .footnote { font-size: 13px; color: var(--muted); margin-top: 16px; padding-top: 14px; border-top: 1px dashed rgba(20,17,15,.12) }
+
+/* ---------- scenarios ---------- */
+.scenarios { display: flex; flex-direction: column; gap: 24px }
+.scenario {
+  display: grid; grid-template-columns: 160px 1fr; gap: 24px;
+  padding: 24px; background: #fff; border-radius: 10px;
+  border: 1px solid rgba(20,17,15,.06); box-shadow: var(--shadow);
+}
+@media (max-width: 720px) { .scenario { grid-template-columns: 1fr } }
+.scenario .who {
+  font-family: var(--serif); font-style: italic; font-size: 17px;
+  color: var(--muted);
+  border-right: 1px solid rgba(20,17,15,.08); padding-right: 24px;
+}
+@media (max-width: 720px) { .scenario .who { border-right: 0; border-bottom: 1px solid rgba(20,17,15,.08); padding-right: 0; padding-bottom: 12px } }
+.scenario h4 { font-family: var(--serif); font-size: 20px; margin: 0 0 8px; font-weight: 600 }
+.scenario p { margin: 0 0 8px }
+.scenario .flow {
+  font-family: var(--mono); font-size: 13px; color: #2c2520;
+  background: var(--paper-warm); padding: 12px 14px; border-radius: 6px;
+  margin-top: 12px; line-height: 1.7;
+}
+.scenario .flow .arrow { color: var(--accent); margin: 0 6px }
+
+/* ---------- feature grid ---------- */
+.features {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px;
+}
+@media (max-width: 880px) { .features { grid-template-columns: repeat(2, 1fr) } }
+@media (max-width: 560px) { .features { grid-template-columns: 1fr } }
+.feat {
+  padding: 22px; background: #fff; border-radius: 10px;
+  border: 1px solid rgba(20,17,15,.06); box-shadow: var(--shadow);
+}
+.feat .icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  background: var(--paper-warm); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--serif); font-weight: 700; font-size: 18px;
+  margin-bottom: 14px;
+}
+.feat h4 { font-family: var(--serif); font-size: 18px; margin: 0 0 8px; font-weight: 600 }
+.feat p { margin: 0; font-size: 15px; color: #2c2520 }
+
+/* ---------- safety section ---------- */
+.safety-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 22px;
+}
+@media (max-width: 760px) { .safety-grid { grid-template-columns: 1fr } }
+.safety-card {
+  background: #fff; padding: 24px; border-radius: 10px;
+  border-left: 4px solid var(--accent);
+  box-shadow: var(--shadow);
+}
+.safety-card h4 { font-family: var(--serif); font-size: 19px; margin: 0 0 8px; font-weight: 600 }
+.safety-card p { margin: 0; font-size: 15px; color: #2c2520 }
+.safety-card.ok { border-left-color: var(--ok) }
+.safety-card.warn { border-left-color: var(--warn) }
+
+/* ---------- install ---------- */
+.install-steps { counter-reset: step; margin: 0; padding: 0; list-style: none }
+.install-steps li {
+  counter-increment: step;
+  padding: 20px 0 20px 64px;
+  position: relative;
+  border-top: 1px solid rgba(20,17,15,.08);
+}
+.install-steps li:first-child { border-top: 0 }
+.install-steps li::before {
+  content: counter(step);
+  position: absolute; left: 0; top: 18px;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--ink); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--serif); font-weight: 600; font-size: 18px;
+}
+.install-steps h4 { font-family: var(--serif); font-size: 19px; margin: 0 0 6px; font-weight: 600 }
+.install-steps p { margin: 0; color: #2c2520 }
+.install-steps code { font-family: var(--mono); background: var(--paper-warm); padding: 2px 6px; border-radius: 3px; font-size: 14px }
+
+pre.code {
+  background: var(--code-bg); color: var(--code-ink);
+  padding: 20px 22px; border-radius: 8px;
+  font-family: var(--mono); font-size: 14px; line-height: 1.6;
+  overflow-x: auto;
+  margin: 0;
+}
+pre.code .c { color: #88837c; font-style: italic }
+pre.code .k { color: #e3a59c }
+pre.code .s { color: #b6d99a }
+
+/* ---------- config table ---------- */
+.config-table {
+  width: 100%; border-collapse: collapse;
+  background: #fff; border-radius: 10px; overflow: hidden;
+  box-shadow: var(--shadow);
+  font-size: 14.5px;
+}
+.config-table th, .config-table td {
+  text-align: left; padding: 14px 18px;
+  border-bottom: 1px solid rgba(20,17,15,.06);
+  vertical-align: top;
+}
+.config-table th {
+  background: var(--paper-warm);
+  font-family: var(--mono); font-size: 12px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted); font-weight: 600;
+}
+.config-table tr:last-child td { border-bottom: 0 }
+.config-table code { font-family: var(--mono); background: var(--paper); padding: 2px 6px; border-radius: 3px; font-size: 13px }
+.config-table .key { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--accent) }
+
+/* ---------- faq ---------- */
+.faq details {
+  background: #fff; padding: 18px 22px; border-radius: 8px;
+  margin-bottom: 12px; box-shadow: var(--shadow);
+  border: 1px solid rgba(20,17,15,.06);
+  cursor: pointer;
+}
+.faq summary {
+  font-family: var(--serif); font-size: 17px; font-weight: 600;
+  list-style: none; outline: none;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.faq summary::-webkit-details-marker { display: none }
+.faq summary::after { content: "+"; color: var(--accent); font-size: 22px; font-weight: 400 }
+.faq details[open] summary::after { content: "−" }
+.faq details[open] summary { margin-bottom: 12px }
+.faq p { margin: 0; color: #2c2520 }
+.faq code { font-family: var(--mono); background: var(--paper-warm); padding: 2px 6px; border-radius: 3px; font-size: 14px }
+
+/* ---------- roadmap ---------- */
+.roadmap-list { list-style: none; padding: 0; margin: 0 }
+.roadmap-list li {
+  display: grid; grid-template-columns: 90px 1fr; gap: 18px;
+  padding: 14px 0; border-top: 1px solid rgba(20,17,15,.08);
+}
+.roadmap-list li:first-child { border-top: 0 }
+.status {
+  display: inline-block; padding: 3px 8px;
+  font-family: var(--mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  border-radius: 3px; text-align: center;
+  height: 22px; line-height: 16px;
+}
+.status.done { background: rgba(59,110,58,.15); color: var(--ok) }
+.status.todo { background: rgba(176,124,30,.18); color: var(--warn) }
+.status.future { background: rgba(20,17,15,.08); color: var(--muted) }
+.roadmap-list b { font-weight: 600 }
+.roadmap-list span.meta { color: var(--muted); font-size: 14px; display: block; margin-top: 2px }
+
+/* ---------- footer ---------- */
+footer {
+  padding: 56px 0 40px;
+  border-top: 1px solid rgba(20,17,15,.12);
+  background: var(--paper-warm);
+  font-size: 14px;
+}
+footer .row {
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 24px;
+}
+footer .brand { font-family: var(--serif); font-weight: 600; font-size: 18px }
+footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 24px }
+footer a { color: var(--muted); text-decoration: none }
+footer a:hover { color: var(--ink) }
+footer .fine {
+  margin-top: 32px; color: var(--muted); font-size: 12.5px;
+  font-family: var(--mono); letter-spacing: 0.04em;
+}
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="row">
+    <div class="brand"><span class="glyph">✦</span>Zotero Watch Folder</div>
+    <ul>
+      <li><a href="#why">Why</a></li>
+      <li><a href="#modes">Modes</a></li>
+      <li><a href="#scenarios">Scenarios</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#configure">Configure</a></li>
+      <li><a href="#faq">FAQ</a></li>
+      <li><a href="test-plan.html">What to try</a></li>
+      <li><a href="test-cases.html"><b>Inclusion / Exclusion</b></a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ========== HERO ========== -->
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">
+        <span class="dot"></span>
+        v2.3.0 · Zotero 7 / 8 / 9 · GPL-3.0
+      </div>
+      <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
+      <p class="lede">
+        A Zotero plugin that <b>watches a folder</b>, imports new files into the
+        right collection, <b>fetches metadata</b>, <b>renames</b> them from a
+        template, and keeps your collection tree <b>mirrored to disk</b> —
+        both ways, with a recoverable trash and conflict gate so nothing
+        gets shredded by accident.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/josesiqueira/zotero-watch-folder/releases">Download .xpi</a>
+        <a class="btn btn-ghost" href="#install">Install guide →</a>
+        <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
+      </div>
+      <div class="hero-meta">
+        <span><b>532</b> unit tests passing</span>
+        <span><b>3</b> sync modes</span>
+        <span><b>29</b> tunable preferences</span>
+        <span><b>0</b> release-blocking issues</span>
+      </div>
+    </div>
+
+    <div class="hero-art" aria-hidden="true">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c">## ~/Inbox/   (watched)</span>
+  <span class="v">drop:</span> <span class="k">smith-2024-attention.pdf</span>
+      <span class="arrow">│</span>
+      <span class="arrow">▼  scan (5s)</span>
+      <span class="arrow">▼  hash + dedup</span>
+      <span class="arrow">▼  fetch metadata</span>
+      <span class="arrow">▼  rename via template</span>
+<span class="c">## Zotero: Library › Research › ML</span>
+  <span class="v">item:</span> <span class="k">Smith, J. (2024). Attention…</span>
+  <span class="v">file:</span> <span class="k">Smith - 2024 - Attention.pdf</span>
+<span class="c">## ~/Inbox/Research/ML/</span>
+  <span class="v">mirrored:</span> <span class="k">Smith - 2024 - Attention.pdf</span></pre>
+    </div>
+  </div>
+</header>
+
+<!-- ========== WHY ========== -->
+<section id="why">
+  <div class="wrap">
+    <div class="section-eyebrow">The problem</div>
+    <h2>Your downloads folder is where citations go to die.</h2>
+    <p class="section-lede">
+      You download a paper. You mean to add it to Zotero. You don't. Six months later
+      it's <code>1706.03762.pdf</code> next to <code>1706.03762 (3).pdf</code>, and
+      you've already forgotten what either one was.
+    </p>
+
+    <div class="split">
+      <div class="card bad">
+        <div class="label">Without it</div>
+        <h3>Manual, lossy, error-prone</h3>
+        <ul>
+          <li>Drag-and-drop into Zotero, one paper at a time.</li>
+          <li>Click <em>Retrieve metadata</em>. Hope it works.</li>
+          <li>Rename the file by hand. Or don't.</li>
+          <li>Duplicates pile up because nothing catches them.</li>
+          <li>Disk and library drift apart silently.</li>
+        </ul>
+      </div>
+      <div class="card good">
+        <div class="label">With it</div>
+        <h3>Drop. Done.</h3>
+        <ul>
+          <li>Drop a PDF in your watched folder — it imports within 5s.</li>
+          <li>Metadata is fetched automatically (<code>_needs-review</code> tag on failure).</li>
+          <li>File is renamed via your template, sanitized, length-capped.</li>
+          <li>Hash + DOI + ISBN + fuzzy-title dedup, before and after metadata.</li>
+          <li>Optional: your folder tree <em>is</em> your collection tree.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== MODES ========== -->
+<section id="modes">
+  <div class="wrap">
+    <div class="section-eyebrow">Three modes — pick your level of sync</div>
+    <h2>From "just import" to "two-way mirror with safe delete."</h2>
+    <p class="section-lede">
+      Modes are a single preference. Switch any time — the plugin starts and
+      stops the relevant pipeline in-process, no Zotero restart required.
+    </p>
+
+    <div class="modes-grid">
+      <div class="mode m1">
+        <div class="tag">Mode 1</div>
+        <h3>Import only</h3>
+        <div class="sub">The safe, classic mode. Disk → Zotero, never the other way.</div>
+        <ul>
+          <li><span class="check">✓</span> New files imported into matching collections</li>
+          <li><span class="check">✓</span> Metadata, rename, dedup, smart rules</li>
+          <li><span class="check">✓</span> Recursive subfolder → collection path</li>
+          <li><span class="x">·</span> No mirroring of changes back to disk</li>
+          <li><span class="x">·</span> Trashing in Zotero never touches the disk</li>
+        </ul>
+        <div class="footnote">Best for: anyone trying the plugin for the first time.</div>
+      </div>
+
+      <div class="mode m2">
+        <div class="tag">Mode 2</div>
+        <h3>Mirror — no delete</h3>
+        <div class="sub">Zotero ↔ disk in lockstep, but destructive ops only warn.</div>
+        <ul>
+          <li><span class="check">✓</span> Everything in Mode 1</li>
+          <li><span class="check">✓</span> Rename a collection → folder renames on disk</li>
+          <li><span class="check">✓</span> Move an item between collections → file moves on disk</li>
+          <li><span class="check">✓</span> New collection in Zotero → new folder on disk</li>
+          <li><span class="x">·</span> Deletes are <em>warn-only</em> — nothing is removed</li>
+        </ul>
+        <div class="footnote">Best for: writing-up phase — you want the structure, not the risk.</div>
+      </div>
+
+      <div class="mode m3">
+        <div class="tag">Mode 3</div>
+        <h3>Mirror + safe delete</h3>
+        <div class="sub">Full two-way sync, with a recoverable plugin trash and bulk-delete guard.</div>
+        <ul>
+          <li><span class="check">✓</span> Everything in Mode 2</li>
+          <li><span class="check">✓</span> Trash in Zotero → file → <code>.zotero-watch-trash/</code></li>
+          <li><span class="check">✓</span> Delete folder on disk → collection removed</li>
+          <li><span class="check">✓</span> Restore from Zotero bin → file restored from trash</li>
+          <li><span class="check">✓</span> Bulk-delete confirm at &gt;10 files or &gt;20% of tree</li>
+        </ul>
+        <div class="footnote">Best for: settled workflows where you trust the mirror to be authoritative.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== SCENARIOS ========== -->
+<section id="scenarios">
+  <div class="wrap">
+    <div class="section-eyebrow">Real use</div>
+    <h2>Three people, three workflows.</h2>
+    <p class="section-lede">
+      The plugin is intentionally boring: the interesting part is what it
+      enables. Here's how three different setups use it.
+    </p>
+
+    <div class="scenarios">
+      <div class="scenario">
+        <div class="who">The PhD student doing a literature review</div>
+        <div>
+          <h4>"I download from Google Scholar all day."</h4>
+          <p>
+            Configures the watch folder to <code>~/Downloads/papers</code>, sync root
+            <code>Research/Thesis</code>, Mode 2. Every PDF saved from a browser
+            lands in Zotero within seconds, properly named, in the right sub-collection.
+            Smart rule auto-tags anything with <em>"transformer"</em> in the title.
+          </p>
+          <div class="flow">
+            <span>Save PDF</span><span class="arrow">→</span>
+            <span>Hash dedup</span><span class="arrow">→</span>
+            <span>Fetch metadata</span><span class="arrow">→</span>
+            <span>Rename</span><span class="arrow">→</span>
+            <span>Tag via smart rule</span><span class="arrow">→</span>
+            <span>Filed in Zotero collection</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="scenario">
+        <div class="who">The researcher with a curated tree</div>
+        <div>
+          <h4>"My folder structure on disk <em>is</em> my mental model."</h4>
+          <p>
+            Already has a deep folder tree under <code>~/Library/PDFs</code> from years
+            of manual organization. Runs first-run baseline in Mode 3 — the plugin
+            adopts every existing PDF into matching collections, mkdirs empty
+            collections, and from then on keeps them in lockstep.
+            Renaming a collection in Zotero renames the folder on disk; deleting
+            a folder on disk trashes the matching collection (with a confirm
+            dialog for anything &gt; 10 files).
+          </p>
+          <div class="flow">
+            <span>Existing tree</span><span class="arrow">→</span>
+            <span>Baseline reconcile</span><span class="arrow">→</span>
+            <span>Adopt-into-scope</span><span class="arrow">→</span>
+            <span>Two-way ops</span><span class="arrow">→</span>
+            <span>Recoverable trash</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="scenario">
+        <div class="who">The collaborator on a synced folder</div>
+        <div>
+          <h4>"My advisor drops PDFs in our shared Dropbox."</h4>
+          <p>
+            Points the watch folder at the shared Dropbox/OneDrive/Syncthing
+            directory in Mode 1 (import-only — collaborators editing the folder
+            shouldn't affect their Zotero library). New files her advisor drops
+            appear in her library overnight, dedup'd against what she already has,
+            tagged for review if metadata couldn't be retrieved.
+          </p>
+          <div class="flow">
+            <span>Advisor drops PDF</span><span class="arrow">→</span>
+            <span>Cloud syncs locally</span><span class="arrow">→</span>
+            <span>Watcher polls</span><span class="arrow">→</span>
+            <span>Imports if new</span><span class="arrow">→</span>
+            <span>Skips if duplicate</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== FEATURES ========== -->
+<section id="features">
+  <div class="wrap">
+    <div class="section-eyebrow">What's inside</div>
+    <h2>Every feature that ships in v2.2.</h2>
+    <p class="section-lede">
+      Reality, not roadmap. If it's on this list, it works end-to-end against
+      a live Zotero and is covered by the unit suite.
+    </p>
+
+    <div class="features">
+      <div class="feat">
+        <div class="icon">⎙</div>
+        <h4>Folder watcher</h4>
+        <p>Polling-based with adaptive backoff. Recursive subfolder scan; subfolders become collection paths.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">∑</div>
+        <h4>Full-file SHA-256 dedup</h4>
+        <p>Hash-first dedup catches re-imports even when the local tracking store is wiped. Falls back to DOI / ISBN / fuzzy title after metadata.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">ℹ</div>
+        <h4>Metadata retrieval</h4>
+        <p>Queued, throttled, polite. Failed lookups get a <code>_needs-review</code> tag so nothing slips through silently.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">✎</div>
+        <h4>Template-based rename</h4>
+        <p><code>{firstCreator} - {year} - {title}</code> and friends. Sanitized, length-capped, optional.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⌘</div>
+        <h4>Smart rules</h4>
+        <p>Match on title / author / DOI / tags / filename. Apply add-to-collection, add-tag, set-field, or skip-import. JSON editor in prefs.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⇄</div>
+        <h4>Two-way mirror</h4>
+        <p>Collection ↔ folder lockstep in Mode 2/3. Renames, moves, and new folders propagate both ways.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⌫</div>
+        <h4>Safe-delete + restore</h4>
+        <p>Mode 3 moves to <code>.zotero-watch-trash/</code> (recoverable). Six-case restore matrix: file or folder, by hash or by attachment.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⚠</div>
+        <h4>Bulk-delete guard</h4>
+        <p>Any single op affecting &gt;10 files <em>or</em> &gt;20% of tracked items prompts confirmation. Refuses if the prompt can't render.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">🔒</div>
+        <h4>Conflict gate</h4>
+        <p>If a file's content has drifted, no move happens. The record flips to <em>conflict-blocked</em> and surfaces in the prefs pane.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⟲</div>
+        <h4>First-run baseline</h4>
+        <p>Adopts an existing tree without re-importing: hash-based cross-path reconcile, mkdir for empty collections, idempotent per sync-root.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⊕</div>
+        <h4>Warning ring buffer</h4>
+        <p>Last 100 warnings categorized (conflict, missing file, I/O, suppressed, unknown). Visible from the prefs pane.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">⚙</div>
+        <h4>Runtime mode switch</h4>
+        <p>Flip <code>mode1</code> ↔ <code>mode2</code> ↔ <code>mode3</code> live. Coordinators start/stop in-process — no restart.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== SAFETY ========== -->
+<section id="safety">
+  <div class="wrap">
+    <div class="section-eyebrow">Why you can trust it with your library</div>
+    <h2>The deletes don't surprise you.</h2>
+    <p class="section-lede">
+      Most of the v2.2 work went into the destructive-path safety net.
+      Here's what stands between a misclick and a lost paper.
+    </p>
+
+    <div class="safety-grid">
+      <div class="safety-card">
+        <h4>Recoverable trash by default</h4>
+        <p>Mode 3 trashes go to <code>.zotero-watch-trash/&lt;rel&gt;</code> under your watch root. Collision-suffixed (<code>name.&lt;ms&gt;.ext</code>) so nothing is overwritten. Skipped by the scanner so it isn't re-imported.</p>
+      </div>
+      <div class="safety-card warn">
+        <h4>Bulk-delete refuses without confirmation</h4>
+        <p>If a single operation would affect more than 10 files or 20% of your tracked items, the plugin shows a <code>Services.prompt</code> confirm. If the prompt can't render (no UI thread), it refuses rather than silently executing.</p>
+      </div>
+      <div class="safety-card">
+        <h4>Conflict gate before any move</h4>
+        <p><code>canSafelyMove</code> hashes the live file against the last known stamp. Drift = no move; record flips to <em>conflict-blocked</em>; you resolve via the prefs UX (re-stamp / discard / pause sync).</p>
+      </div>
+      <div class="safety-card ok">
+        <h4>Shadow guard against cascading trash</h4>
+        <p>If you keep two copies of the same file under the watch root, only the canonical copy is ever disk-deleted. Shadow records are dropped from tracking without any FS action — the Zotero attachment is never trashed by accident.</p>
+      </div>
+      <div class="safety-card">
+        <h4>Per-key serialization</h4>
+        <p>Every mutation goes through a single executor with promise-chain locks per <code>attachment:&lt;key&gt;</code> / <code>collection:&lt;key&gt;</code>. Concurrent notifier batches can't interleave through stale state.</p>
+      </div>
+      <div class="safety-card ok">
+        <h4>Restore matrix RST.1–RST.6</h4>
+        <p>Files can be restored four different ways: un-trash in Zotero, restore the local file by hash, re-attach to a parent whose attachment was purged, or restore an entire folder. All collision-handled.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== INSTALL ========== -->
+<section id="install">
+  <div class="wrap-narrow">
+    <div class="section-eyebrow">Getting started</div>
+    <h2>Install in four minutes.</h2>
+    <p class="section-lede">
+      No CLI required for end users. The <code>.xpi</code> install is a single click;
+      the rest is a guided preference pane.
+    </p>
+
+    <ol class="install-steps">
+      <li>
+        <h4>Download the <code>.xpi</code></h4>
+        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.2.0-alpha.1</code>.</p>
+      </li>
+      <li>
+        <h4>Install in Zotero</h4>
+        <p>Open <code>Tools → Add-ons</code> (Zotero 7) or <code>Tools → Plugins</code> (Zotero 8/9). Click the gear, choose <em>Install Add-on From File…</em>, pick the <code>.xpi</code>. Restart Zotero when prompted.</p>
+      </li>
+      <li>
+        <h4>Pick your watch folder</h4>
+        <p>Open <code>Edit → Settings → Watch Folder</code>. Set <em>Source Folder</em> to where your PDFs land — <code>~/Downloads</code>, a Dropbox folder, anything writable.</p>
+      </li>
+      <li>
+        <h4>Pick your sync root + mode</h4>
+        <p>Choose the Zotero collection that anchors your sync. Pick <code>mode1</code> for import-only, or step up to <code>mode2</code> / <code>mode3</code> once you trust the mirror. Toggle <em>Enable Watch Folder</em>. You're done.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ========== CONFIGURE ========== -->
+<section id="configure">
+  <div class="wrap">
+    <div class="section-eyebrow">All 29 preferences, in plain language</div>
+    <h2>Configurable, but you don't have to.</h2>
+    <p class="section-lede">
+      Defaults are sane. These are the knobs you'd reach for first. Everything
+      lives under <code>extensions.zotero.watchFolder.*</code> and is accessible
+      from <code>about:config</code> if you need to script it.
+    </p>
+
+    <table class="config-table">
+      <thead>
+        <tr><th>Preference</th><th>Default</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="key">enabled</span></td>
+          <td><code>false</code></td>
+          <td>Master on/off switch. Toggles the scanner and sync coordinator in-process.</td>
+        </tr>
+        <tr>
+          <td><span class="key">sourcePath</span></td>
+          <td><code>""</code></td>
+          <td>The folder being watched on disk.</td>
+        </tr>
+        <tr>
+          <td><span class="key">mode</span></td>
+          <td><code>mode1</code></td>
+          <td>Sync mode: <code>mode1</code> (import only), <code>mode2</code> (mirror no delete), <code>mode3</code> (mirror with safe delete).</td>
+        </tr>
+        <tr>
+          <td><span class="key">syncRootCollectionKey</span></td>
+          <td><code>""</code></td>
+          <td>The 8-char Zotero collection key that anchors the sync.</td>
+        </tr>
+        <tr>
+          <td><span class="key">pollInterval</span></td>
+          <td><code>5</code> sec</td>
+          <td>Seconds between scans. Adaptive backoff doubles this on idle scans (caps at 2× base).</td>
+        </tr>
+        <tr>
+          <td><span class="key">fileTypes</span></td>
+          <td><code>pdf</code></td>
+          <td>Comma-separated extensions. <code>pdf,epub,djvu</code> all work.</td>
+        </tr>
+        <tr>
+          <td><span class="key">importMode</span></td>
+          <td><code>stored</code></td>
+          <td><code>stored</code> copies the file into Zotero's storage; <code>linked</code> links to the original.</td>
+        </tr>
+        <tr>
+          <td><span class="key">postImportAction</span></td>
+          <td><code>leave</code></td>
+          <td>After import: <code>leave</code> the source file, <code>delete</code> it, or <code>move</code> it to a sibling folder.</td>
+        </tr>
+        <tr>
+          <td><span class="key">autoRetrieveMetadata</span></td>
+          <td><code>true</code></td>
+          <td>Run Zotero's PDF metadata recognizer after import. Failures tagged <code>_needs-review</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="key">autoRename</span> + <span class="key">renamePattern</span></td>
+          <td><code>true</code> · <code>{firstCreator} - {year} - {title}</code></td>
+          <td>Template-based file rename. Available vars: <code>{firstCreator}</code>, <code>{creators}</code>, <code>{year}</code>, <code>{title}</code>, <code>{shortTitle}</code>, <code>{DOI}</code>, <code>{itemType}</code>, <code>{publicationTitle}</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="key">diskDeleteOnTrash</span></td>
+          <td><code>ask</code></td>
+          <td>When you trash in Zotero: <code>ask</code>, <code>plugin_trash</code> (recoverable, default in dialog), <code>os_trash</code>, <code>permanent</code>, <code>never</code>. Only effective in Mode 3.</td>
+        </tr>
+        <tr>
+          <td><span class="key">diskDeleteSync</span></td>
+          <td><code>auto</code></td>
+          <td>When you delete a tracked file on disk: <code>auto</code> trashes the Zotero item (with bulk guard), <code>never</code> does nothing.</td>
+        </tr>
+        <tr>
+          <td><span class="key">duplicateCheck</span></td>
+          <td><code>true</code></td>
+          <td>Skip imports that match an existing item by hash → DOI → ISBN → fuzzy title (threshold <code>85</code>).</td>
+        </tr>
+        <tr>
+          <td><span class="key">smartRulesEnabled</span> + <span class="key">smartRules</span></td>
+          <td><code>false</code> · <code>[]</code></td>
+          <td>Toggle the rules engine and provide a JSON array of rules. Editor in prefs pane.</td>
+        </tr>
+        <tr>
+          <td><span class="key">adaptivePolling</span></td>
+          <td><code>true</code></td>
+          <td>Back off poll interval on quiet scans; reset on any non-empty scan.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ========== FAQ ========== -->
+<section id="faq">
+  <div class="wrap-narrow">
+    <div class="section-eyebrow">Questions you'll have</div>
+    <h2>FAQ.</h2>
+
+    <div class="faq">
+      <details>
+        <summary>Will this re-import everything if I move my Zotero data?</summary>
+        <p>No. The plugin stamps a hash into each item's <code>Extra</code> field (<code>watchfolder-hash:&lt;sha256&gt;</code>). Even if the local tracking store is wiped, the library-side hash catches re-imports during the dedup pass.</p>
+      </details>
+      <details>
+        <summary>Is it safe to start in Mode 3 on an existing collection?</summary>
+        <p>Yes. The first-run baseline (B.1–B.7) reconciles your existing collection tree against the disk tree before any destructive op is allowed. It mkdirs empty collections, adopts files that already match by hash, and only then does any normal mode-3 propagation begin.</p>
+      </details>
+      <details>
+        <summary>What happens if I have two copies of the same PDF in different folders?</summary>
+        <p>The first becomes the canonical record; the second becomes a "shadow" record with the same Zotero attachment key. The cascading-trash guard ensures only the canonical path is ever disk-deleted — Zotero will not trash the attachment because of a shadow's deletion.</p>
+      </details>
+      <details>
+        <summary>What if metadata retrieval fails for a paper?</summary>
+        <p>The item still imports. It gets a <code>_needs-review</code> tag and stays in your inbox / target collection until you fix it manually. Rename templates with missing fields fall back gracefully.</p>
+      </details>
+      <details>
+        <summary>How is "bulk delete" defined?</summary>
+        <p>More than 10 files <em>or</em> more than 20% of your tracked items in a single operation. Both <code>_handleZoteroTrash</code> (Zotero-side bulk trash) and <code>_handleExternalDeletions</code> (disk-side bulk rm) go through the same guard. Decline at the prompt and propagation is demoted to "mark missing".</p>
+      </details>
+      <details>
+        <summary>Can I run it on Zotero 7? Zotero 9?</summary>
+        <p>Yes to both. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 9.*</code>. Primary development target is Zotero 8.</p>
+      </details>
+      <details>
+        <summary>Does it work with linked attachments or only stored?</summary>
+        <p>Both. <code>importMode</code> is a preference. Linked mode is friendlier to large libraries or cloud-synced folders; stored mode keeps everything inside Zotero's storage tree.</p>
+      </details>
+      <details>
+        <summary>What's not done yet?</summary>
+        <p>A multi-step setup wizard (the current setup is a single picker + first-run nudge) and broader live-Zotero MCP coverage of less-common Mode 3 scenarios. None of these are release-blocking — see <code>TODO.md</code>.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ========== ROADMAP ========== -->
+<section id="roadmap">
+  <div class="wrap-narrow">
+    <div class="section-eyebrow">Where we are, where we're going</div>
+    <h2>Roadmap.</h2>
+    <p class="section-lede">
+      v2.2 is the first end-to-end release across all three modes. The bar
+      to ship was: 523 unit tests passing, live-Zotero MCP validation,
+      and no known data-loss path.
+    </p>
+
+    <ul class="roadmap-list">
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.0 — Mode 1 (import only)</b>
+          <span class="meta">Sync-root scoping, identity by attachment key, full-file SHA-256, prefs picker.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.1 — Mode 2 (mirror without delete)</b>
+          <span class="meta">Event pipeline (collection / item / disk), per-key locks, conflict gate, first-run baseline, warning sink, suppression resolver.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.2 — Mode 3 (mirror with safe delete)</b>
+          <span class="meta">Cascading-trash guard, plugin trash dir, restore matrix RST.1–RST.6, bulk-delete confirm, runtime <code>enabled</code> observer, smart-rules JSON editor.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status todo">Next</span>
+        <div>
+          <b>MODE2.md live runbook pass</b>
+          <span class="meta">BASE/ADOPT/LATE/REN/MEM/SUPP/CONF scenarios on a live Zotero against the post-v2.2 bundle. Lower priority than MODE3.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status todo">Next</span>
+        <div>
+          <b>C1 full setup wizard</b>
+          <span class="meta">Multi-step pane: pick watch folder → pick sync root → pick mode → confirm. Quality-of-life; current single-picker setup works.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>RecognizePDF reparenting fix (2026-05-25)</b>
+          <span class="meta">The "DEL.2 shadow lifecycle quirk" turned out to be a wider bug: every freshly-imported file ended up suppressed after metadata recognition. Reparenting guard in <code>itemMembershipHandler._handleRemove</code> + auto-clear in <code>mirrorExecutor._addItemMembership</code>. 7 new unit tests.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>Parent-trash propagation fix (2026-05-25)</b>
+          <span class="meta">Trashing a parent item in Zotero fires only one notifier event (for the parent); child attachments inherit the deleted state but never get their own event. <code>_handleZoteroTrash</code> now expands non-attachment items to their child attachments via <code>getAttachments(true)</code>, so parent-level trashes correctly propagate to disk in Mode 3. UT-090 extended.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>Setup wizard covers all 3 modes (2026-05-25)</b>
+          <span class="meta">The pre-shipped setup wizard only offered Mode 1 / Mode 2 (Mode 3 was added later). Mode 3 now appears in the picker; each mode shows a tailored safety description and the confirm step surfaces a mode-specific safety note (recoverable trash path, bulk-confirm threshold for Mode 3).</span>
+        </div>
+      </li>
+      <li>
+        <span class="status todo">Next</span>
+        <div>
+          <b>Broader live-MCP Mode 3 coverage</b>
+          <span class="meta">DEL.3 / RST.2 / RST.4 / RST.5 / FDEL.2 (10+ PDFs, multi-attachment parents). Unit-tested today, not yet live-pass'd.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status future">Future</span>
+        <div>
+          <b>v2.3 polish tag</b>
+          <span class="meta">Cut once the items above land in a meaningful batch.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status future">Future</span>
+        <div>
+          <b>Cross-library / group library sync</b>
+          <span class="meta">Forward-compat: <code>syncRootLibraryID</code> pref is already in place.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status future">Future</span>
+        <div>
+          <b>Smart rules — form editor</b>
+          <span class="meta">Replace the JSON textarea with a guided form. Engine is already there.</span>
+        </div>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ========== DEV ========== -->
+<section id="dev">
+  <div class="wrap-narrow">
+    <div class="section-eyebrow">For developers</div>
+    <h2>Hack on it locally.</h2>
+    <p class="section-lede">
+      Plain ES modules under <code>content/</code>, bundled to an IIFE by esbuild,
+      loaded by the bootstrap. No frameworks. No build step heavier than esbuild.
+    </p>
+
+<pre class="code"><span class="c"># clone</span>
+git clone https://github.com/josesiqueira/zotero-watch-folder
+cd zotero-watch-folder
+npm install
+
+<span class="c"># unit tests (532 passing, 20 files)</span>
+npm test
+
+<span class="c"># build the bundle Zotero actually runs</span>
+npm run bundle    <span class="c"># content/index.mjs → dist/content/scripts/watchFolder.js</span>
+npm run build     <span class="c"># copies the rest of dist/</span>
+npm run package   <span class="c"># produces the .xpi + sha256 + update.json</span>
+
+<span class="c"># reload in a running Zotero (via MCP bridge)</span>
+<span class="k">zotero_plugin_reload</span> { pluginId: <span class="s">"watch-folder@zotero-plugin.org"</span> }</pre>
+
+    <p style="margin-top: 24px; font-size: 15px; color: var(--muted)">
+      Architecture notes live in <code>docs/CODEBASE_OVERVIEW.md</code>. The v2 sync-model spec
+      is <code>updates_22_05_26.md</code>. The MCP runbooks for live-Zotero validation start at
+      <code>test/mcp/INDEX.md</code>.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <div class="brand">✦ Zotero Watch Folder</div>
+      <ul>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder/releases">Releases</a></li>
+        <li><a href="https://github.com/josesiqueira/zotero-watch-folder/issues">Issues</a></li>
+        <li><a href="https://www.zotero.org/">Zotero</a></li>
+      </ul>
+    </div>
+    <div class="fine">
+      GPL-3.0 · v2.3.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-26
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

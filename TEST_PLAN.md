@@ -1,10 +1,17 @@
 # Zotero Watch Folder - Test Plan
 
-Two layers of manual verification:
-1. **Smoke Test** (below) — 10-minute pass covering the dangerous failure paths. Run before every release.
-2. **Exhaustive Verification** (Phase 1, 2, 3, Edge Cases) — the full 30+ case sweep. Run on a rainy day, when a feature changes substantially, or when something specific breaks.
+> **Runbooks have moved to [`test/mcp/`](./test/mcp/INDEX.md).** The MCP-driven runbooks are the canonical, executable version of every case below — designed to be run by a Claude Code session via the `@introfini/mcp-server-zotero-dev` bridge. Use this file as background reading and historical reference.
+>
+> Mapping: smoke `S.x` → [`test/mcp/SMOKE.md`](./test/mcp/SMOKE.md) · Phase 1 → [`P1.md`](./test/mcp/P1.md) · Phase 2 → [`P2.md`](./test/mcp/P2.md) · Phase 3 → [`P3.md`](./test/mcp/P3.md) · Edge → [`EDGE.md`](./test/mcp/EDGE.md). Status table lives in [`test/mcp/INDEX.md`](./test/mcp/INDEX.md).
 
-The automated `vitest` suite (`npm test`, 259 tests) runs the pure logic. Everything below targets in-Zotero behavior that cannot be unit-tested.
+Three layers of testing:
+1. **Vitest unit suite** (`npm test`, ~375 tests) — pure logic, isolated, fast. See [`test/README.md`](./test/README.md).
+2. **MCP runbooks** ([`test/mcp/`](./test/mcp/INDEX.md)) — Claude executes against a real Zotero instance. Replaces the manual checklist below for day-to-day work.
+3. **Smoke + Exhaustive (this file, historical)** — original hand-written case descriptions. Kept for context and rationale; not the active source of truth.
+
+---
+
+## Original manual plan (background reading)
 
 ## Setup
 

@@ -118,6 +118,28 @@ async function _handleAdd({ record, attachmentKey, collection, item, syncRoot })
 async function _handleRemove({ record, attachmentKey, collection, item, syncRoot, store }) {
   if (!record) return;
   if (!(record.collectionMembershipKeys || []).includes(collection.key)) return;
+
+  // Zotero reparenting guard. In Zotero's data model only PARENT items
+  // live in collections; attachments don't have direct collection
+  // membership. When RecognizePDF (or any reparenting flow) moves a
+  // standalone attachment under a new parent, Zotero fires a `remove`
+  // collection-item event for the attachment leaving the collection,
+  // even though the parent stays there. From the FileRecord's POV the
+  // file is still "in" that collection via its parent — don't
+  // propagate as a user-initiated removal (which would otherwise flip
+  // state to OUT_OF_SCOPE_SUPPRESSED and strip canonicalCollectionKey).
+  try {
+    const isAttachmentEvent = (typeof item?.isAttachment === 'function') && item.isAttachment();
+    const parent = isAttachmentEvent ? (item.parentItem ?? null) : null;
+    if (parent && typeof parent.getCollections === 'function') {
+      const parentCollIDs = parent.getCollections() || [];
+      if (parentCollIDs.includes(collection.id)) {
+        Zotero.debug(`[WatchFolder] itemMembershipHandler: remove of attachment ${attachmentKey} from ${collection.key} is a Zotero reparent (parent ${parent.key} still in collection) — skipping suppression`);
+        return;
+      }
+    }
+  } catch (_e) { /* fall through to normal handling */ }
+
   const wasCanonical = record.canonicalCollectionKey === collection.key;
 
   await mirrorExecutor.execute({

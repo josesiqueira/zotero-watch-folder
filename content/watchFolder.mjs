@@ -1402,17 +1402,32 @@ export class WatchFolderService {
     const watchPath = getPref('sourcePath') || '';
 
     // 1. Translate numeric Zotero item IDs → attachment keys (the v2
-    //    identity). Skip non-attachment items and dedupe keys.
+    //    identity). For attachment items, include directly. For PARENT
+    //    items, walk their child attachments and include each — Zotero's
+    //    trash notifier fires once for the parent and silently inherits
+    //    the deleted state to children, so we have to expand here or
+    //    every parent-level trash slips through (RST.2 / RST.4 bug
+    //    discovered on the 2026-05-25 Mode 3 live pass).
     const attachmentKeys = new Set();
     for (const id of ids) {
-      let key = null;
       try {
         const item = Zotero.Items.get(id);
-        if (item && item.key && (!item.isAttachment || item.isAttachment())) {
-          key = item.key;
+        if (!item || !item.key) continue;
+        if (item.isAttachment && item.isAttachment()) {
+          attachmentKeys.add(item.key);
+          continue;
+        }
+        // Parent / regular item — expand to live child attachments.
+        if (typeof item.getAttachments === 'function') {
+          const childIDs = item.getAttachments(true) || []; // include trashed
+          for (const cid of childIDs) {
+            const child = Zotero.Items.get(cid);
+            if (child && child.key && child.isAttachment && child.isAttachment()) {
+              attachmentKeys.add(child.key);
+            }
+          }
         }
       } catch (_e) { /* item already removed from DB — fall through */ }
-      if (key) attachmentKeys.add(key);
     }
     if (attachmentKeys.size === 0) return;
 

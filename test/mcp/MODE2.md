@@ -555,6 +555,79 @@ Spec re-read (false alarm):
 Deferred (real bug, defensive workaround in place):
 - **#25 (broader migration)** — `watchFolder._processNewFile`'s dedup-skip path adds a SECOND tracking record at the absolute path even when baseline already wrote one at the relative path. Idempotent `_absPath` + `_resolveTrackedAbs` neutralize the live cascade, but tracking ends up with two records per file (one stale, one fresh). The real fix is to either (a) make `_processNewFile` store relative paths AND skip when an equivalent record already exists, or (b) migrate watchFolder.mjs end-to-end to relative paths with consistent read-site translations. Both are substantial — left for a focused follow-up.
 
+### Run 2026-05-25c (post-v2.2, post-RecognizePDF-reparenting-fix)
+
+Goal: re-validate Mode 2 against the v2.2 bundle after the
+RecognizePDF reparenting fix landed (commit pending). Specifically
+check that the `_handleRemove` parent-in-collection guard +
+`_addItemMembership` suppression-auto-clear don't break the
+sync-root membership tracking that Mode 2 depends on.
+
+Setup: existing `ModeTwoTest` (`H79DCAVM`) reused, watch root
+`/tmp/ZoteroWatchTest/inbox2`, `baselineCompletedForRoot` cleared.
+
+#### Cases ✅
+
+- **BASE.1** — created `EmptySub` (`6MZWAWVY`) in Zotero → directory
+  `EmptySub/` appeared on disk within one poll cycle; tracking
+  collection record `state=clean`.
+- **Import + RecognizePDF reparenting (new sanity case)** —
+  dropped `m1.pdf` (taxonomy paper). After import + metadata
+  recognition, FileRecord ended up `state=clean`,
+  `canonicalCollectionKey=H79DCAVM`, `membership=[H79DCAVM]`.
+  Pre-fix this would have ended up `out-of-scope-suppressed` with
+  empty memberships (the bug originally filed as "DEL.2 shadow
+  record quirk" but discovered to affect every fresh import).
+  Confirms the reparenting guard fix in `itemMembershipHandler`
+  works in Mode 2.
+- **MEM.1** — added parent to `EmptySub`, then removed from sync
+  root. Canonical flipped to `6MZWAWVY`; file moved from
+  `m1.pdf` → `EmptySub/m1.pdf`; tracking + disk in lockstep.
+- **REN.1** — renamed `EmptySub` → `RenamedSub` in Zotero. Disk
+  dir renamed; FileRecord `localPath` rewritten to
+  `RenamedSub/m1.pdf`; collection record `localPath` updated.
+- **SUPP.1** — removed parent from `RenamedSub` (the last sync-
+  root membership). State flipped to `out-of-scope-suppressed`,
+  `canonicalCollectionKey=null`, `membership=[]`, SUPPRESSED
+  warning fired with `last-sync-root-membership-removed`.
+  Confirms the reparenting guard ONLY skips when the parent is
+  in the same collection — for genuine user-initiated removals
+  it still propagates correctly.
+- **SUPP.1 reverse (safety-net sanity)** — re-added parent to
+  `RenamedSub` → record auto-cleared back to
+  `state=clean`, `canonicalCollectionKey=6MZWAWVY`,
+  `membership=[6MZWAWVY]`. Confirms the
+  `mirrorExecutor._addItemMembership` auto-clear path that pairs
+  with the reparenting guard.
+- **CONF.1** — corrupted file content on disk (replaced PDF with
+  22-byte ASCII), then triggered moveItem by moving parent
+  between collections. mirrorExecutor's `canSafelyMove` gate
+  refused; FileRecord state flipped to `conflict-blocked`;
+  `canonicalCollectionKey` cleared; file stayed at original
+  `RenamedSub/m1.pdf` (new `ConflictTarget/` dir was created by
+  the collection-add but no `m1.pdf` in it). WarningSink captured
+  two `conflict-blocked` / `hash-drifted` entries (one per
+  attempted moveItem after the failed gate).
+- **WARN.1** — `Zotero.WatchFolder.warningSink` API surface
+  exposes `getTotalCount`, `getRecent`, `getCountsByCategory`,
+  `clear`, `report`, `subscribe`. End-of-run: `getTotalCount() === 3`
+  (1 suppressed + 2 conflict-blocked). `getCountsByCategory()`
+  returned `{}` empty (minor implementation quirk; the recent
+  list correctly shows the categories). Prefs UI rows not
+  visually verified.
+
+#### Cases not exercised
+- ADOPT.1, LATE.1 — covered in the original 2026-05 run; no
+  changes to those code paths in v2.2 or the recognizePDF fix.
+- BASE.2/BASE.3 — covered in the original run.
+
+#### Outcome
+v2.2 Mode 2 pipeline is intact post-fix. The RecognizePDF
+reparenting guard fixes the universal "fresh imports get
+suppressed" bug without regressing any of the legitimate
+user-initiated suppression / move / rename flows that Mode 2
+depends on.
+
 ### MCP bridge notes
 - `Zotero.DB.executeTransaction(async () => { await x.save(); })` is the reliable save pattern; bare `await x.saveTx()` silently returns undefined and may not persist in some IIFE contexts.
 - `Zotero.Collection.parentID` is read-only (`_parentID` / `_parentKey` private setters). Use `coll.parentKey = '<key>'` then `await coll.save()` inside an executeTransaction.

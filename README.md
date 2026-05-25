@@ -2,7 +2,7 @@
 
 A Zotero plugin that watches a folder on disk and automatically imports new PDFs (and other configured file types) into your library, with optional metadata retrieval, smart renaming, and collection mirroring.
 
-Built for Zotero 8, also compatible with Zotero 7 and the upcoming Zotero 9 (`strict_min_version: 6.999`, `strict_max_version: 9.*`).
+Built for Zotero 8 and Zotero 9, also compatible with Zotero 7 (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
 
 ## What it does
 

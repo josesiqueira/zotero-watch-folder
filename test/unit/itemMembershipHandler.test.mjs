@@ -408,3 +408,131 @@ describe('UT-511: malformed input tolerance', () => {
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
   });
 });
+
+// ─── UT-512 ────────────────────────────────────────────────────────────────
+
+describe('UT-512: Zotero reparenting guard on remove', () => {
+  it('skips removeItemMembership when the attachment\'s parent is still in the collection (RecognizePDF case)', async () => {
+    // RecognizePDF flow: attachment is removed from sync-root collection
+    // because Zotero just reparented it under a newly-created parent
+    // item, which now lives in that sync-root collection. The FileRecord
+    // is still effectively "in" the collection via the parent — don't
+    // propagate as a user removal (which would suppress the record).
+    const collection = { id: 200, key: 'SYNCROOT' };
+    const parent = {
+      key: 'PARENT1',
+      isAttachment: () => false,
+      getCollections: () => [200],
+    };
+    const att = {
+      key: 'ATT1',
+      isAttachment: () => true,
+      parentItem: parent,
+    };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'SYNCROOT',
+        collectionMembershipKeys: ['SYNCROOT'],
+        canonicalLocalPath: 'paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    // The guard short-circuits BEFORE dispatching to the executor.
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('falls through to removeItemMembership when the parent is NOT in the collection (real user removal)', async () => {
+    const collection = { id: 200, key: 'SYNCROOT' };
+    const parent = {
+      key: 'PARENT1',
+      isAttachment: () => false,
+      getCollections: () => [], // parent NOT in the collection anymore either
+    };
+    const att = {
+      key: 'ATT1',
+      isAttachment: () => true,
+      parentItem: parent,
+    };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'SYNCROOT',
+        collectionMembershipKeys: ['SYNCROOT'],
+        canonicalLocalPath: 'paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('removeItemMembership');
+  });
+
+  it('falls through to removeItemMembership for standalone attachments without a parent', async () => {
+    const collection = { id: 200, key: 'SYNCROOT' };
+    const att = {
+      key: 'ATT1',
+      isAttachment: () => true,
+      parentItem: null,
+    };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'SYNCROOT',
+        collectionMembershipKeys: ['SYNCROOT'],
+        canonicalLocalPath: 'paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('removeItemMembership');
+  });
+
+  it('falls through for parent-item events (item is the parent itself, not an attachment)', async () => {
+    // When the user removes a parent from a sync-root collection, the
+    // notifier event item IS the parent (not the attachment). The
+    // attachment children are resolved via getAttachments(). The guard
+    // should NOT trigger here because item.isAttachment() is false.
+    const collection = { id: 200, key: 'SYNCROOT' };
+    const childAtt = { key: 'CHILDATT', isAttachment: () => true };
+    const parent = {
+      key: 'PARENT1',
+      isAttachment: () => false,
+      getAttachments: () => [501],
+      getCollections: () => [], // already removed
+    };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockImplementation((id) => {
+      if (id === 300) return parent;
+      if (id === 501) return childAtt;
+      return null;
+    });
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'CHILDATT',
+        canonicalCollectionKey: 'SYNCROOT',
+        collectionMembershipKeys: ['SYNCROOT'],
+        canonicalLocalPath: 'paper.pdf',
+      },
+    ]);
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0]).toEqual({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'CHILDATT', collectionKey: 'SYNCROOT' },
+    });
+  });
+});

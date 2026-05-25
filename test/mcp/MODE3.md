@@ -690,3 +690,90 @@ the cases that distinguish it from v2.1: cascading-trash guard,
 plugin trash, tombstone emission, Zotero-initiated trash and
 restore, hash-based local-restore re-link, collision suffix on
 restore, folder delete + folder restore, and smart-rules editing.
+
+---
+
+## Run 2026-05-25c — RST.2 bug surfaced + fixed
+
+Goal: live-pass the RST.2 / RST.4 / RST.5 / DEL.3 / FDEL.2 cases
+that the original 2026-05-25b run had to skip (no
+multi-attachment-parent setup, no 10+ distinct PDFs).
+
+### Setup (Mode 3, clean state)
+
+Existing `ModeTwoTest` collection reused as sync root (key
+`H79DCAVM`), watch root `/tmp/ZoteroWatchTest/inbox2`,
+`baselineCompletedForRoot` cleared. Two distinct PDFs (`rstA.pdf` =
+Machine behaviour, `rstB.pdf` = Towards a Science of AI Agent
+Reliability) dropped to the watch root, both imported (attachments
+`7FGZ2W67` + `WVJJAKYK`). Manually reparented `WVJJAKYK` under
+`7FGZ2W67`'s parent (`KEYUEFTT`) then erased the orphaned second
+parent (`QWVKCTZL`). Result: ONE parent item with TWO attachments,
+both in the sync root.
+
+### Finding: parent-trash silently no-ops
+
+**Reproducer:** `parent.deleted = true; await parent.save();` (via
+`Zotero.DB.executeTransaction`).
+
+**Observed:** Zotero notifier fires `trash` once for the parent ID
+only. The child attachments inherit the deleted state but the
+notifier does NOT echo `trash` events for them. The plugin's
+`_handleZoteroTrash` then iterated `ids`, found `parent.isAttachment()
+=== false`, and skipped — leaving the disk files untouched and the
+tracking records `clean`.
+
+**Diagnostic capture** (custom Zotero.Notifier observer on
+`['item','collection-item']`):
+```
+dt=0    modify item [425]   (parent)
+dt=37   trash  item [425]   (parent only — no separate events for child 7FGZ2W67 / WVJJAKYK)
+```
+
+### Fix (commit pending in this session)
+
+`content/watchFolder.mjs` `_handleZoteroTrash` — when an ID resolves
+to a non-attachment item with `getAttachments(true)` children, walk
+those children and include each attachment key in the
+to-be-processed set. Counts toward the bulk-delete threshold per
+the existing pipeline.
+
+UT-090 extended (3 new cases):
+- skipped-non-attachment behavior preserved only when there are
+  zero child attachments.
+- parent → expands to child attachments (RST.2 / parent-trash bug).
+- `getAttachments(true)` is called with `true` so already-trashed
+  children (RST.4 selective-restore precondition) are also picked
+  up.
+
+530 → **532** unit tests passing.
+
+### Live re-verification BLOCKED
+
+After rebuilding + reinstalling the XPI via `zotero_plugin_install`,
+Zotero logged:
+
+```
+[WatchFolder] Failed to load bundle: Error opening input stream
+(invalid filename?):
+jar:file:///…/watch-folder@zotero-plugin.org.xpi!/content/scripts/watchFolder.js
+```
+
+The on-disk XPI is intact (`unzip -p` succeeds, file size matches),
+but Zotero's JAR layer is caching the previous handle and rejects
+the post-install file. `zotero_plugin_reload` does not break that
+cache. A full Zotero restart is required to re-verify the live
+RST.2 path. The unit-test coverage is solid and the fix is
+mechanically simple (walk children when the trashed item is a
+parent), so the unit pass is treated as sufficient evidence in
+this session and live re-verification is deferred to the next
+session that starts with a fresh Zotero process.
+
+### Cases not live-passed this run
+- DEL.3 (>10 distinct PDFs)
+- RST.2 (parent restore — needs the post-restart bundle to verify)
+- RST.4 (selective parent-restore — same)
+- RST.5 (re-attach to existing parent)
+- FDEL.2 (>10 files in folder)
+
+All are unit-tested. Deferred to the next live session.

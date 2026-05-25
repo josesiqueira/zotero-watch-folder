@@ -709,9 +709,29 @@ async function _addItemMembership(payload) {
       return { ok: false, reason: 'unknown-attachment' };
     }
     const set = new Set(rec.collectionMembershipKeys || []);
-    if (set.has(collectionKey)) return { ok: true, reason: 'no-op' };
-    set.add(collectionKey);
-    _store.update(rec.localPath, { collectionMembershipKeys: Array.from(set) });
+    const updates = {};
+    if (!set.has(collectionKey)) {
+      set.add(collectionKey);
+      updates.collectionMembershipKeys = Array.from(set);
+    }
+    // Safety net: if the record was OUT_OF_SCOPE_SUPPRESSED but a
+    // sync-root collection is being re-added, clear the suppression.
+    // Zotero (or the user) put it back; treat it as actively synced
+    // again. Without this, suppression could "stick" through Zotero
+    // reparenting flows (RecognizePDF) where remove fires before/after
+    // a no-op add on the parent. USER_DETACHED records intentionally
+    // stay detached — only the auto-suppressed state auto-clears.
+    if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) {
+      try {
+        const rel = await collectionKeyToRelativePath(collectionKey);
+        if (rel !== null) {
+          updates.state = STATE.CLEAN;
+          if (!rec.canonicalCollectionKey) updates.canonicalCollectionKey = collectionKey;
+        }
+      } catch (_e) { /* sync-root unresolvable — leave state alone */ }
+    }
+    if (Object.keys(updates).length === 0) return { ok: true, reason: 'no-op' };
+    _store.update(rec.localPath, updates);
     try { await _store.save(); } catch (_e) { /* logged */ }
     return { ok: true };
   });

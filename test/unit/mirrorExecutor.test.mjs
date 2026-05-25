@@ -415,6 +415,71 @@ describe('UT-409: membership updates (no IO)', () => {
     expect(result.reason).toBe('no-op');
   });
 
+  it('addItemMembership clears OUT_OF_SCOPE_SUPPRESSED when a sync-root collection is re-added', async () => {
+    // Safety net for the RecognizePDF reparenting flow: even when the
+    // remove fires before the parent add (so the record gets suppressed
+    // transiently), re-adding membership to a sync-root collection
+    // should restore the record to CLEAN automatically. USER_DETACHED
+    // is NOT auto-cleared (those are explicit user decisions).
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      collectionMembershipKeys: [],
+      canonicalCollectionKey: null,
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    init({ trackingStore: store });
+    // C1 IS under the sync root
+    collectionKeyToRelativePath.mockResolvedValue('Methods');
+    const result = await execute({
+      type: 'addItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'C1' },
+    });
+    expect(result.ok).toBe(true);
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual(['C1']);
+    expect(rec.state).toBe(STATE.CLEAN);
+    expect(rec.canonicalCollectionKey).toBe('C1');
+  });
+
+  it('addItemMembership does NOT clear suppression when the re-added collection is OUTSIDE the sync root', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      collectionMembershipKeys: [],
+      canonicalCollectionKey: null,
+      state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    init({ trackingStore: store });
+    // Outside sync root
+    collectionKeyToRelativePath.mockResolvedValue(null);
+    await execute({
+      type: 'addItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'OUTSIDE' },
+    });
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual(['OUTSIDE']);
+    expect(rec.state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED); // unchanged
+  });
+
+  it('addItemMembership leaves USER_DETACHED records alone (explicit user choice)', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'p.pdf', zoteroAttachmentKey: 'K1',
+      collectionMembershipKeys: [],
+      canonicalCollectionKey: null,
+      state: STATE.USER_DETACHED,
+    }));
+    init({ trackingStore: store });
+    collectionKeyToRelativePath.mockResolvedValue('Methods');
+    await execute({
+      type: 'addItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'C1' },
+    });
+    const rec = store.getByLocalPath('p.pdf');
+    expect(rec.state).toBe(STATE.USER_DETACHED);
+  });
+
   it('removeItemMembership drops the key and clears canonical when canonical (C2 IS under sync root)', async () => {
     const store = await makeStore();
     store.add(createFileRecord({

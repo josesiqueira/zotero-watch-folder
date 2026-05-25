@@ -140,6 +140,7 @@ export async function runSetupWizard(window) {
           Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
         | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
         | Services.prompt.BUTTON_POS_0_DEFAULT;
+    const safetyNote = _modeSafetyNote(modeChoice.key);
     const confirm = Services.prompt.confirmEx(
         window,
         "Watch Folder — Confirm",
@@ -147,7 +148,8 @@ export async function runSetupWizard(window) {
           + `Watch folder: ${watchFolder}\n`
           + `Zotero sync root: ${syncRootChoice.label}\n`
           + `Mode: ${modeChoice.label}\n\n`
-          + `Imports will start on the next scan cycle (default every 5s).`,
+          + `${safetyNote}\n\n`
+          + `Imports will start on the next scan cycle (default every 5s). You can change any of these in Edit → Settings → Watch Folder.`,
         confirmFlags,
         "Enable",
         null, null,
@@ -232,23 +234,40 @@ async function _wizardPickSyncRoot(window) {
 }
 
 function _wizardPickMode(window) {
-    // Only modes that actually work in this release. Mode 3 ships in
-    // v2.2 — adding it before then would let users pick it and then
-    // silently fall back to Mode 2 behavior.
+    // All three modes ship in v2.2. Mode 1 is the safe default for
+    // first-time users; Mode 3 is for users who trust the mirror enough
+    // to let it propagate disk deletes (recoverable via the plugin's
+    // `.zotero-watch-trash/` directory + bulk-delete confirmation).
     const modes = [
-        { key: "mode1", label: "Mode 1 — Import only (no two-way sync; safest)" },
+        { key: "mode1", label: "Mode 1 — Import only (safest; no two-way sync)" },
         { key: "mode2", label: "Mode 2 — Mirror without delete (two-way; deletes are warn-only)" },
+        { key: "mode3", label: "Mode 3 — Mirror with safe delete (two-way; recoverable trash + bulk confirm)" },
     ];
     const out = {};
     const ok = Services.prompt.select(
         window,
         "Pick sync mode",
-        "Mode 1 only watches the local folder for new files. Mode 2 also reflects changes you make in Zotero (rename, reorganize) back to disk.",
+        "Mode 1 only watches the local folder for new files.\n\n"
+          + "Mode 2 also reflects changes you make in Zotero (rename, reorganize) back to disk — destructive operations are warn-only.\n\n"
+          + "Mode 3 additionally propagates deletes in both directions. Disk-trashed files move to .zotero-watch-trash/ under your watch root (recoverable). Any single op affecting >10 files or >20% of your tree prompts for confirmation. You can always switch modes later from the preferences pane.",
         modes.map((m) => m.label),
         out,
     );
     if (!ok) return null;
     return modes[out.value] ?? null;
+}
+
+function _modeSafetyNote(modeKey) {
+    if (modeKey === "mode1") {
+        return "Safety: nothing in Zotero will be modified by disk changes. Files you delete on disk stay in your library; collections renamed in Zotero do not rename folders on disk.";
+    }
+    if (modeKey === "mode2") {
+        return "Safety: collection renames and item moves propagate both ways. Destructive operations (folder/file deletes) are warn-only — nothing is deleted, but you'll see a notice in the prefs pane.";
+    }
+    if (modeKey === "mode3") {
+        return "Safety: deletes propagate both ways with a recoverable trash. Files trashed by either side go to `.zotero-watch-trash/` under your watch folder; restore via Zotero (un-trash the attachment) or the prefs pane's \"Trashed folders\" row. Any single operation affecting more than 10 files or 20% of your tracked items will prompt for confirmation.";
+    }
+    return "";
 }
 
 function _displayPath(collection) {

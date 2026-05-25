@@ -1,12 +1,13 @@
 # Zotero Watch Folder — TODO
 
-**Status:** `v2.2.0-alpha.1` shipped (commit `aebfe31`, tag `v2.2.0-alpha.1`,
-sha256 `cb128499…`). All three modes are functional end-to-end against
-a live Zotero install: Mode 1 (import only — v2.0), Mode 2 (mirror
-without delete — v2.1), Mode 3 (mirror with safe delete — v2.2). The
-v2.2 surface is unit-test-covered (523 passing across 20 files, zero
-skipped) AND live-MCP-validated (`test/mcp/MODE3.md` partial + fuller
-runs, 2026-05-25 / 2026-05-25b).
+**Status:** **`v2.3.0`** stable cut (no alpha). Builds on `v2.2.0-alpha.1`
+plus the RecognizePDF reparenting + parent-trash fixes from 2026-05-25 /
+2026-05-26 and live-verified on Zotero 9.0.4. All three modes functional
+end-to-end: Mode 1 (import only), Mode 2 (mirror without delete), Mode 3
+(mirror with safe delete). Unit-test-covered (**532 passing across 20
+files**, zero skipped) AND live-MCP-validated on both Zotero 8.0.4
+(MODE3 runs 2026-05-25 / b / c, MODE2 run 2026-05-25c) and Zotero
+9.0.4 (verification 2026-05-26). **Compatible with Zotero 7, 8, 9.**
 
 ---
 
@@ -25,20 +26,38 @@ below when you have time, or pick a new feature direction.
       been run end-to-end on a live Zotero against the post-v2.2
       bundle. Lower priority than MODE3 since Mode 2 is older and
       stable.
-- [ ] **C1 full setup wizard.** A C2 minimal picker + first-run
-      nudge is in place; the spec calls for a multi-step pane (pick
-      watch folder → pick sync root → pick mode → confirm).
-      Quality-of-life, not blocking.
-- [ ] **DEL.2 shadow-guard record lifecycle quirk** (MODE3 live
-      finding 2026-05-25b). When a shadow file is `rm`'d while its
-      canonical sibling is on disk, the critical no-cascade
-      invariant holds (canonical untouched, Zotero attachment NOT
-      trashed) BUT the shadow record ends up `out-of-scope-suppressed`
-      rather than being fully removed. Most likely a concurrent
-      `_handleZoteroTrash` notifier flips state before
-      `_handleExternalDeletions`'s `remove()` commits. Functional
-      outcome is even safer than the spec (user can resolve via
-      suppression UX), but tighter handling would be cleaner.
+- [~] **C1 full setup wizard.** Updated 2026-05-25: the existing
+      `runSetupWizard` modal-sequence (welcome → watch folder →
+      sync root → mode → confirm) now offers all three modes
+      (mode3 was missing pre-2026-05-25) with richer per-mode
+      safety descriptions, and the confirm step surfaces a
+      mode-specific safety note (e.g. plugin-trash path + bulk
+      confirm for mode3). A full multi-step XHTML pane rewrite
+      (with back-navigation, single-window state) is intentionally
+      not done — the modal sequence covers the same functional
+      surface and is well-tested via the prefs "Re-run setup
+      wizard…" path. Re-open this task if a real XHTML pane is
+      needed for UX.
+- [x] ~~**DEL.2 shadow-guard record lifecycle quirk**~~ — **Fixed
+      2026-05-25.** Root cause was deeper than the live finding read:
+      every freshly-imported file ended up `out-of-scope-suppressed`
+      with empty `collectionMembershipKeys`, not just shadows.
+      Mechanism: Zotero's `RecognizePDF` creates a parent item, places
+      it in the sync-root collection, reparents the attachment under
+      the parent, and fires a `collection-item` REMOVE event for the
+      attachment leaving the collection. The mirror watcher
+      (`itemMembershipHandler._handleRemove`) interpreted this as the
+      user un-syncing the attachment. Fix: added a Zotero-reparenting
+      guard that returns early when the attachment's `parentItem` is
+      still in the same collection. Also added a safety net in
+      `mirrorExecutor._addItemMembership` that auto-clears
+      OUT_OF_SCOPE_SUPPRESSED → CLEAN when a sync-root collection is
+      re-added (USER_DETACHED stays detached). UT-512 (4 cases) +
+      UT-409 (3 new cases) cover both. Verified live: imported a
+      fresh PDF (state=clean, membership=[syncRoot]), then dropped a
+      shadow copy and `rm`'d it — shadow record fully removed, canonical
+      untouched, Zotero attachment not trashed. 530 unit tests
+      passing (was 523).
 - [ ] **Larger live-MCP coverage of Mode 3 scenarios we skipped.**
       DEL.3 / RST.2 / RST.4 / RST.5 / FDEL.2 are all unit-tested
       but only DEL.1/1.b, DEL.2, RST.1, RST.3, RST.6, FDEL.1,
