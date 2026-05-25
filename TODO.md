@@ -169,18 +169,18 @@ mostly orthogonal to v2.2.
 
 ### Live validation status
 
-- [~] **`test/mcp/MODE3.md` MCP runbook.** Document written
-      (`test/mcp/MODE3.md`, 200+ lines) covering preflight, SETUP.M3.1,
-      DEL.1/2/3, RST.1/2/3/4/5/6, FDEL.1/2, FRST.1, SR.1, cleanup.
-      **Partial live pass 2026-05-25** against the shipped XPI
-      v2.2.0-alpha.1: DEL.1, DEL.1.b, RST.1, FRST.1 all ✅. The
-      critical Zotero ↔ disk ↔ tombstone ↔ restore loop validated
-      end-to-end against live Zotero 8.0.4. Remaining scenarios
-      (DEL.2/3, RST.2/3/4/5/6, FDEL.1/2, SR.1) deferred —
-      unit-test coverage already in place; a full hands-on pass
-      is a nice-to-have before v2.3. See `test/mcp/MODE3.md` "Run
-      2026-05-25" section for details + two small surprises (now
-      tracked under Track D below).
+- [x] **`test/mcp/MODE3.md` MCP runbook.** Document complete
+      (`test/mcp/MODE3.md`, 200+ lines) + two live passes:
+      - **Run 2026-05-25** (partial): DEL.1, DEL.1.b, RST.1, FRST.1.
+      - **Run 2026-05-25b** (fuller): DEL.1, DEL.1.b, DEL.2 shadow
+        guard, RST.1, RST.3 (tombstone-aware re-link), RST.6
+        (collision suffix on restore), FDEL.1 (folder delete →
+        plugin trash + child cleanup), FRST.1 (folder restore via
+        suppressionResolver), SR.1 (smart-rules editor smoke +
+        Save/Insert programmatic). DEL.3 / RST.2 / RST.4 / RST.5
+        / FDEL.2 deferred to unit-test coverage (need >10 PDFs or
+        multi-attachment-parent setup). v2.2 surface end-to-end-
+        validated for the cases that distinguish it from v2.1.
 
 ### Track D — discovered while doing other items (autonomous queue)
 

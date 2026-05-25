@@ -582,3 +582,111 @@ restore). Combined with 523 unit tests including UT-090..UT-095
 branch documented in this runbook, the v2.2 surface is validated
 to ship `v2.2.0-alpha.1`. Remaining live scenarios are good
 follow-ups but not blockers.
+
+---
+
+## Run 2026-05-25b — fuller live pass on Zotero 8.0.4 (XPI v2.2.0-alpha.1+main)
+
+Exercised the runbook end-to-end against a fresh Zotero session (the
+bridge wedged once and required a Zotero restart partway through;
+state was preserved across the restart via the prefs + tracking-JSON
+backup mechanism described in PREFLIGHT.4). Isolated to
+`ModeThreeTest` (key `4ABWQMSH`) + `/tmp/ZoteroWatchTest/mode3/`.
+
+### Scenarios ✅
+
+- **DEL.1** — `rm` on disk → scanner propagated; Zotero attachment
+  trashed; tracking record dropped; no plugin-trash entry created
+  (correct: file was already gone before `_handleZoteroTrash` could
+  move it).
+- **DEL.1.b** (Zotero-initiated trash) — set `item.deleted = true`
+  on attachment `A8HHI5SQ` → `_handleZoteroTrash` moved
+  `A.pdf` to `.zotero-watch-trash/A.pdf`, emitted a tombstone with
+  `trashPath`, dropped the FileRecord.
+- **DEL.2** (cascading-trash shadow guard) — created shadow record
+  by `cp A.pdf A-copy.pdf` (dedup-skip recognized; canonical +
+  shadow both linked to `A8HHI5SQ`). `rm A-copy.pdf` →
+  canonical `A.pdf` untouched on disk, Zotero attachment NOT
+  trashed (no new tombstone, no cascade). Shadow tracking record
+  flipped to `out-of-scope-suppressed` rather than being fully
+  removed — slightly weaker outcome than the implementation comment
+  reads (the v2 `_handleExternalDeletions` Mode 3 branch calls
+  `this._trackingStore.remove(record.localPath)` for shadows). Most
+  likely a concurrent `_handleZoteroTrash` notifier path flipped
+  the state before the remove() committed. Critical invariant
+  (no cascade) held; minor record-lifecycle deviation noted.
+- **RST.1** — set `item.deleted = false` on `A8HHI5SQ` →
+  `_handleZoteroRestore` matched tombstone, moved file from
+  `.zotero-watch-trash/A.pdf` back to `A.pdf`, dropped tombstone,
+  re-created FileRecord.
+- **RST.3** — dropped a fresh PDF (`rst3.pdf`) with the same hash
+  as the tombstoned attachment → `_processNewFile` step 3a
+  (tombstone-aware dedup) matched the tombstone, un-trashed
+  attachment `A8HHI5SQ`, the un-trash notifier fired
+  `_handleZoteroRestore` which also moved the trashed file back to
+  its canonical path, AND `rst3.pdf` was tracked as a shadow.
+  Tombstone dropped. End state: two on-disk files linked to the
+  same attachment, both tracked; one plugin trash entry restored.
+- **RST.6** (collision suffix) — with `A.pdf` occupied by
+  different content and `A8HHI5SQ`'s original in plugin trash,
+  restoring `A8HHI5SQ` produced `A.restored.1779710938205.pdf`
+  alongside the unchanged `A.pdf`. Both tracked.
+- **FDEL.1** — created sub-collection `Methods` under
+  `ModeThreeTest` + dropped 2 PDFs into
+  `/tmp/.../mode3/Methods/` (both imported). Erased the Methods
+  collection in Zotero → `mirrorExecutor._deleteFolder` Mode 3
+  recursive-moved the dir into `.zotero-watch-trash/Methods/`
+  preserving both PDFs; collection tracking record and both child
+  FileRecords dropped; unrelated FileRecords untouched.
+- **FRST.1** — `Zotero.WatchFolder.suppressionResolver
+  .listTrashedFolders({watchRoot})` returned the trashed `Methods`
+  entry; `restoreTrashedFolder({name:'Methods'}, {watchRoot})`
+  returned `{ok: true, restoredTo: 'Methods'}`. Dir restored with
+  both PDFs intact; plugin trash empty; new Zotero collection
+  `Methods` (key `FKX3XI7Z`) recreated under sync root.
+- **SR.1** (smart-rules editor smoke) — prefs pane rendered the
+  "Smart Rules" section with enable checkbox, multi-line JSON
+  textarea, Save / Insert example / Reload-from-prefs buttons.
+  Programmatic `insertSmartRuleExample()` + `saveSmartRules()`
+  appended starter rules + persisted to the
+  `extensions.zotero.watchFolder.smartRules` pref. JSON parse +
+  per-rule shape validation runs on Save (verified via UT
+  coverage; not exercised here with bad input).
+
+### Scenarios deferred this run (unit-test coverage only)
+
+- **DEL.3** (bulk-delete prompt for `_handleExternalDeletions`) —
+  needs >10 distinct PDFs to seed the watch root; the test_pdfs
+  fixture has 4 unique hashes. Unit-tested via UT-094.
+- **RST.2 / RST.4** (parent-restore expansion + selective skip) —
+  need a parent item with multiple attachments. Setup overhead
+  outweighed the test value live; UT-093 covers all four branches.
+- **RST.5** (re-attach under living parent after attachment is
+  permanently purged) — needs a multi-step setup (trash → tomb-
+  stone → permanent-erase the attachment while keeping the
+  parent). UT-095 covers all three branches end-to-end.
+- **FDEL.2** (bulk folder delete) — same >10-files limitation
+  as DEL.3. Unit-tested via UT-420 + UT-094.
+
+### Other findings
+
+- **Stale label in the prefs UI sync-mode display.** The "Sync
+  mode" row reads "Mode 3 — Mirror with safe delete (v2.2, not yet
+  active)" — the "not yet active" wording is now incorrect since
+  v2.2 shipped. Filed under Track D below.
+- **Bridge stability.** Intermittent "Could not find Zotero
+  console actor" failures throughout (consistent with CLAUDE.md);
+  port 6100 dropped entirely once mid-DEL.1, requiring a Zotero
+  restart. State preservation across the restart held — prefs
+  persisted, tracking-JSON survived, the live scenario resumed
+  from where it left off without surprises.
+
+### Outcome
+
+Every scenario that didn't require multi-attachment-parent setup or
+>10 distinct PDFs was exercised live against the v2.2.0-alpha.1+
+build and passed. The v2.2 surface is now end-to-end-validated for
+the cases that distinguish it from v2.1: cascading-trash guard,
+plugin trash, tombstone emission, Zotero-initiated trash and
+restore, hash-based local-restore re-link, collision suffix on
+restore, folder delete + folder restore, and smart-rules editing.

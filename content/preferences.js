@@ -386,9 +386,9 @@
         if (!display) return;
         const mode = getPref('mode') || 'mode1';
         const labels = {
-            mode1: 'Mode 1 — Import only (active)',
-            mode2: 'Mode 2 — Mirror without delete (v2.1, not yet active)',
-            mode3: 'Mode 3 — Mirror with safe delete (v2.2, not yet active)',
+            mode1: 'Mode 1 — Import only',
+            mode2: 'Mode 2 — Mirror without delete (v2.1)',
+            mode3: 'Mode 3 — Mirror with safe delete (v2.2)',
         };
         display.value = labels[mode] || `Unknown mode: ${mode}`;
     }
