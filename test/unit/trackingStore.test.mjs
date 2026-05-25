@@ -207,6 +207,67 @@ describe('UT-104: TrackingStore — key-based lookup', () => {
     expect(store.findByHash('H1')).toBe(null);
     expect(store.findByHash('H2')?.localPath).toBe('a.pdf');
   });
+
+  // ─── UT-107: tombstone queries (v2.2 restore matrix support) ──────────────
+
+  it('findTombstoneByHash returns the most-recent recoverable tombstone', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'old.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+      deletedAt: '2026-05-01T00:00:00Z',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'new.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'H1',
+      deletedAt: '2026-05-25T00:00:00Z',
+    }));
+    const t = store.findTombstoneByHash('H1');
+    expect(t).not.toBeNull();
+    expect(t.zoteroAttachmentKey).toBe('AK2');
+  });
+
+  it('findTombstoneByHash returns null for unknown hash or empty/null input', () => {
+    store.addTombstone(createTombstoneRecord({ localPath: 'x.pdf', originalHash: 'H1' }));
+    expect(store.findTombstoneByHash('')).toBe(null);
+    expect(store.findTombstoneByHash(null)).toBe(null);
+    expect(store.findTombstoneByHash('UNKNOWN')).toBe(null);
+  });
+
+  it('findTombstoneByHash excludes non-recoverable tombstones', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'x.pdf', originalHash: 'H1', state: 'recoverable',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'y.pdf', originalHash: 'H1', state: 'expired',
+    }));
+    const t = store.findTombstoneByHash('H1');
+    expect(t.localPath).toBe('x.pdf');
+  });
+
+  it('findTombstoneByAttachmentKey returns the matching tombstone', () => {
+    store.addTombstone(createTombstoneRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK2' }));
+    expect(store.findTombstoneByAttachmentKey('AK1').localPath).toBe('a.pdf');
+    expect(store.findTombstoneByAttachmentKey('AK2').localPath).toBe('b.pdf');
+    expect(store.findTombstoneByAttachmentKey('UNKNOWN')).toBe(null);
+    expect(store.findTombstoneByAttachmentKey('')).toBe(null);
+  });
+
+  it('removeTombstoneByAttachmentKey removes ALL matching tombstones and dirties the store', () => {
+    store.addTombstone(createTombstoneRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'a-copy.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.addTombstone(createTombstoneRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK2' }));
+    store._dirty = false;
+    const removed = store.removeTombstoneByAttachmentKey('AK1');
+    expect(removed).toBe(2);
+    expect(store.getAllOfType('tombstone')).toHaveLength(1);
+    expect(store.isDirty).toBe(true);
+  });
+
+  it('removeTombstoneByAttachmentKey returns 0 (and does NOT dirty) when nothing matches', () => {
+    store.addTombstone(createTombstoneRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store._dirty = false;
+    expect(store.removeTombstoneByAttachmentKey('UNKNOWN')).toBe(0);
+    expect(store.isDirty).toBe(false);
+  });
 });
 
 // ─── UT-105 ────────────────────────────────────────────────────────────────

@@ -517,6 +517,58 @@ export class WatchFolderService {
       const lastSyncedSize = fileStat ? fileStat.size : 0;
       const lastSyncedMtime = fileStat ? (fileStat.lastModified ?? 0) : 0;
 
+      // Step 3a: Tombstone-aware re-link (v2.2 RST.3, Track C #4). Before
+      // any live-record dedup, check whether this file's content matches
+      // a recoverable tombstone — that is, an attachment we previously
+      // trashed (Zotero-side) whose local file is now reappearing.
+      // Un-trash the attachment if still in Zotero's trash, re-create the
+      // FileRecord, and drop the tombstone. Falls through to the normal
+      // import path if the Zotero side has been permanently purged.
+      if (hash && this._trackingStore) {
+        const tombstone = this._trackingStore.findTombstoneByHash(hash);
+        if (tombstone && tombstone.zoteroAttachmentKey && tombstone.deletedFrom === 'zotero') {
+          try {
+            const syncRoot = await resolveSyncRoot().catch(() => null);
+            const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
+            const attachment = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, tombstone.zoteroAttachmentKey);
+            if (attachment) {
+              if (attachment.deleted) {
+                try {
+                  attachment.deleted = false;
+                  await attachment.saveTx();
+                  Zotero.debug(`[WatchFolder] Tombstone re-link: un-trashed Zotero attachment ${tombstone.zoteroAttachmentKey}`);
+                } catch (e) {
+                  Zotero.debug(`[WatchFolder] Tombstone re-link: failed to un-trash ${tombstone.zoteroAttachmentKey}: ${e?.message ?? e}`);
+                }
+              }
+              const watchPath = getPref('sourcePath') || '';
+              const relFile = this._toRelativeForStore(filePath, watchPath);
+              this._trackingStore.add(createFileRecord({
+                localPath: relFile,
+                canonicalLocalPath: relFile,
+                lastSyncedHash: hash,
+                lastSyncedSize,
+                lastSyncedMtime,
+                zoteroItemKey: tombstone.zoteroItemKey,
+                zoteroAttachmentKey: tombstone.zoteroAttachmentKey,
+                state: STATE.CLEAN,
+              }));
+              this._trackingStore.removeTombstoneByAttachmentKey(tombstone.zoteroAttachmentKey);
+              await this._trackingStore.save();
+              Zotero.debug(`[WatchFolder] Tombstone re-link: ${filePath} → ${tombstone.zoteroAttachmentKey}`);
+              return;
+            }
+            // Attachment permanently purged from Zotero; drop the now-
+            // unreachable tombstone and let import-as-new run below.
+            Zotero.debug(`[WatchFolder] Tombstone re-link: attachment ${tombstone.zoteroAttachmentKey} no longer in Zotero; dropping tombstone, importing as new`);
+            this._trackingStore.removeTombstoneByAttachmentKey(tombstone.zoteroAttachmentKey);
+            await this._trackingStore.save();
+          } catch (e) {
+            Zotero.debug(`[WatchFolder] Tombstone re-link error: ${e?.message ?? e} — falling through to normal import`);
+          }
+        }
+      }
+
       if (hash && this._trackingStore) {
         const existingByHash = this._trackingStore.findByHash(hash);
         if (existingByHash) {
@@ -1248,8 +1300,25 @@ export class WatchFolderService {
           break;
         }
 
+        case 'modify': {
+          // v2.2 restore matrix (RST.1): a trashed attachment that
+          // becomes untrashed should restore the corresponding local
+          // file from plugin trash if available. Zotero's notifier
+          // fires 'modify' for trash + untrash both — distinguish via
+          // the current `deleted` state and the tombstone presence.
+          const mode = getPref('mode') || 'mode1';
+          if (mode === 'mode1') break;
+          if (!this._trackingStore) break;
+          // Cheap pre-filter: only do restore work when we actually
+          // have tombstones to consult — otherwise modify events on
+          // every metadata edit would walk the entire tracking store.
+          if (this._trackingStore.getAllOfType('tombstone').length === 0) break;
+          await this._handleZoteroRestore(ids);
+          break;
+        }
+
         default:
-          // Other events (add, modify) don't need special handling
+          // Other events (add) don't need special handling
           break;
       }
     } catch (e) {
@@ -1424,6 +1493,125 @@ export class WatchFolderService {
       for (const s of p.shadows) {
         this._trackingStore.remove(s.localPath);
       }
+    }
+
+    try { await this._trackingStore.save(); } catch (_) {}
+  }
+
+  /**
+   * Handle Zotero attachments being restored from the trash (RST.1).
+   * Fired from the 'modify' notifier branch — that event covers many
+   * mutations, so the heavy lifting is gated on (a) a tombstone existing
+   * for the attachment key (b) the attachment's `deleted` flag being
+   * back to false. For each restore that matches a recoverable
+   * tombstone, the canonical local file is moved out of
+   * `.zotero-watch-trash/` back to its original sync-root-relative
+   * path. RST.6 collision policy applies — never overwrite an
+   * existing file at the target.
+   *
+   * @param {number[]} ids - Modified Zotero item IDs.
+   */
+  async _handleZoteroRestore(ids) {
+    if (!this._trackingStore || !ids || ids.length === 0) return;
+    const watchPath = getPref('sourcePath');
+    if (!watchPath) return;
+
+    for (const id of ids) {
+      let attachmentKey = null;
+      let isRestored = false;
+      try {
+        const item = Zotero.Items.get(id);
+        if (!item || !item.key) continue;
+        if (item.isAttachment && !item.isAttachment()) continue;
+        attachmentKey = item.key;
+        // Only act on un-deleted attachments. Trash events on the same
+        // attachment fire 'modify' too; we want the restore direction.
+        isRestored = (item.deleted === false);
+      } catch (_e) { continue; }
+      if (!attachmentKey || !isRestored) continue;
+
+      const tombstone = this._trackingStore.findTombstoneByAttachmentKey(attachmentKey);
+      if (!tombstone) continue; // not a tombstoned attachment — nothing to restore
+
+      // Resolve the source (plugin trash) and destination (canonical path).
+      const srcRel = tombstone.trashPath;
+      const dstRel = tombstone.canonicalLocalPath || tombstone.localPath;
+      if (!srcRel || !dstRel) {
+        // OS-trash tombstones have no addressable trashPath; we can't
+        // restore the bytes ourselves. Drop the tombstone so the next
+        // import of this file is handled fresh (it'll dedup via the
+        // Zotero attachment's content if Zotero still has the file).
+        Zotero.debug(`[WatchFolder] _handleZoteroRestore: no trashPath for ${attachmentKey}; dropping tombstone`);
+        this._trackingStore.removeTombstoneByAttachmentKey(attachmentKey);
+        continue;
+      }
+
+      const srcAbs = PathUtils.join(watchPath, ...srcRel.split('/'));
+      let dstRel2 = dstRel;
+      let dstAbs = PathUtils.join(watchPath, ...dstRel.split('/'));
+
+      // Source must still exist; if the user emptied the plugin trash
+      // manually we can't restore — drop the tombstone and let the
+      // normal import path pick the Zotero file up again on next scan.
+      const srcExists = await IOUtils.exists(srcAbs).catch(() => false);
+      if (!srcExists) {
+        Zotero.debug(`[WatchFolder] _handleZoteroRestore: trash source ${srcAbs} missing; dropping tombstone`);
+        this._trackingStore.removeTombstoneByAttachmentKey(attachmentKey);
+        continue;
+      }
+
+      // RST.6: destination collision → restore as copy with suffix;
+      // never overwrite. Existing file at the target gets to keep its
+      // path; the restored copy lands at `<name>.restored.<ts>.<ext>`.
+      if (await IOUtils.exists(dstAbs).catch(() => false)) {
+        const dotIdx = dstRel.lastIndexOf('.');
+        const slashIdx = dstRel.lastIndexOf('/');
+        const hasExt = dotIdx > slashIdx;
+        const stamp = Date.now();
+        const suffixed = hasExt
+          ? `${dstRel.slice(0, dotIdx)}.restored.${stamp}${dstRel.slice(dotIdx)}`
+          : `${dstRel}.restored.${stamp}`;
+        dstRel2 = suffixed;
+        dstAbs = PathUtils.join(watchPath, ...dstRel2.split('/'));
+      }
+
+      // Pre-create destination parent.
+      const parent = PathUtils.parent(dstAbs);
+      if (parent) {
+        try {
+          await IOUtils.makeDirectory(parent, { ignoreExisting: true, createAncestors: true });
+        } catch (e) {
+          Zotero.debug(`[WatchFolder] _handleZoteroRestore: mkdir ${parent} failed: ${e?.message ?? e}`);
+          continue;
+        }
+      }
+
+      try {
+        await IOUtils.move(srcAbs, dstAbs);
+      } catch (moveErr) {
+        // Cross-FS fallback.
+        try {
+          await IOUtils.copy(srcAbs, dstAbs);
+          await IOUtils.remove(srcAbs);
+        } catch (copyErr) {
+          try { await IOUtils.remove(dstAbs, { ignoreAbsent: true }); }
+          catch (_e) { /* best effort */ }
+          Zotero.debug(`[WatchFolder] _handleZoteroRestore: move ${srcAbs} → ${dstAbs} failed: ${copyErr?.message ?? copyErr}`);
+          continue;
+        }
+      }
+
+      // Re-create the FileRecord and drop the tombstone.
+      this._trackingStore.add(createFileRecord({
+        localPath: dstRel2,
+        canonicalLocalPath: dstRel2,
+        lastSyncedHash: tombstone.originalHash,
+        zoteroItemKey: tombstone.zoteroItemKey,
+        zoteroAttachmentKey: attachmentKey,
+        state: STATE.CLEAN,
+      }));
+      this._trackingStore.removeTombstoneByAttachmentKey(attachmentKey);
+      Zotero.debug(`[WatchFolder] _handleZoteroRestore: restored ${attachmentKey} → ${dstRel2}`);
     }
 
     try { await this._trackingStore.save(); } catch (_) {}

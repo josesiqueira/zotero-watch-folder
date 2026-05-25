@@ -480,6 +480,68 @@ export class TrackingStore {
   }
 
   /**
+   * Find a tombstone by content hash. Used by the v2.2 restore matrix
+   * (RST.3): when the scanner sees a new file whose hash matches a
+   * tombstone, the import flow re-links to the Zotero attachment
+   * (un-trashing it if still in the Zotero trash) instead of importing
+   * the file as new. Returns the most-recent matching tombstone if
+   * several share a hash (different files happened to share content).
+   * @param {string} hash
+   * @returns {TombstoneRecord|null}
+   */
+  findTombstoneByHash(hash) {
+    this._ensureInitialized();
+    if (!hash) return null;
+    let best = null;
+    for (const t of this._tombstones) {
+      if (t.originalHash === hash && t.state === STATE.RECOVERABLE) {
+        if (!best || (t.deletedAt > best.deletedAt)) best = t;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Find a tombstone by Zotero attachment key. Used by RST.1: when a
+   * Zotero attachment is restored from the trash, the restore handler
+   * looks up the tombstone to find the local plugin-trash path and
+   * moves the file back to its canonical location.
+   * @param {string} attachmentKey
+   * @returns {TombstoneRecord|null}
+   */
+  findTombstoneByAttachmentKey(attachmentKey) {
+    this._ensureInitialized();
+    if (!attachmentKey) return null;
+    for (const t of this._tombstones) {
+      if (t.zoteroAttachmentKey === attachmentKey && t.state === STATE.RECOVERABLE) {
+        return t;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Remove all tombstone(s) matching an attachment key. Called after a
+   * successful restore (RST.1 / RST.3) so a future trash event can
+   * create a fresh tombstone without ambiguity.
+   * @param {string} attachmentKey
+   * @returns {number} count removed
+   */
+  removeTombstoneByAttachmentKey(attachmentKey) {
+    this._ensureInitialized();
+    if (!attachmentKey) return 0;
+    let removed = 0;
+    for (let i = this._tombstones.length - 1; i >= 0; i--) {
+      if (this._tombstones[i].zoteroAttachmentKey === attachmentKey) {
+        this._tombstones.splice(i, 1);
+        removed++;
+      }
+    }
+    if (removed > 0) this._dirty = true;
+    return removed;
+  }
+
+  /**
    * All CollectionRecords currently flagged OUT_OF_SCOPE_SUPPRESSED.
    * Mode 2 flips these when Zotero deletes a tracked subcollection
    * (mirrorExecutor._deleteFolder warn-only path). Phase B's full

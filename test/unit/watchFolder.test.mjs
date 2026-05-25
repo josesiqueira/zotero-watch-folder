@@ -1726,3 +1726,150 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
     expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-092: restore matrix (v2.2)
+//   RST.1 — Zotero attachment restored → move file out of plugin trash
+//   RST.3 — Local file reappears → re-link to tombstoned attachment
+//   RST.6 — Destination collision → restore as `<name>.restored.<ts>.<ext>`
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-092: _handleZoteroRestore — RST.1 + RST.6', () => {
+  let service;
+  let store;
+  let utils;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => k === 'sourcePath' ? '/watch' : undefined);
+
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const tombstones = [];
+    const files = [];
+    store = {
+      _tombstones: tombstones,
+      _files: files,
+      getAllOfType: vi.fn((t) => t === 'tombstone' ? tombstones.slice() : (t === 'file' ? files.slice() : [])),
+      findTombstoneByAttachmentKey: vi.fn((k) => tombstones.find(t => t.zoteroAttachmentKey === k) ?? null),
+      removeTombstoneByAttachmentKey: vi.fn((k) => {
+        let removed = 0;
+        for (let i = tombstones.length - 1; i >= 0; i--) {
+          if (tombstones[i].zoteroAttachmentKey === k) { tombstones.splice(i, 1); removed++; }
+        }
+        return removed;
+      }),
+      add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.makeDirectory = vi.fn(async () => {});
+    globalThis.IOUtils.move = vi.fn(async () => {});
+    globalThis.IOUtils.copy = vi.fn(async () => {});
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+    globalThis.Zotero.Items.get = vi.fn((id) => ({
+      id, key: 'ATT001', deleted: false, isAttachment: () => true,
+    }));
+  });
+
+  it('RST.1: restored attachment → moves file out of plugin trash, re-creates FileRecord, drops tombstone', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'Methods/paper.pdf', canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'ATT001', zoteroItemKey: 'PARENT1',
+      deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/Methods/paper.pdf',
+      originalHash: 'H1', state: 'recoverable',
+    });
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/watch/.zotero-watch-trash/Methods/paper.pdf');
+
+    await service._handleZoteroRestore([42]);
+
+    expect(globalThis.IOUtils.move).toHaveBeenCalledWith(
+      '/watch/.zotero-watch-trash/Methods/paper.pdf',
+      '/watch/Methods/paper.pdf'
+    );
+    expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'file', localPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'ATT001', lastSyncedHash: 'H1', state: 'clean',
+    }));
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
+  });
+
+  it('RST.6: destination collision → suffix as `.restored.<ts>.<ext>`, never overwrite', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'paper.pdf', canonicalLocalPath: 'paper.pdf',
+      zoteroAttachmentKey: 'ATT001',
+      deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/paper.pdf',
+      state: 'recoverable',
+    });
+    // BOTH source AND destination exist → collision.
+    globalThis.IOUtils.exists = vi.fn(async (p) =>
+      p === '/watch/.zotero-watch-trash/paper.pdf' || p === '/watch/paper.pdf'
+    );
+    const before = Date.now();
+
+    await service._handleZoteroRestore([42]);
+
+    const moveCall = globalThis.IOUtils.move.mock.calls[0];
+    expect(moveCall[0]).toBe('/watch/.zotero-watch-trash/paper.pdf');
+    expect(moveCall[1]).toMatch(/^\/watch\/paper\.restored\.\d+\.pdf$/);
+    const stamp = parseInt(moveCall[1].match(/paper\.restored\.(\d+)\.pdf$/)[1], 10);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+    // FileRecord uses the suffixed path.
+    expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
+      localPath: expect.stringMatching(/^paper\.restored\.\d+\.pdf$/),
+    }));
+  });
+
+  it('drops tombstone when the trash source is missing (user emptied plugin trash)', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'paper.pdf', canonicalLocalPath: 'paper.pdf',
+      zoteroAttachmentKey: 'ATT001',
+      deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/paper.pdf',
+      state: 'recoverable',
+    });
+    globalThis.IOUtils.exists = vi.fn(async () => false); // trash source gone
+
+    await service._handleZoteroRestore([42]);
+
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+    expect(store.add).not.toHaveBeenCalled();
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
+  });
+
+  it('skips items whose attachment is still in trash (deleted: true)', async () => {
+    globalThis.Zotero.Items.get = vi.fn((id) => ({
+      id, key: 'ATT001', deleted: true, isAttachment: () => true,
+    }));
+    store._tombstones.push({
+      type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/x.pdf', canonicalLocalPath: 'x.pdf', state: 'recoverable',
+    });
+
+    await service._handleZoteroRestore([42]);
+
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+    expect(store.removeTombstoneByAttachmentKey).not.toHaveBeenCalled();
+  });
+
+  it('drops tombstones with no trashPath (OS-trash variant — unreachable for restore)', async () => {
+    store._tombstones.push({
+      type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+      trashPath: null, canonicalLocalPath: 'paper.pdf', state: 'recoverable',
+    });
+
+    await service._handleZoteroRestore([42]);
+
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
+  });
+});
