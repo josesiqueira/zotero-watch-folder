@@ -51,12 +51,19 @@ what feels right. Each item is self-contained — none block the others.
 These come from CLAUDE.md's "Open issues / known bugs" section and are
 mostly orthogonal to v2.2.
 
-- [ ] **Cascading-trash bug** (CRITICAL before v2.2). Dedup-skipped
-      files share `itemID` with the matched existing item; deleting one
-      with `diskDeleteSync=auto` prompts `_promptDiskDelete` for every
-      sibling. Mode 1 + Mode 2 gating sidesteps; must fix before v2.2's
-      `_handleZoteroTrash` rewrite enables propagation. Repro: drop a
-      duplicate, let it dedup-track, then `rm` it.
+- [x] **Cascading-trash bug** (was CRITICAL before v2.2). Two patches:
+      - `_handleExternalDeletions` Mode 3 branch: when a SHADOW record
+        (`localPath !== canonicalLocalPath`) is missing but its canonical
+        sibling is still on disk, drop only the shadow tracking record —
+        don't trash the Zotero attachment. Stops the cascade at its
+        source.
+      - `_handleZoteroTrash`: full v2-schema rewrite. Collapses per
+        attachment key (not per record), disk-deletes only the canonical
+        path, drops shadows from tracking without disk action. Mode 2
+        warn-only path also implemented (drops tracking + warningSink).
+        9 new UT-090 tests cover both directions across Mode 1/2/3
+        and edge cases (missing canonical, non-attachment items,
+        diskDeleteOnTrash=never).
 - [ ] **Phase 3 bulk ops** (`reorganizeAll`, `retryAllMetadata`,
       `applyRulesToAll`) — no UI hook AND not reachable via
       `Zotero.WatchFolder.hooks`. Effectively dormant. Decide: delete
@@ -73,9 +80,9 @@ mostly orthogonal to v2.2.
 
 Bigger scope. Reserve a longer session.
 
-- [ ] **Fix cascading-trash bug first** (see Track B). Mode 3 propagates
-      disk deletions back to Zotero — the cascading-trash logic must not
-      ship.
+- [x] **Fix cascading-trash bug first** (see Track B). Done — both
+      `_handleExternalDeletions` and `_handleZoteroTrash` v2 rewrite
+      shipped with full test coverage. Mode 3 can now propagate safely.
 - [ ] **`_handleZoteroTrash` v2 rewrite** with the safe-delete predicate
       (hash-clean check + attachment-key mapping). Lives in
       `content/watchFolder.mjs` ~line 1085+. Currently gated off in Mode
@@ -102,7 +109,7 @@ Bigger scope. Reserve a longer session.
 ## Project state at-a-glance
 
 - **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **Tests:** 19 files / 456 passing + 21 skipped (`npm test`).
+- **Tests:** 19 files / 465 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ except WARN.1 visual UI step.
 - **Auto-update:** `update.json` on `main` points at the v2.1 XPI;

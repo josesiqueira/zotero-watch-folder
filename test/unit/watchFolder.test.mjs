@@ -1255,3 +1255,268 @@ describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
     await expect(service._ensureCollectionsForExistingFolders('/watch')).resolves.toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-090: cascading-trash protection (v2 schema).
+// Dedup-skip can produce SHADOW records (localPath !== canonicalLocalPath)
+// pointing at the same zoteroAttachmentKey as the canonical record. Both
+// the disk-side trash path (_handleExternalDeletions Mode 3 branch) and
+// the Zotero-side trash path (_handleZoteroTrash v2 rewrite) must avoid
+// cascading a single user-deletion into deleting the canonical sibling.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-090: cascading-trash protection — _handleExternalDeletions', () => {
+  let service;
+  let store;
+  let watchFolderMod;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'auto';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue(null);
+
+    watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    // Build a hand-rolled store so we can assert .remove vs
+    // .removeByAttachmentKey precisely.
+    const records = [];
+    store = {
+      _records: records,
+      getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getByAttachmentKey: vi.fn((k) => records.find(r => r.zoteroAttachmentKey === k) ?? null),
+      remove: vi.fn((path) => {
+        const idx = records.findIndex(r => r.localPath === path);
+        if (idx === -1) return false;
+        records.splice(idx, 1);
+        return true;
+      }),
+      removeByAttachmentKey: vi.fn((key) => {
+        for (let i = records.length - 1; i >= 0; i--) {
+          if (records[i].zoteroAttachmentKey === key) records.splice(i, 1);
+        }
+        return true;
+      }),
+      update: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({
+      key: 'ATT001', deleted: false, saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+    }));
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+    service._showExternalDeletionPopup = vi.fn();
+  });
+
+  it('drops shadow tracking ONLY when its canonical sibling still exists on disk (Mode 3)', async () => {
+    // Canonical: A.pdf (present on disk). Shadow: A2.pdf (missing).
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+    // Disk shows A.pdf only. A2.pdf is missing.
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/watch/A.pdf');
+    // Pretend the scanner saw A.pdf only.
+    const diskPaths = new Set(['/watch/A.pdf']);
+
+    await service._handleExternalDeletions(diskPaths, []);
+
+    // Shadow tracking was dropped via .remove(localPath), NOT via
+    // .removeByAttachmentKey (which would have collapsed both).
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
+    // Zotero attachment must NOT have been trashed.
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
+  });
+
+  it('falls through to normal trash propagation when BOTH canonical and shadow are missing (Mode 3)', async () => {
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+    globalThis.IOUtils.exists = vi.fn(async () => false); // everything missing
+    const diskPaths = new Set();
+
+    await service._handleExternalDeletions(diskPaths, []);
+
+    // At least one trash propagation. removeByAttachmentKey was used to
+    // collapse all records for the attachment, which is correct when
+    // every copy is gone.
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).toHaveBeenCalled();
+    expect(store.removeByAttachmentKey).toHaveBeenCalledWith('ATT001');
+  });
+
+  it('does NOT drop the canonical record when only it is missing (shadow on disk)', async () => {
+    // Canonical missing, shadow still on disk. The cascading guard only
+    // protects shadows whose canonical still exists — it does not protect
+    // a canonical whose shadow exists. Trash the attachment normally.
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/watch/A2.pdf');
+    const diskPaths = new Set(['/watch/A2.pdf']);
+
+    await service._handleExternalDeletions(diskPaths, []);
+
+    expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).toHaveBeenCalled();
+  });
+});
+
+describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite', () => {
+  let service;
+  let store;
+  let watchFolderMod;
+  let utils;
+  let warningSinkMod;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'permanent';
+      return undefined;
+    });
+
+    watchFolderMod = await import('../../content/watchFolder.mjs');
+    warningSinkMod = await import('../../content/warningSink.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const records = [];
+    store = {
+      _records: records,
+      getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      remove: vi.fn((path) => {
+        const idx = records.findIndex(r => r.localPath === path);
+        if (idx === -1) return false;
+        records.splice(idx, 1);
+        return true;
+      }),
+      removeByAttachmentKey: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+    service._moveToOSTrash = vi.fn(async () => {});
+    service._pickWindow = vi.fn(() => null); // no UI → 'never' fallback inside _promptDiskDelete
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+    globalThis.Zotero.Items.get = vi.fn((id) => ({
+      id, key: id === 42 ? 'ATT001' : `K${id}`, isAttachment: () => true,
+    }));
+  });
+
+  it('Mode 3 disk-deletes ONLY the canonical path; drops shadows from tracking without disk action', async () => {
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    // IOUtils.remove called exactly once, for canonical only.
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledTimes(1);
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
+    // Both tracking records dropped via .remove (not removeByAttachmentKey).
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+  });
+
+  it('Mode 3 with diskDeleteOnTrash=never drops tracking but never touches disk', async () => {
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'never';
+      return undefined;
+    });
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(service._moveToOSTrash).not.toHaveBeenCalled();
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+  });
+
+  it('Mode 2 (warn-only) drops tracking + reports warning, never touches disk', async () => {
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode2';
+      if (k === 'sourcePath') return '/watch';
+      return undefined;
+    });
+    const reportSpy = vi.spyOn(warningSinkMod, 'report');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(service._moveToOSTrash).not.toHaveBeenCalled();
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    expect(reportSpy).toHaveBeenCalledTimes(1);
+    expect(reportSpy.mock.calls[0][0]).toMatchObject({
+      actionType: 'zotero-trash',
+      attachmentKey: 'ATT001',
+      reason: 'mode2-warn-only',
+    });
+  });
+
+  it('skips non-attachment items', async () => {
+    globalThis.Zotero.Items.get = vi.fn((id) => ({
+      id, key: `K${id}`, isAttachment: () => false,
+    }));
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+  });
+
+  it('handles missing canonical file gracefully (drops tracking, no remove call)', async () => {
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+    globalThis.IOUtils.exists = vi.fn(async () => false); // canonical missing too
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+  });
+
+  it('Mode 1 still early-returns (no-op)', async () => {
+    utils.getPref.mockImplementation((k) => k === 'mode' ? 'mode1' : undefined);
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(store.save).not.toHaveBeenCalled();
+  });
+});

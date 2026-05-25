@@ -1259,73 +1259,122 @@ export class WatchFolderService {
   }
 
   /**
-   * Handle items being moved to Zotero's trash. Based on the
-   * `diskDeleteOnTrash` preference, optionally remove the corresponding
-   * source files from the watch folder.
+   * Handle items being moved to Zotero's trash. v2 schema; supports
+   * Mode 2 (warn-only) and Mode 3 (safe-delete).
    *
-   * Modes:
-   * - 'never'      : leave the source files alone, drop the tracking entry
-   * - 'os_trash'   : move source files to the OS trash silently
-   * - 'permanent'  : permanently delete source files silently
-   * - 'ask'        : show a 3-button dialog (OS trash / Permanent / Keep)
+   * Cascading-trash protection: dedup-skip can produce multiple tracking
+   * records pointing at the SAME zoteroAttachmentKey (canonical + shadow
+   * records, distinguished by `record.localPath === record.canonicalLocalPath`).
+   * A naive "delete every tracked path for this attachment" would
+   * disk-delete the canonical even when the user only touched a shadow
+   * — and vice versa. This rewrite collapses per-attachment: at most
+   * ONE disk path is offered for deletion (the canonical), and shadow
+   * tracking records are dropped without any disk action.
    *
-   * Linked mode adds an extra warning before permanent-delete since the
-   * watch-folder file is the only copy.
+   * Mode 3 disk-action policy (pref `diskDeleteOnTrash`):
+   *   - 'never'     : leave source files alone, drop tracking
+   *   - 'os_trash'  : move canonical files to OS trash silently
+   *   - 'permanent' : permanently delete canonical files silently
+   *   - 'ask'       : show 3-button dialog (OS trash / Permanent / Keep)
    *
-   * @param {number[]} ids - Trashed Zotero item IDs
+   * Mode 2: never touches disk; surfaces a warningSink entry per
+   * attachment and drops all related tracking records.
+   *
+   * @param {number[]} ids - Trashed Zotero item IDs (numeric).
    */
   async _handleZoteroTrash(ids) {
-    if (!this._trackingStore || !ids || ids.length === 0) {
+    if (!this._trackingStore || !ids || ids.length === 0) return;
+    const syncMode = getPref('mode') || 'mode1';
+    if (syncMode === 'mode1') return; // defense in depth
+
+    const watchPath = getPref('sourcePath') || '';
+
+    // 1. Translate numeric Zotero item IDs → attachment keys (the v2
+    //    identity). Skip non-attachment items and dedupe keys.
+    const attachmentKeys = new Set();
+    for (const id of ids) {
+      let key = null;
+      try {
+        const item = Zotero.Items.get(id);
+        if (item && item.key && (!item.isAttachment || item.isAttachment())) {
+          key = item.key;
+        }
+      } catch (_e) { /* item already removed from DB — fall through */ }
+      if (key) attachmentKeys.add(key);
+    }
+    if (attachmentKeys.size === 0) return;
+
+    // 2. Per attachment, gather all records and split canonical vs shadows.
+    //    Decide whether the canonical file is actually on disk and
+    //    eligible for deletion.
+    const plans = [];
+    const allFiles = this._trackingStore.getAllOfType('file');
+    for (const key of attachmentKeys) {
+      const records = allFiles.filter(r => r.zoteroAttachmentKey === key);
+      if (records.length === 0) continue;
+      const canonical = records.find(r => r.localPath === r.canonicalLocalPath) || records[0];
+      const shadows = records.filter(r => r !== canonical);
+      let canonicalDiskPath = null;
+      if (canonical.state !== STATE.MISSING && canonical.localPath) {
+        const abs = this._resolveTrackedAbs(canonical.localPath, watchPath);
+        const exists = await IOUtils.exists(abs).catch(() => false);
+        if (exists) canonicalDiskPath = abs;
+      }
+      plans.push({ attachmentKey: key, canonical, shadows, canonicalDiskPath });
+    }
+    if (plans.length === 0) return;
+
+    // 3. Mode 2: warn-only. Drop tracking for canonical + shadows, surface
+    //    one warningSink entry per attachment. Never touch disk.
+    if (syncMode === 'mode2') {
+      for (const p of plans) {
+        for (const r of [p.canonical, ...p.shadows]) {
+          this._trackingStore.remove(r.localPath);
+        }
+        try {
+          reportWarning({
+            category: WARNING_CATEGORY.SUPPRESSED,
+            actionType: 'zotero-trash',
+            attachmentKey: p.attachmentKey,
+            path: p.canonical.localPath,
+            reason: 'mode2-warn-only',
+            message: `Zotero item trashed — local file kept (Mode 2): "${p.canonical.localPath}"${p.shadows.length > 0 ? ` (+${p.shadows.length} shadow record${p.shadows.length === 1 ? '' : 's'} dropped)` : ''}`,
+          });
+        } catch (_e) { /* sink unavailable */ }
+      }
+      try { await this._trackingStore.save(); } catch (_) {}
       return;
     }
-    // Defense in depth: v2.0 (Mode 1) callers gate before calling, but if a
-    // future caller invokes this directly we still want the v2.1/v2.2-only
-    // semantics. The body below still references the v1 tracking schema
-    // (record.path / record.itemID / record.expectedOnDisk) — v2.1 will
-    // rewrite it. Until then this is unreachable in Mode 1.
-    const syncMode = getPref('mode') || 'mode1';
-    if (syncMode === 'mode1') return;
 
-    // Collect tracked files for the trashed items
-    const targets = [];
-    for (const id of ids) {
-      const record = this._trackingStore.findByItemID(id);
-      if (!record || !record.path || record.expectedOnDisk === false) {
-        if (record) this._trackingStore.removeByItemID(id);
-        continue;
-      }
-      const exists = await IOUtils.exists(record.path).catch(() => false);
-      if (!exists) {
-        // File already gone — just clear the tracking entry
-        this._trackingStore.removeByItemID(id);
-        continue;
-      }
-      targets.push({ itemID: id, path: record.path });
+    // 4. Mode 3: ask once for all deletable targets, then act per attachment.
+    const deletable = plans.filter(p => p.canonicalDiskPath);
+    let action = getPref('diskDeleteOnTrash') || 'ask';
+    if (action === 'ask' && deletable.length > 0) {
+      action = this._promptDiskDelete(
+        deletable.map(p => ({ attachmentKey: p.attachmentKey, path: p.canonicalDiskPath }))
+      );
     }
-
-    if (targets.length === 0) return;
-
-    const mode = getPref('diskDeleteOnTrash') || 'ask';
-    let action = mode; // 'never' | 'os_trash' | 'permanent' | 'ask'
-
-    if (mode === 'ask') {
-      action = this._promptDiskDelete(targets);
-      // action is now one of 'os_trash' | 'permanent' | 'never'
-    }
-
-    for (const { itemID, path } of targets) {
-      if (action === 'os_trash') {
-        await this._moveToOSTrash(path);
-      } else if (action === 'permanent') {
-        try {
-          await IOUtils.remove(path);
-          Zotero.debug(`[WatchFolder] Trash sync: permanently deleted ${path}`);
-        } catch (e) {
-          Zotero.debug(`[WatchFolder] Trash sync: failed to delete ${path}: ${e.message}`);
+    for (const p of plans) {
+      if (p.canonicalDiskPath) {
+        if (action === 'os_trash') {
+          try { await this._moveToOSTrash(p.canonicalDiskPath); }
+          catch (e) { Zotero.debug(`[WatchFolder] _handleZoteroTrash os_trash failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`); }
+        } else if (action === 'permanent') {
+          try {
+            await IOUtils.remove(p.canonicalDiskPath);
+            Zotero.debug(`[WatchFolder] _handleZoteroTrash: permanently deleted ${p.canonicalDiskPath}`);
+          } catch (e) {
+            Zotero.debug(`[WatchFolder] _handleZoteroTrash: failed to delete ${p.canonicalDiskPath}: ${e?.message ?? e}`);
+          }
         }
+        // 'never' → leave canonical file alone
       }
-      // 'never' → leave file alone
-      this._trackingStore.removeByItemID(itemID);
+      // Drop tracking for canonical + every shadow. Shadow paths are
+      // NEVER disk-deleted here — that's the cascading-trash guard.
+      this._trackingStore.remove(p.canonical.localPath);
+      for (const s of p.shadows) {
+        this._trackingStore.remove(s.localPath);
+      }
     }
 
     try { await this._trackingStore.save(); } catch (_) {}
@@ -1598,12 +1647,34 @@ export class WatchFolderService {
       return;
     }
 
-    // Mode 3 — safe-delete propagation (v2.2). Body still references v1
-    // schema in spots; v2.2's B4 rewrite will tighten it. The cascading-
-    // trash bug from CLAUDE.md must be addressed before Mode 3 ships.
+    // Mode 3 — safe-delete propagation (v2.2).
     Zotero.debug(`[WatchFolder] Detected ${stillMissing.length} externally-deleted file(s) (mode=${mode})`);
     const trashed = [];
     for (const record of stillMissing) {
+      // Cascading-trash protection: a record is a SHADOW when its
+      // localPath differs from its canonicalLocalPath (the dedup-skip
+      // path at _processNewFile creates these when the user puts two
+      // copies of the same file under the watch root). If only the
+      // shadow is missing while its canonical sibling is still on disk,
+      // trashing the Zotero attachment would later cascade through
+      // _handleZoteroTrash and disk-delete the canonical too. Drop just
+      // the shadow tracking; leave Zotero alone.
+      const isShadow = record.localPath !== record.canonicalLocalPath;
+      if (isShadow) {
+        const canonical = this._trackingStore.getAllOfType('file').find(
+          r => r.zoteroAttachmentKey === record.zoteroAttachmentKey
+               && r.localPath === r.canonicalLocalPath
+        );
+        if (canonical) {
+          const canonAbs = this._resolveTrackedAbs(canonical.localPath, watchPath);
+          const canonExists = await IOUtils.exists(canonAbs).catch(() => false);
+          if (canonExists) {
+            Zotero.debug(`[WatchFolder] Cascading-trash guard: shadow ${record.localPath} missing but canonical ${canonical.localPath} still on disk — dropping shadow only`);
+            this._trackingStore.remove(record.localPath);
+            continue;
+          }
+        }
+      }
       try {
         const syncRoot = await resolveSyncRoot().catch(() => null);
         const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
