@@ -197,13 +197,12 @@ Bigger scope. Reserve a longer session.
 
 ### Track D — discovered while doing other items (autonomous queue)
 
-- [ ] **Unit test for RST.5 re-attach path** in
-      `_processNewFile`. The RST.5 implementation (re-attach to a
-      still-living parent when the original attachment was purged)
-      has no unit test — `_processNewFile` doesn't have a dedicated
-      describe block in `watchFolder.test.mjs`. Live MCP path covers
-      it indirectly. Add a focused test or stand up a small
-      `_processNewFile` test harness.
+- [x] **Unit test for RST.5 re-attach path** in `_processNewFile`.
+      Stood up a `_processNewFile` test harness via mocking
+      `_waitForFileStable` + injecting a hand-rolled tracking store
+      mock. 3 UT-095 tests: parent intact (RST.5 happy path), parent
+      also gone (falls through to normal import), parent is itself
+      an attachment (refuses to re-attach, falls through).
 - [ ] **Restore-folder UX in prefs pane.** Mode 3 `_deleteFolder`
       now moves folders into `.zotero-watch-trash/`, but the only
       way to recover them today is to manually move the dir out of

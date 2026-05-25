@@ -2135,6 +2135,173 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-095: RST.5 — _processNewFile re-attaches under living parent when
+// the original attachment was permanently purged from Zotero.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-095: RST.5 re-attach under living parent', () => {
+  let service;
+  let store;
+  let utils;
+  let canonicalPath;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => k === 'sourcePath' ? '/watch' : undefined);
+    utils.getFileHash.mockResolvedValue('TOMBHASH');
+
+    canonicalPath = await import('../../content/canonicalPath.mjs');
+    canonicalPath.resolveSyncRoot.mockResolvedValue({
+      collection: { id: 1, key: 'ROOT1', name: 'Inbox' },
+      libraryID: 1,
+    });
+    canonicalPath.relativePathToCollection.mockResolvedValue({
+      id: 2, key: 'SUB1', libraryID: 1,
+    });
+
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+    // Bypass the file-stability wait.
+    service._waitForFileStable = vi.fn(async () => true);
+    // Stub the relative-path helper used by the record builder.
+    service._toRelativeForStore = (path) => path.replace(/^\/watch\//, '');
+
+    const tombstones = [];
+    const files = [];
+    store = {
+      _tombstones: tombstones,
+      _files: files,
+      findByHash: vi.fn(() => null), // nothing in the live hash index
+      findTombstoneByHash: vi.fn((h) => tombstones.find(t => t.originalHash === h) ?? null),
+      removeTombstoneByAttachmentKey: vi.fn((k) => {
+        const i = tombstones.findIndex(t => t.zoteroAttachmentKey === k);
+        if (i !== -1) { tombstones.splice(i, 1); return 1; }
+        return 0;
+      }),
+      add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
+      hasPath: vi.fn(() => false),
+      save: vi.fn(async () => {}),
+      // _processNewFile pre-tombstone code paths use these — return
+      // benign defaults so we reach the tombstone block.
+      getAllOfType: vi.fn((t) => t === 'tombstone' ? tombstones.slice() : (t === 'file' ? files.slice() : [])),
+      getCollectionRecord: vi.fn(() => null),
+      getByLocalPath: vi.fn(() => null),
+      getByAttachmentKey: vi.fn(() => null),
+      update: vi.fn(),
+      remove: vi.fn(() => true),
+    };
+    service._trackingStore = store;
+
+    globalThis.IOUtils.stat = vi.fn(async () => ({ size: 100, lastModified: 1 }));
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+  });
+
+  it('parent intact + attachment purged → importFromFile({parentItemID}) + FileRecord + tombstone dropped', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'old/paper.pdf', canonicalLocalPath: 'old/paper.pdf',
+      zoteroAttachmentKey: 'ATT_GONE', zoteroItemKey: 'PARENT_ALIVE',
+      deletedFrom: 'zotero', trashPath: null,
+      originalHash: 'TOMBHASH', state: 'recoverable',
+    });
+
+    // Original attachment is permanently purged.
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async (lib, key) => {
+      if (key === 'ATT_GONE') return null;
+      if (key === 'PARENT_ALIVE') return {
+        id: 999, key: 'PARENT_ALIVE', deleted: false,
+        isAttachment: () => false,
+      };
+      return null;
+    });
+    // The re-attach call returns a fresh attachment item.
+    globalThis.Zotero.Attachments.importFromFile.mockResolvedValue({
+      id: 1234, key: 'NEW_ATT',
+    });
+
+    await service._processNewFile('/watch/Other/paper.pdf', 'Other');
+
+    // The re-attach happened with the live parent.
+    expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledWith(expect.objectContaining({
+      file: '/watch/Other/paper.pdf',
+      parentItemID: 999,
+    }));
+    // FileRecord was added with the new attachment key + parent key.
+    const added = store.add.mock.calls.find(c => c[0]?.type === 'file');
+    expect(added).toBeDefined();
+    expect(added[0]).toMatchObject({
+      type: 'file',
+      localPath: 'Other/paper.pdf',
+      zoteroAttachmentKey: 'NEW_ATT',
+      zoteroItemKey: 'PARENT_ALIVE',
+      state: 'clean',
+    });
+    // Tombstone dropped.
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT_GONE');
+    expect(store._tombstones).toHaveLength(0);
+  });
+
+  it('parent also gone → falls through to normal import, tombstone dropped', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'old/paper.pdf', canonicalLocalPath: 'old/paper.pdf',
+      zoteroAttachmentKey: 'ATT_GONE', zoteroItemKey: 'PARENT_GONE',
+      deletedFrom: 'zotero', trashPath: null,
+      originalHash: 'TOMBHASH', state: 'recoverable',
+    });
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => null);
+
+    // The fileImporter mock chain ends with our import returning a basic item.
+    const fileImporterMod = await import('../../content/fileImporter.mjs');
+    fileImporterMod.importFile.mockResolvedValue({
+      id: 5, key: 'NEW_TOP', parentItem: undefined,
+    });
+    fileImporterMod.handlePostImportAction.mockResolvedValue({
+      action: 'leave', finalPath: '/watch/Other/paper.pdf',
+    });
+
+    await service._processNewFile('/watch/Other/paper.pdf', 'Other');
+
+    // RST.5 didn't fire — no parent re-attach.
+    expect(globalThis.Zotero.Attachments.importFromFile).not.toHaveBeenCalled();
+    // Tombstone dropped before fall-through.
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT_GONE');
+    // Normal import path ran (fileImporter.importFile).
+    expect(fileImporterMod.importFile).toHaveBeenCalled();
+  });
+
+  it('parent exists but is itself an attachment → falls through (no re-attach)', async () => {
+    store._tombstones.push({
+      type: 'tombstone', objectType: 'file',
+      localPath: 'old/paper.pdf', canonicalLocalPath: 'old/paper.pdf',
+      zoteroAttachmentKey: 'ATT_GONE', zoteroItemKey: 'ATT_AS_PARENT',
+      deletedFrom: 'zotero', trashPath: null,
+      originalHash: 'TOMBHASH', state: 'recoverable',
+    });
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async (lib, key) => {
+      if (key === 'ATT_GONE') return null;
+      if (key === 'ATT_AS_PARENT') return {
+        id: 999, key: 'ATT_AS_PARENT', deleted: false,
+        isAttachment: () => true, // looks like an attachment, not a real parent
+      };
+      return null;
+    });
+    const fileImporterMod = await import('../../content/fileImporter.mjs');
+    fileImporterMod.importFile.mockResolvedValue({ id: 5, key: 'NEW_TOP' });
+    fileImporterMod.handlePostImportAction.mockResolvedValue({
+      action: 'leave', finalPath: '/watch/Other/paper.pdf',
+    });
+
+    await service._processNewFile('/watch/Other/paper.pdf', 'Other');
+
+    expect(globalThis.Zotero.Attachments.importFromFile).not.toHaveBeenCalled();
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT_GONE');
+  });
+});
+
 describe('UT-094: _handleExternalDeletions bulk guard (Mode 3)', () => {
   let service;
   let store;
