@@ -4,11 +4,9 @@ Three layers, three audiences.
 
 ## `unit/` — Vitest, fast, no Zotero
 
-**432 passing + 21 skipped across 19 files** (as of v2.1). Run with `npm test`. Stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, `crypto.subtle` via `setup/geckoMocks.js`. Use these for pure-function logic and isolated module behavior. Add a new test file as `unit/<module>.test.mjs` matching the source name.
+**523 passing across 20 files** (as of v2.2.0-alpha.1; zero skipped after the v2.2 cleanup). Run with `npm test`. Stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, `crypto.subtle` via `setup/geckoMocks.js`. Use these for pure-function logic and isolated module behavior. Add a new test file as `unit/<module>.test.mjs` matching the source name.
 
-The 21 skipped tests are v1-schema bodies under `describe.skip` in `watchFolder.test.mjs` (UT-050 / UT-051) — gated off in Mode 1 + 2; they reactivate when v2.2's `_handleZoteroTrash` rewrite lands.
-
-v2.1 added 9 new files covering the Mode 2 pipeline: collectionWatcher, folderEventDetector, itemMembershipHandler, mirrorExecutor, mirrorExecutor_warnings, itemAddHandler, warningSink, suppressionResolver, baseline.
+v2.1 added 9 files covering the Mode 2 pipeline: collectionWatcher, folderEventDetector, itemMembershipHandler, mirrorExecutor, mirrorExecutor_warnings, itemAddHandler, warningSink, suppressionResolver, baseline. v2.2 added bulkGuard + UT-090..UT-095 + UT-107 + UT-110/111 + UT-419/420 + UT-830/831. The v1-schema UT-050/UT-051 placeholder describe.skip blocks were removed in the v2.2 cleanup; UT-090..UT-095 cover the trash + restore matrix end-to-end.
 
 **Known coverage gaps** (deliberate):
 - `index.mjs` — bootstrap lifecycle, 0 tests

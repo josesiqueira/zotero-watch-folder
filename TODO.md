@@ -230,7 +230,8 @@ Bigger scope. Reserve a longer session.
 - **Released:** `v2.2.0-alpha.1` (Mode 3 safe-delete + restore matrix
   + bulk-delete protection + smart-rules editor + restore-folder UX).
   Previous: `v2.1.0-alpha.1` (Mode 2 mirror-without-delete).
-- **Tests:** 20 files / 523 passing + 21 skipped (`npm test`).
+- **Tests:** 20 files / 523 passing (zero skipped — v1-schema
+  UT-050/UT-051 placeholder bodies were removed in v2.2 cleanup).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ WARN.1 visual UI step completed via MCP screenshot pass.
   `MODE3.md` runbook **still pending** — the canonical pre-tag
