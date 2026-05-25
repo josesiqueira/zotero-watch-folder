@@ -145,4 +145,40 @@
     </hbox>
   </groupbox>
 
+  <!-- Smart Rules Section. The engine in content/smartRules.mjs reads the
+       JSON from `extensions.zotero.watchFolder.smartRules` and evaluates
+       each rule's conditions/actions against newly-imported items. The
+       textarea below edits that JSON directly (manual save — NOT bound
+       to the pref, so users don't save broken JSON on every keystroke). -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-smart-rules"/></label>
+
+    <hbox align="center">
+      <label data-l10n-id="watch-folder-pref-smart-rules-enabled" control="watch-folder-smart-rules-enabled"/>
+      <checkbox id="watch-folder-smart-rules-enabled"
+                preference="extensions.zotero.watchFolder.smartRulesEnabled"/>
+    </hbox>
+
+    <vbox style="margin: 4px 0;">
+      <label data-l10n-id="watch-folder-pref-smart-rules-help" style="font-size: 0.9em; color: gray;"/>
+    </vbox>
+
+    <html:textarea id="watch-folder-smart-rules-editor"
+                   rows="12"
+                   style="width: 100%; font-family: monospace; font-size: 0.9em;"
+                   spellcheck="false"/>
+
+    <hbox align="center" style="margin-top: 4px;">
+      <button id="watch-folder-smart-rules-save-btn"
+              data-l10n-id="watch-folder-pref-smart-rules-save"
+              oncommand="WatchFolderPrefs.saveSmartRules()"/>
+      <button id="watch-folder-smart-rules-insert-btn"
+              data-l10n-id="watch-folder-pref-smart-rules-insert-example"
+              oncommand="WatchFolderPrefs.insertSmartRuleExample()"/>
+      <button id="watch-folder-smart-rules-reload-btn"
+              data-l10n-id="watch-folder-pref-smart-rules-reload"
+              oncommand="WatchFolderPrefs.reloadSmartRules()"/>
+    </hbox>
+  </groupbox>
+
 </vbox>

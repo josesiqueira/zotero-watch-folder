@@ -71,9 +71,15 @@ mostly orthogonal to v2.2.
       `test/unit/fileScanner.test.mjs` (the only consumer outside the
       module itself was the test for one private helper). Doc cleanup
       in `test/README.md` + `test/mcp/INDEX.md`.
-- [ ] **Smart rules editor UI.** Engine in `content/smartRules.mjs`
-      works but rules are JSON in `about:config`. A small prefs-pane
-      editor would make the feature usable for non-developers.
+- [x] **Smart rules editor UI.** Added a Smart Rules section to the
+      prefs pane: enable checkbox + multi-line JSON textarea + Save /
+      Insert example / Reload buttons. Save validates JSON parse +
+      per-rule shape (mirrors `_validateRule` in the engine) and shows
+      a specific error on bad input. Insert appends a starter rule
+      template so users have a concrete shape to edit. Reload re-reads
+      the pref (useful after editing in about:config). Kept the JSON
+      textarea (rather than a form-based editor) because rule shape
+      is small and power-user-friendly is fine for the first cut.
 - [ ] **Listener leak in `warningSink`.** `clear()` doesn't drop
       `_listeners`. Currently no live subscriber outside the prefs pane,
       so latent only. Document the contract OR drop listeners in

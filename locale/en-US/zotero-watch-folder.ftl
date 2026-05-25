@@ -66,6 +66,13 @@ watch-folder-first-run-message = Found { $count } file(s) in the watch folder. W
 watch-folder-first-run-import = Import All
 watch-folder-first-run-skip = Skip
 
+watch-folder-pref-section-smart-rules = Smart Rules
+watch-folder-pref-smart-rules-enabled = Enable smart rules
+watch-folder-pref-smart-rules-help = Rules below are JSON. Each rule has an id, name, conditions (AND logic), and actions. Use the Insert example button for a starter template; press Save to validate + persist.
+watch-folder-pref-smart-rules-save = Save
+watch-folder-pref-smart-rules-insert-example = Insert example
+watch-folder-pref-smart-rules-reload = Reload from prefs
+
 # Tags
 watch-folder-tag-needs-review = _needs-review
 watch-folder-tag-import-error = _import-error

@@ -505,13 +505,99 @@
     }
 
     /**
+     * Load the current `smartRules` pref into the editor textarea. Pretty-
+     * printed for human editing; saved back compacted by the engine.
+     */
+    function reloadSmartRules() {
+        const editor = document.getElementById('watch-folder-smart-rules-editor');
+        if (!editor) return;
+        const raw = getPref('smartRules') || '[]';
+        try {
+            editor.value = JSON.stringify(JSON.parse(raw), null, 2);
+        } catch (_e) {
+            // Pref holds invalid JSON — show as-is so the user can fix it.
+            editor.value = raw;
+        }
+    }
+
+    /**
+     * Validate the textarea contents (parse + per-rule shape check) and
+     * persist to the pref on success. Rejects with an alert on parse or
+     * structural errors.
+     */
+    function saveSmartRules() {
+        const editor = document.getElementById('watch-folder-smart-rules-editor');
+        if (!editor) return;
+        let parsed;
+        try {
+            parsed = JSON.parse(editor.value);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Invalid JSON: ${e.message}`);
+            return;
+        }
+        if (!Array.isArray(parsed)) {
+            Services.prompt.alert(window, 'Watch Folder', 'Top-level value must be an array of rule objects.');
+            return;
+        }
+        // Mirror the engine's `_validateRule` shape check so users hear about
+        // problems here rather than silently losing rules at engine load.
+        for (let i = 0; i < parsed.length; i++) {
+            const r = parsed[i];
+            if (!r || typeof r !== 'object') {
+                Services.prompt.alert(window, 'Watch Folder', `Rule ${i + 1}: not an object.`);
+                return;
+            }
+            if (!r.id || !r.name) {
+                Services.prompt.alert(window, 'Watch Folder', `Rule ${i + 1}: missing required field "id" or "name".`);
+                return;
+            }
+            if (!Array.isArray(r.conditions) || !Array.isArray(r.actions)) {
+                Services.prompt.alert(window, 'Watch Folder', `Rule ${i + 1} (${r.id}): conditions and actions must both be arrays.`);
+                return;
+            }
+            if (r.actions.length === 0) {
+                Services.prompt.alert(window, 'Watch Folder', `Rule ${i + 1} (${r.id}): at least one action is required.`);
+                return;
+            }
+        }
+        setPref('smartRules', JSON.stringify(parsed));
+        // Pretty-print on success so editing continues to be readable.
+        editor.value = JSON.stringify(parsed, null, 2);
+        Services.prompt.alert(window, 'Watch Folder', `Saved ${parsed.length} rule(s).`);
+    }
+
+    /**
+     * Append a starter rule template to the editor so the user has a
+     * concrete shape to edit. Doesn't save — the user reviews + presses
+     * Save themselves.
+     */
+    function insertSmartRuleExample() {
+        const editor = document.getElementById('watch-folder-smart-rules-editor');
+        if (!editor) return;
+        let existing;
+        try { existing = JSON.parse(editor.value || '[]'); }
+        catch (_e) { existing = []; }
+        if (!Array.isArray(existing)) existing = [];
+        existing.push({
+            id: 'example-' + Date.now(),
+            name: 'Example: tag PDFs with DOI as "_has-doi"',
+            enabled: true,
+            priority: 0,
+            stopOnMatch: false,
+            conditions: [{ field: 'DOI', operator: 'isNotEmpty', value: '' }],
+            actions: [{ type: 'addTag', tag: '_has-doi' }],
+        });
+        editor.value = JSON.stringify(existing, null, 2);
+    }
+
+    /**
      * Called after Zotero inserts and translates the pane fragment.
      * At this point all elements with id="watch-folder-*" exist in the DOM.
      */
     function init() {
         try {
             Zotero.debug('[Watch Folder] Initializing preferences panel');
-            
+
             // Enable checkbox — extra path-validation on top of the pref binding
             const enableCheckbox = document.getElementById('watch-folder-enabled');
             if (enableCheckbox) {
@@ -532,6 +618,9 @@
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
+
+            // Smart-rules editor — load current pref into the textarea.
+            reloadSmartRules();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
@@ -570,6 +659,9 @@
         resolveSuppressedFolders,
         resolveConflicts,
         runSetupWizard,
+        reloadSmartRules,
+        saveSmartRules,
+        insertSmartRuleExample,
         onLoad: init,
     };
 
