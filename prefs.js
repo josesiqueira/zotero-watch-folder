@@ -14,7 +14,7 @@ pref("extensions.zotero.watchFolder.fileTypes", "pdf");
 pref("extensions.zotero.watchFolder.importMode", "stored");  // "stored" or "linked"
 pref("extensions.zotero.watchFolder.postImportAction", "leave");  // "leave", "delete", "move"
 pref("extensions.zotero.watchFolder.autoRetrieveMetadata", true);  // Auto-fetch PDF metadata
-pref("extensions.zotero.watchFolder.diskDeleteOnTrash", "ask");  // "ask" | "os_trash" | "permanent" | "never" — when an item is trashed in Zotero, what to do with the source file in the watch folder. No-op in Mode 1; consumed by v2.1/v2.2.
+pref("extensions.zotero.watchFolder.diskDeleteOnTrash", "ask");  // "ask" | "plugin_trash" | "os_trash" | "permanent" | "never" — when an item is trashed in Zotero, what to do with the source file. plugin_trash moves to .zotero-watch-trash/ under the watch root (recoverable + scanner-skipped, v2.2 default if user picks it from the dialog). No-op in Mode 1; consumed by v2.1/v2.2.
 pref("extensions.zotero.watchFolder.diskDeleteSync", "auto");  // "auto" | "never" — when a file is externally deleted from the watch folder, auto-move the matching Zotero item to the bin and show a popup ("auto") or do nothing ("never"). No-op in Mode 1; consumed by v2.1/v2.2.
 
 // v2.0 sync model — sync root + mode

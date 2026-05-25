@@ -1520,3 +1520,209 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     expect(store.save).not.toHaveBeenCalled();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-091: plugin trash (.zotero-watch-trash/) — v2.2 safe-delete recoverability
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-091: _moveToPluginTrash', () => {
+  let service;
+  let utils;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => k === 'sourcePath' ? '/watch' : undefined);
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    globalThis.IOUtils.makeDirectory = vi.fn(async () => {});
+    globalThis.IOUtils.move = vi.fn(async () => {});
+    globalThis.IOUtils.copy = vi.fn(async () => {});
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+  });
+
+  it('moves file into .zotero-watch-trash/ preserving the sync-root-relative path', async () => {
+    const trashPath = await service._moveToPluginTrash('/watch/Methods/paper.pdf');
+
+    expect(trashPath).toBe('.zotero-watch-trash/Methods/paper.pdf');
+    expect(globalThis.IOUtils.makeDirectory).toHaveBeenCalledWith(
+      '/watch/.zotero-watch-trash/Methods',
+      { ignoreExisting: true, createAncestors: true }
+    );
+    expect(globalThis.IOUtils.move).toHaveBeenCalledWith(
+      '/watch/Methods/paper.pdf',
+      '/watch/.zotero-watch-trash/Methods/paper.pdf'
+    );
+  });
+
+  it('suffixes filename with millisecond timestamp on collision (RST.6 — never overwrite)', async () => {
+    // Pretend the target already exists.
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/watch/.zotero-watch-trash/paper.pdf');
+    const before = Date.now();
+
+    const trashPath = await service._moveToPluginTrash('/watch/paper.pdf');
+
+    expect(trashPath).toMatch(/^\.zotero-watch-trash\/paper\.\d+\.pdf$/);
+    const stamp = parseInt(trashPath.match(/paper\.(\d+)\.pdf$/)[1], 10);
+    expect(stamp).toBeGreaterThanOrEqual(before);
+    expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null and bails when watch root is not set', async () => {
+    utils.getPref.mockImplementation(() => undefined);
+    const trashPath = await service._moveToPluginTrash('/anywhere/paper.pdf');
+    expect(trashPath).toBeNull();
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the source path is outside the watch root', async () => {
+    const trashPath = await service._moveToPluginTrash('/some-other-dir/paper.pdf');
+    expect(trashPath).toBeNull();
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+  });
+
+  it('falls back to copy+remove when IOUtils.move throws (cross-FS)', async () => {
+    globalThis.IOUtils.move = vi.fn(async () => { throw new Error('EXDEV'); });
+
+    const trashPath = await service._moveToPluginTrash('/watch/paper.pdf');
+
+    expect(trashPath).toBe('.zotero-watch-trash/paper.pdf');
+    expect(globalThis.IOUtils.copy).toHaveBeenCalledWith(
+      '/watch/paper.pdf',
+      '/watch/.zotero-watch-trash/paper.pdf'
+    );
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/paper.pdf');
+  });
+
+  it('returns null and cleans partial destination when both move and copy fail', async () => {
+    globalThis.IOUtils.move = vi.fn(async () => { throw new Error('EXDEV'); });
+    globalThis.IOUtils.copy = vi.fn(async () => { throw new Error('ENOSPC'); });
+
+    const trashPath = await service._moveToPluginTrash('/watch/paper.pdf');
+
+    expect(trashPath).toBeNull();
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith(
+      '/watch/.zotero-watch-trash/paper.pdf',
+      { ignoreAbsent: true }
+    );
+  });
+});
+
+describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
+  let service;
+  let store;
+  let tombstones;
+  let utils;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'plugin_trash';
+      return undefined;
+    });
+
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const records = [];
+    tombstones = [];
+    store = {
+      _records: records,
+      getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      add: vi.fn((r) => { if (r.type === 'tombstone') tombstones.push(r); }),
+      remove: vi.fn((path) => {
+        const idx = records.findIndex(r => r.localPath === path);
+        if (idx === -1) return false;
+        records.splice(idx, 1);
+        return true;
+      }),
+      removeByAttachmentKey: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+    service._moveToOSTrash = vi.fn(async () => {});
+    service._moveToPluginTrash = vi.fn(async () => '.zotero-watch-trash/A.pdf');
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.remove = vi.fn(async () => {});
+    globalThis.Zotero.Items.get = vi.fn((id) => ({
+      id, key: 'ATT001', isAttachment: () => true,
+    }));
+  });
+
+  it('routes plugin_trash → _moveToPluginTrash and emits a tombstone with trashPath', async () => {
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', zoteroItemKey: 'PARENT1', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(service._moveToPluginTrash).toHaveBeenCalledWith('/watch/A.pdf');
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(service._moveToOSTrash).not.toHaveBeenCalled();
+    expect(tombstones).toHaveLength(1);
+    expect(tombstones[0]).toMatchObject({
+      type: 'tombstone',
+      objectType: 'file',
+      localPath: 'A.pdf',
+      zoteroAttachmentKey: 'ATT001',
+      zoteroItemKey: 'PARENT1',
+      deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/A.pdf',
+      originalHash: 'H1',
+    });
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+  });
+
+  it('falls back to OS trash when plugin_trash returns null', async () => {
+    service._moveToPluginTrash = vi.fn(async () => null);
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(service._moveToOSTrash).toHaveBeenCalledWith('/watch/A.pdf');
+    // OS trash path emits a tombstone with trashPath=null (unreachable for restore).
+    expect(tombstones).toHaveLength(1);
+    expect(tombstones[0].trashPath).toBeNull();
+  });
+
+  it('does NOT emit a tombstone for action=never (file kept on disk)', async () => {
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'never';
+      return undefined;
+    });
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(tombstones).toHaveLength(0);
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+  });
+
+  it('does NOT emit a tombstone for action=permanent (file unrecoverable)', async () => {
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteOnTrash') return 'permanent';
+      return undefined;
+    });
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(tombstones).toHaveLength(0);
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
+  });
+});

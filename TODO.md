@@ -87,11 +87,17 @@ Bigger scope. Reserve a longer session.
       (hash-clean check + attachment-key mapping). Lives in
       `content/watchFolder.mjs` ~line 1085+. Currently gated off in Mode
       1/2; v2.2 turns it on.
-- [ ] **`.zotero-watch-trash/` local trash dir.** Scanner skip-list
-      already reserves the name (`content/fileScanner.mjs`
-      `SKIP_DIRNAMES`). Mode 3 moves local files here instead of OS
-      trash for recoverability. Wire via `mirrorExecutor.deleteFolder`
-      and the disk-deletion path.
+- [x] **`.zotero-watch-trash/` local trash dir.** `_moveToPluginTrash`
+      moves files into `.zotero-watch-trash/<sync-root-relative-path>`,
+      preserving subpath for restore. RST.6 collision handling via
+      `<name>.<ms-timestamp>.<ext>` suffix. Cross-FS fallback (copy +
+      remove) for the rare same-watch-root cross-mount case. New
+      `'plugin_trash'` action in `_handleZoteroTrash`'s
+      `diskDeleteOnTrash` policy + replaces "Move to OS trash" as the
+      default-recoverable button in `_promptDiskDelete`. Tombstone
+      records emitted on successful trash (plugin or OS) so RST.1/RST.3
+      can re-link. Still pending for Mode 3 folder-delete:
+      `mirrorExecutor.deleteFolder` wiring (separate item).
 - [ ] **Bulk-delete protection.** Pause + confirm prompt when >10 files
       or >20% of the tree would be deleted, or when the watch volume
       goes offline. Add in `mirrorExecutor` before any bulk destructive
@@ -109,7 +115,7 @@ Bigger scope. Reserve a longer session.
 ## Project state at-a-glance
 
 - **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **Tests:** 19 files / 465 passing + 21 skipped (`npm test`).
+- **Tests:** 19 files / 475 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ except WARN.1 visual UI step.
 - **Auto-update:** `update.json` on `main` points at the v2.1 XPI;

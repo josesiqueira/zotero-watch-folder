@@ -7,7 +7,7 @@
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
 import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
-import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
+import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, createTombstoneRecord, STATE } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
@@ -1347,18 +1347,45 @@ export class WatchFolderService {
     }
 
     // 4. Mode 3: ask once for all deletable targets, then act per attachment.
+    // Default action is 'plugin_trash' — the watch-root-local
+    // `.zotero-watch-trash/` dir keeps files recoverable AND addressable
+    // from the same mount as the original, which matters for network
+    // shares / external drives where the OS trash isn't reachable.
     const deletable = plans.filter(p => p.canonicalDiskPath);
-    let action = getPref('diskDeleteOnTrash') || 'ask';
+    let action = getPref('diskDeleteOnTrash') || 'plugin_trash';
     if (action === 'ask' && deletable.length > 0) {
       action = this._promptDiskDelete(
         deletable.map(p => ({ attachmentKey: p.attachmentKey, path: p.canonicalDiskPath }))
       );
     }
     for (const p of plans) {
+      let trashPath = null;   // sync-root-relative path inside plugin trash
+      let movedToRecoverable = false; // covers plugin_trash + os_trash success
       if (p.canonicalDiskPath) {
-        if (action === 'os_trash') {
-          try { await this._moveToOSTrash(p.canonicalDiskPath); }
-          catch (e) { Zotero.debug(`[WatchFolder] _handleZoteroTrash os_trash failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`); }
+        if (action === 'plugin_trash') {
+          trashPath = await this._moveToPluginTrash(p.canonicalDiskPath);
+          if (trashPath) {
+            movedToRecoverable = true;
+          } else {
+            // Fall back to OS trash so the user doesn't end up with an
+            // un-actioned file plus a missing tracking record. Logged
+            // inside _moveToPluginTrash; mirror the OS-trash debug here
+            // so the chain is visible.
+            Zotero.debug(`[WatchFolder] _handleZoteroTrash: plugin-trash failed, falling back to OS trash for ${p.canonicalDiskPath}`);
+            try {
+              await this._moveToOSTrash(p.canonicalDiskPath);
+              movedToRecoverable = true;
+            } catch (e) {
+              Zotero.debug(`[WatchFolder] OS-trash fallback failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`);
+            }
+          }
+        } else if (action === 'os_trash') {
+          try {
+            await this._moveToOSTrash(p.canonicalDiskPath);
+            movedToRecoverable = true;
+          } catch (e) {
+            Zotero.debug(`[WatchFolder] _handleZoteroTrash os_trash failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`);
+          }
         } else if (action === 'permanent') {
           try {
             await IOUtils.remove(p.canonicalDiskPath);
@@ -1369,6 +1396,28 @@ export class WatchFolderService {
         }
         // 'never' → leave canonical file alone
       }
+
+      // Emit a tombstone when the canonical file landed in plugin or OS
+      // trash so RST.1 / RST.3 can re-link on restore. Skipped for
+      // 'permanent' (unrecoverable) and 'never' (file untouched) so the
+      // tracking store doesn't grow tombstones that can never resolve.
+      if (movedToRecoverable) {
+        try {
+          this._trackingStore.add(createTombstoneRecord({
+            objectType: 'file',
+            localPath: p.canonical.localPath,
+            canonicalLocalPath: p.canonical.canonicalLocalPath,
+            zoteroAttachmentKey: p.attachmentKey,
+            zoteroItemKey: p.canonical.zoteroItemKey,
+            deletedFrom: 'zotero',
+            trashPath: trashPath, // null for OS-trash (unreachable for restore)
+            originalHash: p.canonical.lastSyncedHash,
+          }));
+        } catch (e) {
+          Zotero.debug(`[WatchFolder] _handleZoteroTrash: tombstone creation failed for ${p.canonical.localPath}: ${e?.message ?? e}`);
+        }
+      }
+
       // Drop tracking for canonical + every shadow. Shadow paths are
       // NEVER disk-deleted here — that's the cascading-trash guard.
       this._trackingStore.remove(p.canonical.localPath);
@@ -1418,16 +1467,22 @@ export class WatchFolderService {
     const result = Services.prompt.confirmEx(
       window,
       'Zotero Watch Folder',
+      // v2.2 default: plugin trash (".zotero-watch-trash/" under the watch
+      // root) keeps the file recoverable AND addressable from the same
+      // mount as the original — a difference that matters when the watch
+      // root is on a network share, an external drive, or anywhere the
+      // OS trash can't reach. OS trash + permanent stay accessible via
+      // about:config (diskDeleteOnTrash=os_trash / permanent).
       message,
       flags,
-      'Move to OS trash',     // Button 0 → recoverable
-      'Keep on disk',         // Button 1 → leave alone
-      'Delete permanently',   // Button 2 → irreversible
+      'Move to plugin trash',  // Button 0 → recoverable, default
+      'Keep on disk',          // Button 1 → leave alone
+      'Delete permanently',    // Button 2 → irreversible
       "Don't ask again",
       checkState
     );
 
-    const action = result === 0 ? 'os_trash'
+    const action = result === 0 ? 'plugin_trash'
                  : result === 1 ? 'never'
                  : result === 2 ? 'permanent'
                  : 'never';
@@ -1436,6 +1491,87 @@ export class WatchFolderService {
       setPref('diskDeleteOnTrash', action);
     }
     return action;
+  }
+
+  /**
+   * Move a file into the plugin's local trash directory
+   * (`.zotero-watch-trash/` under the watch root). Preserves the
+   * sync-root-relative subpath so restore (RST.1, RST.3) can re-link
+   * cleanly. On collision (file already in trash at same subpath),
+   * appends a millisecond timestamp before the extension — per spec
+   * RST.6 the plugin must never overwrite existing trash contents.
+   *
+   * The plugin-trash dirname is reserved in `fileScanner.SKIP_DIRNAMES`
+   * so trashed files don't get re-imported on the next scan cycle.
+   *
+   * @param {string} absPath - Absolute source path inside the watch root.
+   * @returns {Promise<string|null>} Sync-root-relative `trashPath`
+   *   (e.g. `.zotero-watch-trash/Methods/paper.pdf`) on success, or
+   *   `null` if the move failed and the caller should fall back.
+   */
+  async _moveToPluginTrash(absPath) {
+    const watchRoot = getPref('sourcePath');
+    if (!watchRoot) {
+      Zotero.debug(`[WatchFolder] _moveToPluginTrash: no watch root set; aborting for ${absPath}`);
+      return null;
+    }
+    // Compute the sync-root-relative source path. If the file lives
+    // outside the watch root (shouldn't happen for tracked files, but
+    // defensive), bail rather than dump it at the trash root with a
+    // misleading name.
+    const rel = relativePath(absPath, watchRoot);
+    if (rel == null) {
+      Zotero.debug(`[WatchFolder] _moveToPluginTrash: ${absPath} not under watch root; aborting`);
+      return null;
+    }
+    const TRASH_DIRNAME = '.zotero-watch-trash';
+    let trashRel = `${TRASH_DIRNAME}/${rel}`;
+    let trashAbs = PathUtils.join(watchRoot, ...trashRel.split('/'));
+
+    // Ensure intermediate dirs exist.
+    const parent = PathUtils.parent(trashAbs);
+    if (parent) {
+      try {
+        await IOUtils.makeDirectory(parent, { ignoreExisting: true, createAncestors: true });
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] _moveToPluginTrash: mkdir ${parent} failed: ${e?.message ?? e}`);
+        return null;
+      }
+    }
+
+    // Collision handling (RST.6): never overwrite. Suffix with a
+    // millisecond timestamp before the extension so the original
+    // basename is preserved and listings stay sorted.
+    if (await IOUtils.exists(trashAbs).catch(() => false)) {
+      const dotIdx = rel.lastIndexOf('.');
+      const slashIdx = rel.lastIndexOf('/');
+      const hasExt = dotIdx > slashIdx;
+      const stamp = Date.now();
+      const suffixed = hasExt
+        ? `${rel.slice(0, dotIdx)}.${stamp}${rel.slice(dotIdx)}`
+        : `${rel}.${stamp}`;
+      trashRel = `${TRASH_DIRNAME}/${suffixed}`;
+      trashAbs = PathUtils.join(watchRoot, ...trashRel.split('/'));
+    }
+
+    try {
+      await IOUtils.move(absPath, trashAbs);
+      Zotero.debug(`[WatchFolder] _moveToPluginTrash: ${absPath} → ${trashAbs}`);
+      return trashRel;
+    } catch (moveErr) {
+      // Cross-FS fallback (rare for same-watch-root moves, but defensive).
+      try {
+        await IOUtils.copy(absPath, trashAbs);
+        await IOUtils.remove(absPath);
+        Zotero.debug(`[WatchFolder] _moveToPluginTrash: copy+remove fallback for ${absPath} → ${trashAbs}`);
+        return trashRel;
+      } catch (copyErr) {
+        try { await IOUtils.remove(trashAbs, { ignoreAbsent: true }); }
+        catch (_e) { /* best effort */ }
+        Zotero.debug(`[WatchFolder] _moveToPluginTrash: ${absPath} → plugin trash failed: ${copyErr?.message ?? copyErr}`);
+        return null;
+      }
+    }
   }
 
   /**
