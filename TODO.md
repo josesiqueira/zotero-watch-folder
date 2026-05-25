@@ -207,12 +207,10 @@ Bigger scope. Reserve a longer session.
 
 ## Project state at-a-glance
 
-- **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **`main` is ahead of the tag** with all of Track A polish + Track B
-  cleanup + Track C v2.2 (Mode 3 safe-delete end-to-end). Ready to
-  tag `v2.2.0-alpha.1` once `MODE3.md` MCP runbook validates the new
-  surface live (see "Remaining completion work" below).
-- **Tests:** 19 files / 493 passing + 21 skipped (`npm test`).
+- **Released:** `v2.2.0-alpha.1` (Mode 3 safe-delete + restore matrix
+  + bulk-delete protection + smart-rules editor + restore-folder UX).
+  Previous: `v2.1.0-alpha.1` (Mode 2 mirror-without-delete).
+- **Tests:** 20 files / 523 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ WARN.1 visual UI step completed via MCP screenshot pass.
   `MODE3.md` runbook **still pending** — the canonical pre-tag
