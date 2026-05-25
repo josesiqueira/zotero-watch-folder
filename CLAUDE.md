@@ -152,11 +152,7 @@ Three layers — see [`test/README.md`](./test/README.md) for the overview.
 
 Living lists: `updates_22_05_26.md` (v2 spec), `TODO.md`, `test/mcp/INDEX.md` notes from the latest run.
 
-- **`metadataRetriever` fire-and-forget queue** at lines 122, 177, 370 — swallowed errors. Latent (caller-side never sees the failure).
-- **`tracking.json` not saved when all files dedup-skip** — `_trackingStore.add(...)` flips `_dirty=true` but the early `return` skips the `save()`. Crash between scans loses these adds.
-- **Schema drift in legacy v1 record sites** — `_ensureCollectionRecordsForPath` (watchFolder.mjs) writes `localPath: absDir` (absolute) while v2 spec is sync-root-relative. `folderEventDetector` skips records where `localPath.startsWith('/')` as a workaround. Real fix: migrate v1 write sites.
 - **Resolver save() rollback for FS mutations** — Track A added rollback for tracking-store save failures across all 11 suppression-resolver handlers. For TRASH / MOVE_OUTSIDE the FS mutation is NOT reversible (file is already trashed/moved); only the tracking-store mutations roll back. Documented inline; not a bug, but worth knowing when investigating "I trashed it, then save failed, where's my file" reports.
-- **Scanner subfolder pickup latency** — a PDF dropped into a freshly-created subdir under the watch root takes longer than the 3 s poll interval to appear in tracking, even after a plugin reload. Top-level imports normal (~5–6 s). Surfaced in the MODE3 live run 2026-05-25; root cause not yet isolated.
 
 **Recently fixed (don't re-introduce):**
 - ~~Cascading-trash bug~~ — fixed in `_handleExternalDeletions` (Mode 3 shadow guard) + `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
@@ -167,6 +163,10 @@ Living lists: `updates_22_05_26.md` (v2 spec), `TODO.md`, `test/mcp/INDEX.md` no
 - ~~Hash chunk caps at 1 MB~~ — `utils.getFileHash` is now full-file SHA-256 (`HASH_VERSION=2`); the 1MB-prefix dedup limitation is gone.
 - ~~Phase 3 bulk ops dormant~~ — `bulkOperations.mjs` deleted entirely in v2.2; the v1 surface (`reorganizeAll`, `retryAllMetadata`, `applyRulesToAll`) was unreachable in v2 and superseded by the sync-coordinator pipeline.
 - ~~`mirrorExecutor._deleteFolder` Mode 3 warn-only~~ — v2.2 wired Mode 3 to recursive-move folders into `.zotero-watch-trash/` with collision-suffix + child tracking cleanup. Mode 2 stays warn-only.
+- ~~`metadataRetriever` fire-and-forget queue~~ — all three `_processQueue()` callsites (now lines 124/182/377) wrap with `.catch(e => Zotero.logError(...))`; CLAUDE.md's old note was stale.
+- ~~`tracking.json` not saved on dedup-skip~~ — all five `_trackingStore.add(...)` callsites in `_processNewFile` (lines 547 / 582 / 631 / 705 / 767) now `await this._trackingStore.save()` before the early return.
+- ~~Schema drift in legacy v1 record sites~~ — fixed in commit `2a98adf` (#25). `_ensureCollectionRecordsForPath` now writes sync-root-relative paths. `folderEventDetector._toAbs` retains an idempotent absolute-or-relative coercion as defensive handling for any latent legacy data, not as a workaround.
+- ~~Scanner subfolder pickup felt slow in MODE3 live run~~ — the observed delay traced to (a) the `enabled` pref toggle not restarting the scanner in-process (now fixed via `enabledObserverID`) and (b) adaptive polling backoff which is by design (max 2× base interval, resets on any non-empty scan). `scanFolderRecursive` is correct and fast.
 
 ---
 

@@ -184,13 +184,25 @@ mostly orthogonal to v2.2.
 
 ### Track D — discovered while doing other items (autonomous queue)
 
-- [ ] **Scanner subfolder pickup latency** (surfaced in MODE3 live
-      run 2026-05-25). A PDF dropped into a new subdir under the
-      watch root took noticeably longer than the 3 s poll interval
-      to appear in tracking, even after a plugin reload. Top-level
-      files imported in ~5–6 s. Likely a baseline /
-      collectionWatcher interaction. Root-cause + reproducer
-      welcome.
+- [x] **Scanner subfolder pickup latency** investigation (surfaced
+      in MODE3 live run 2026-05-25). Code-walk traced the observed
+      delay to two compounding factors, both already addressed in
+      v2.2 work:
+      1. The `enabled` pref toggle didn't restart the scanner
+         in-process — fixed by the `enabledObserverID` runtime
+         observer added earlier this session.
+      2. `_scan()` uses adaptive polling: after 10 consecutive
+         empty scans the interval grows by 1.2× up to 2× the base
+         `pollInterval` pref. Worst-case at the default 5 s poll
+         is 10 s; at the user's 3 s poll, 6 s. This is by design
+         (low-CPU when idle), capped at 2×, and resets on the
+         next non-empty scan (line 421-423 of watchFolder.mjs) +
+         on plugin reload (line 217).
+      The MODE3 anomaly happened during a sequence where
+      `enabled` was toggled false → true via JS while the bridge
+      was flaky — the scanner was simply not running, not slow.
+      `scanFolderRecursive` itself walks depth 10 and is fast.
+      No code change beyond the enabled-observer fix.
 - [x] **`enabled` pref toggle now restarts the scanner in-process.**
       `content/index.mjs` registers a `Zotero.Prefs.registerObserver`
       on `extensions.zotero.watchFolder.enabled` after the initial
