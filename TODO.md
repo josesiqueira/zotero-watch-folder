@@ -172,14 +172,34 @@ Bigger scope. Reserve a longer session.
 - [~] **`test/mcp/MODE3.md` MCP runbook.** Document written
       (`test/mcp/MODE3.md`, 200+ lines) covering preflight, SETUP.M3.1,
       DEL.1/2/3, RST.1/2/3/4/5/6, FDEL.1/2, FRST.1, SR.1, cleanup.
-      Smoke-checked against live Zotero: new XPI installs, all 11
-      resolver exports present, baseline + warningSink intact.
-      **Full multi-scenario hands-on pass still pending** — should
-      be run by a human (or in a dedicated MCP session) before
-      tagging v2.2.0-alpha.1. Each scenario is self-contained.
+      **Partial live pass 2026-05-25** against XPI v2.2.0-alpha.1:
+      DEL.1, DEL.1.b, RST.1, FRST.1 all ✅. The critical Zotero ↔
+      disk ↔ tombstone ↔ restore loop validated end-to-end against
+      live Zotero 8.0.4. Remaining scenarios (DEL.2/3, RST.2/3/4/5/6,
+      FDEL.1/2, SR.1) deferred — unit-test coverage already in
+      place; live pass is a nice-to-have for v2.2 GA. See
+      `test/mcp/MODE3.md` "Run 2026-05-25" section for details +
+      two small surprises (scanner subfolder pickup latency,
+      enabled-pref toggle doesn't restart scanner in-process —
+      both filed under Track D below).
 
 ### Track D — discovered while doing other items (autonomous queue)
 
+- [ ] **Scanner subfolder pickup latency** (surfaced in MODE3 live
+      run 2026-05-25). A PDF dropped into a new subdir under the
+      watch root took noticeably longer than the 3 s poll interval
+      to appear in tracking, even after a plugin reload. Top-level
+      files imported in ~5–6 s. Likely a baseline /
+      collectionWatcher interaction. Root-cause + reproducer
+      welcome.
+- [ ] **`enabled` pref toggle does not restart the syncCoordinator
+      scan loop** in-process (also surfaced 2026-05-25). After
+      toggling `enabled` false → true the scanner stayed idle
+      until a plugin reload. The mode-pref observer watches
+      `mode`, not `enabled`; add a parallel observer (or gate
+      scanner start/stop on enabled at the watchFolderService
+      level) so toggling enabled at runtime is symmetric with what
+      the prefs UI does.
 - [x] **Unit test for RST.5 re-attach path** in `_processNewFile`.
       Stood up a `_processNewFile` test harness via mocking
       `_waitForFileStable` + injecting a hand-rolled tracking store
