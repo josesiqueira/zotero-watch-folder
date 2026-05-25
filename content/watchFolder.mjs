@@ -7,7 +7,7 @@
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
 import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
-import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
+import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
@@ -139,9 +139,11 @@ export class WatchFolderService {
     try {
       Zotero.debug('[WatchFolder] Initializing service...');
 
-      // Initialize tracking store
-      this._trackingStore = new TrackingStore();
-      await this._trackingStore.init();
+      // Initialize tracking store. Use the singleton so suppressionResolver
+      // (which reads via getTrackingStore()) sees the same records this
+      // service writes. Pre-Track-A both paths instantiated their own store
+      // and the prefs UI silently reported zero suppressed items.
+      this._trackingStore = await initTrackingStore();
 
       // Register Zotero notifier for item events
       this._notifierID = Zotero.Notifier.registerObserver(

@@ -13,7 +13,7 @@ what feels right. Each item is self-contained — none block the others.
 
 ### Track A — finish Mode 2 polish (small, well-defined)
 
-4 of 5 done. Only the live-Zotero visual check remains.
+**All 5 done.** Track A complete.
 
 - [x] **Folder + conflict resolution actions in prefs UI.** Added
       `resolveCollection()` (4 actions: REINSTATE / KEEP_LOCAL / TRASH /
@@ -21,12 +21,17 @@ what feels right. Each item is self-contained — none block the others.
       DISCARD_LOCAL / PAUSE_SYNC) to `suppressionResolver.mjs`. Prefs
       pane wired up with two new "Resolve…" buttons matching the
       existing per-record `Services.prompt.select` loop.
-- [ ] **WARN.1 visual prefs UI verification.** Live-test the prefs pane
-      rows ("Sync warnings: N (View) (Clear)" + "Suppressed items: N
-      (Resolve… / Resolve folders…)" + "Conflict-blocked: N (Resolve…)").
-      API surface is verified by `test/mcp/MODE2.md` + unit tests; just
-      confirm the XHTML rows render + interact correctly. May need a
-      `zotero_screenshot` pass.
+- [x] **WARN.1 visual prefs UI verification.** Live-tested via MCP: all
+      three rows render with correct counts ("Sync warnings: 2 [View]
+      [Clear]" + "Suppressed items: 1 (+1 folders) [Resolve…] [Resolve
+      folders…]" + "Conflict-blocked: 1 [Resolve…]"). Verification also
+      surfaced a singleton-store bug: WatchFolderService instantiated its
+      own TrackingStore via `new TrackingStore()` while suppressionResolver
+      read from the module-level singleton via `getTrackingStore()` —
+      two different stores, so the prefs UI silently reported zero
+      suppressed/conflicted items even when state existed. Fixed by
+      routing WatchFolderService through `initTrackingStore()` so both
+      consumers share the singleton (watchFolder.mjs:143).
 - [x] **`_moveItem` cross-action stale-`oldCanonicalPath` race.**
       Re-reads live `canonicalLocalPath` from the store after acquiring
       `attachment:<key>` lock. If the live path already equals the
