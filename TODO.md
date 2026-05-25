@@ -1,329 +1,161 @@
 # Zotero Watch Folder — TODO
 
-**v2.2.0-alpha.1 shipped** (commit `aebfe31`, tag `v2.2.0-alpha.1`).
-Mode 3 (mirror with safe delete) is functional end-to-end against a
-real Zotero install. v2.0 (Mode 1) and v2.1 (Mode 2) remain shipped
-and unchanged.
+**Status:** `v2.2.0-alpha.1` shipped (commit `aebfe31`, tag `v2.2.0-alpha.1`,
+sha256 `cb128499…`). All three modes are functional end-to-end against
+a live Zotero install: Mode 1 (import only — v2.0), Mode 2 (mirror
+without delete — v2.1), Mode 3 (mirror with safe delete — v2.2). The
+v2.2 surface is unit-test-covered (523 passing across 20 files, zero
+skipped) AND live-MCP-validated (`test/mcp/MODE3.md` partial + fuller
+runs, 2026-05-25 / 2026-05-25b).
 
 ---
 
-## Start here next session
+## Open work
 
-Open this file first. Tracks A–C are complete; Track D is the live
-follow-up queue (small items surfaced while building the bigger
-features). Pick whichever item lines up with the time you have.
+**Nothing release-blocking.** Tracks A / B / C and the autonomous
+Track D queue are all closed. Pick from the smaller follow-up items
+below when you have time, or pick a new feature direction.
 
-### Track A — finish Mode 2 polish (small, well-defined)
+### Small follow-ups (not blocking)
 
-**All 5 done.** Track A complete.
+- [ ] **Phase E `test/mcp/MODE2.md` runbook live pass.** Document
+      exists in `test/mcp/MODE2.md`; sketched during v2.1 work.
+      A WARN.1 visual screenshot pass was done (Track A item #2),
+      but the BASE/ADOPT/LATE/REN/MEM/SUPP/CONF scenarios haven't
+      been run end-to-end on a live Zotero against the post-v2.2
+      bundle. Lower priority than MODE3 since Mode 2 is older and
+      stable.
+- [ ] **C1 full setup wizard.** A C2 minimal picker + first-run
+      nudge is in place; the spec calls for a multi-step pane (pick
+      watch folder → pick sync root → pick mode → confirm).
+      Quality-of-life, not blocking.
+- [ ] **DEL.2 shadow-guard record lifecycle quirk** (MODE3 live
+      finding 2026-05-25b). When a shadow file is `rm`'d while its
+      canonical sibling is on disk, the critical no-cascade
+      invariant holds (canonical untouched, Zotero attachment NOT
+      trashed) BUT the shadow record ends up `out-of-scope-suppressed`
+      rather than being fully removed. Most likely a concurrent
+      `_handleZoteroTrash` notifier flips state before
+      `_handleExternalDeletions`'s `remove()` commits. Functional
+      outcome is even safer than the spec (user can resolve via
+      suppression UX), but tighter handling would be cleaner.
+- [ ] **Larger live-MCP coverage of Mode 3 scenarios we skipped.**
+      DEL.3 / RST.2 / RST.4 / RST.5 / FDEL.2 are all unit-tested
+      but only DEL.1/1.b, DEL.2, RST.1, RST.3, RST.6, FDEL.1,
+      FRST.1, SR.1 have been live-pass'd. Need >10 distinct PDFs
+      (DEL.3 / FDEL.2) and a multi-attachment-parent setup
+      (RST.2 / RST.4 / RST.5).
 
-- [x] **Folder + conflict resolution actions in prefs UI.** Added
-      `resolveCollection()` (4 actions: REINSTATE / KEEP_LOCAL / TRASH /
-      MOVE_OUTSIDE) + `resolveConflict()` (3 actions: RESTAMP_BASELINE /
-      DISCARD_LOCAL / PAUSE_SYNC) to `suppressionResolver.mjs`. Prefs
-      pane wired up with two new "Resolve…" buttons matching the
-      existing per-record `Services.prompt.select` loop.
-- [x] **WARN.1 visual prefs UI verification.** Live-tested via MCP: all
-      three rows render with correct counts ("Sync warnings: 2 [View]
-      [Clear]" + "Suppressed items: 1 (+1 folders) [Resolve…] [Resolve
-      folders…]" + "Conflict-blocked: 1 [Resolve…]"). Verification also
-      surfaced a singleton-store bug: WatchFolderService instantiated its
-      own TrackingStore via `new TrackingStore()` while suppressionResolver
-      read from the module-level singleton via `getTrackingStore()` —
-      two different stores, so the prefs UI silently reported zero
-      suppressed/conflicted items even when state existed. Fixed by
-      routing WatchFolderService through `initTrackingStore()` so both
-      consumers share the singleton (watchFolder.mjs:143).
-- [x] **`_moveItem` cross-action stale-`oldCanonicalPath` race.**
-      Re-reads live `canonicalLocalPath` from the store after acquiring
-      `attachment:<key>` lock. If the live path already equals the
-      payload's `newCanonicalPath`, short-circuits as no-op.
-- [x] **Per-attachment lock during `moveFolder` child rewrite.** Both
-      rewrite passes acquire `attachment:<key>` per child (sequentially,
-      to avoid lock-order issues) and re-read the record inside the
-      lock before mutating.
-- [x] **Resolver `save()` rollback.** All 11 handlers (4 file + 4
-      collection + 3 conflict) now snapshot pre-mutation state and
-      restore on `save()` failure. For TRASH/MOVE_OUTSIDE the FS
-      mutation is not reversed (file is already trashed/moved), only
-      the tracking-store mutations roll back — documented inline.
+### Bigger directions to consider
 
-### Track B — fix the v1-era known bugs
-
-These come from CLAUDE.md's "Open issues / known bugs" section and are
-mostly orthogonal to v2.2.
-
-- [x] **Cascading-trash bug** (was CRITICAL before v2.2). Two patches:
-      - `_handleExternalDeletions` Mode 3 branch: when a SHADOW record
-        (`localPath !== canonicalLocalPath`) is missing but its canonical
-        sibling is still on disk, drop only the shadow tracking record —
-        don't trash the Zotero attachment. Stops the cascade at its
-        source.
-      - `_handleZoteroTrash`: full v2-schema rewrite. Collapses per
-        attachment key (not per record), disk-deletes only the canonical
-        path, drops shadows from tracking without disk action. Mode 2
-        warn-only path also implemented (drops tracking + warningSink).
-        9 new UT-090 tests cover both directions across Mode 1/2/3
-        and edge cases (missing canonical, non-attachment items,
-        diskDeleteOnTrash=never).
-- [x] **Phase 3 bulk ops** — deleted `content/bulkOperations.mjs`
-      entirely (was 738 lines). The v1-era operations were unreachable
-      via `Zotero.WatchFolder.hooks` under v2 and superseded by the
-      sync-coordinator pipeline. Removed UT-040 from
-      `test/unit/fileScanner.test.mjs` (the only consumer outside the
-      module itself was the test for one private helper). Doc cleanup
-      in `test/README.md` + `test/mcp/INDEX.md`.
-- [x] **Smart rules editor UI.** Added a Smart Rules section to the
-      prefs pane: enable checkbox + multi-line JSON textarea + Save /
-      Insert example / Reload buttons. Save validates JSON parse +
-      per-rule shape (mirrors `_validateRule` in the engine) and shows
-      a specific error on bad input. Insert appends a starter rule
-      template so users have a concrete shape to edit. Reload re-reads
-      the pref (useful after editing in about:config). Kept the JSON
-      textarea (rather than a form-based editor) because rule shape
-      is small and power-user-friendly is fine for the first cut.
-- [x] **Listener leak in `warningSink`.** Resolved by documentation,
-      not by code change. Dropping listeners on `clear()` would silently
-      unsubscribe the prefs pane the first time the user pressed Clear,
-      which is a worse bug than the "leak" (subscribers are bounded —
-      only the prefs pane subscribes today, and prefs window unload
-      naturally cleans them up). Updated `clear()` and `subscribe()`
-      JSDoc to make the contract explicit + added a regression test
-      that asserts subscribers survive `clear()`.
-
-### Track C — v2.2 (Mode 3 — safe delete) ✅ shipped
-
-- [x] **Cascading-trash bug fixed first.** Both
-      `_handleExternalDeletions` and `_handleZoteroTrash` v2 rewrite
-      shipped with full test coverage. Mode 3 can now propagate safely.
-- [x] **`_handleZoteroTrash` v2 rewrite.** Done as part of the
-      cascading-trash fix. Translates numeric IDs → attachment keys,
-      collapses per-attachment, disk-deletes only canonical paths,
-      drops shadows from tracking without disk action. Mode 2 warn-only
-      path implemented too. Routes through plugin trash by default in
-      Mode 3.
-- [x] **`.zotero-watch-trash/` local trash dir.** `_moveToPluginTrash`
-      moves files into `.zotero-watch-trash/<sync-root-relative-path>`,
-      preserving subpath for restore. RST.6 collision handling via
-      `<name>.<ms-timestamp>.<ext>` suffix. Cross-FS fallback (copy +
-      remove) for the rare same-watch-root cross-mount case. New
-      `'plugin_trash'` action in `_handleZoteroTrash`'s
-      `diskDeleteOnTrash` policy + replaces "Move to OS trash" as the
-      default-recoverable button in `_promptDiskDelete`. Tombstone
-      records emitted on successful trash (plugin or OS) so RST.1/RST.3
-      can re-link.
-- [x] **Tombstone-aware dedup.** `trackingStore.findTombstoneByHash`
-      added; `_processNewFile` step 3a consults tombstones before
-      regular hash-dedup. Match → un-trash Zotero attachment if still
-      trashed, re-create FileRecord, drop tombstone. Attachment purged
-      → drop tombstone, fall through to import-as-new.
-- [x] **Restore matrix — complete.** All six cases implemented.
-      - RST.1 (Zotero attachment restored → move file out of plugin
-        trash) — shipped previously via `_handleZoteroRestore`.
-      - RST.2 (parent restore expands to all live child attachments)
-        — `_handleZoteroRestore` now expands parent IDs into their
-        live attachments before the per-key restore loop.
-      - RST.3 (local file reappears → re-link via tombstone-aware
-        dedup) — shipped previously.
-      - RST.4 (parent restored but attachment still trashed → keep
-        local file trashed) — the same per-attachment `deleted ===
-        false` check skips trashed children, so RST.2's expansion
-        naturally honours RST.4. Locked in by UT-093.
-      - RST.5 (local-restore after parent deleted; attachment also
-        gone) — `_processNewFile` tombstone path now checks the
-        original parent (tombstone.zoteroItemKey) and, if still alive,
-        attaches the file as a child via `Zotero.Attachments.import
-        FromFile({parentItemID})` instead of importing as a new
-        top-level item. Falls through to import-as-new when the parent
-        is also gone.
-      - RST.6 (collision suffix) — shipped previously.
-- [x] **`mirrorExecutor.deleteFolder` Mode 3 wiring.** Mode 3 now
-      recursive-moves the folder into `.zotero-watch-trash/<rel>`
-      via `_moveWithFallback`. Collision policy mirrors
-      `_moveToPluginTrash` (RST.6) — suffix the dir name with a
-      ms timestamp. Drops the collection record + every FileRecord
-      under the path (the contained Zotero attachments are NOT
-      individually tombstoned because they aren't trashed —
-      collection removal is a scope change, not content deletion).
-      Source-already-missing path drops tracking + returns
-      `already-missing` instead of erroring. Mode 2 warn-only
-      behavior unchanged. 4 new UT-419 tests cover all branches.
-      Restore-folder UX is filed under Track D — for now users
-      recover by manually moving the dir out of plugin trash.
-- [x] **Bulk-delete protection.** Added `_isBulkDelete` (>10 files OR
-      >20% of tracked tree) + `_confirmBulkDelete` (Services.prompt
-      with safe fallback for no-UI contexts → refuses rather than
-      silently executing) helpers in mirrorExecutor. Wired into
-      `_deleteFolder` Mode 3 before the recursive move: counts files
-      under the subtree, prompts on threshold cross, returns
-      `{ok:false, reason:'bulk-confirm-denied'}` on decline.
-      Watch-volume-offline check was already handled at a higher
-      level in `_handleExternalDeletions` (pauses sync globally via
-      `isWatchRootAvailable`), so no extra work needed there.
-      5 new UT-420 tests cover both thresholds, under-threshold
-      skip, user decline, and the no-prompt-available refusal.
-      **NOTE:** the spec mentions `watchFolder._handleZoteroTrash`
-      and `_handleExternalDeletions` are also bulk-capable; both
-      live in watchFolder.mjs, not mirrorExecutor. Filed as a
-      follow-up under Track D.
-
-### Live validation status
-
-- [x] **`test/mcp/MODE3.md` MCP runbook.** Document complete
-      (`test/mcp/MODE3.md`, 200+ lines) + two live passes:
-      - **Run 2026-05-25** (partial): DEL.1, DEL.1.b, RST.1, FRST.1.
-      - **Run 2026-05-25b** (fuller): DEL.1, DEL.1.b, DEL.2 shadow
-        guard, RST.1, RST.3 (tombstone-aware re-link), RST.6
-        (collision suffix on restore), FDEL.1 (folder delete →
-        plugin trash + child cleanup), FRST.1 (folder restore via
-        suppressionResolver), SR.1 (smart-rules editor smoke +
-        Save/Insert programmatic). DEL.3 / RST.2 / RST.4 / RST.5
-        / FDEL.2 deferred to unit-test coverage (need >10 PDFs or
-        multi-attachment-parent setup). v2.2 surface end-to-end-
-        validated for the cases that distinguish it from v2.1.
-
-### Track D — discovered while doing other items (autonomous queue)
-
-- [x] **Scanner subfolder pickup latency** investigation (surfaced
-      in MODE3 live run 2026-05-25). Code-walk traced the observed
-      delay to two compounding factors, both already addressed in
-      v2.2 work:
-      1. The `enabled` pref toggle didn't restart the scanner
-         in-process — fixed by the `enabledObserverID` runtime
-         observer added earlier this session.
-      2. `_scan()` uses adaptive polling: after 10 consecutive
-         empty scans the interval grows by 1.2× up to 2× the base
-         `pollInterval` pref. Worst-case at the default 5 s poll
-         is 10 s; at the user's 3 s poll, 6 s. This is by design
-         (low-CPU when idle), capped at 2×, and resets on the
-         next non-empty scan (line 421-423 of watchFolder.mjs) +
-         on plugin reload (line 217).
-      The MODE3 anomaly happened during a sequence where
-      `enabled` was toggled false → true via JS while the bridge
-      was flaky — the scanner was simply not running, not slow.
-      `scanFolderRecursive` itself walks depth 10 and is fast.
-      No code change beyond the enabled-observer fix.
-- [x] **`enabled` pref toggle now restarts the scanner in-process.**
-      `content/index.mjs` registers a `Zotero.Prefs.registerObserver`
-      on `extensions.zotero.watchFolder.enabled` after the initial
-      startup-time start. The handler (`onEnabledChanged`) mirrors
-      onStartup's order: coordinator.start() then
-      watchFolderService.startWatching() on false → true; stop in
-      reverse on true → false. Idempotent via the `_isWatching`
-      guard. Observer is unregistered in onShutdown.
-- [x] **Unit test for RST.5 re-attach path** in `_processNewFile`.
-      Stood up a `_processNewFile` test harness via mocking
-      `_waitForFileStable` + injecting a hand-rolled tracking store
-      mock. 3 UT-095 tests: parent intact (RST.5 happy path), parent
-      also gone (falls through to normal import), parent is itself
-      an attachment (refuses to re-attach, falls through).
-- [x] **Restore-folder UX in prefs pane.** Added
-      `suppressionResolver.listTrashedFolders()` + `restoreTrashedFolder()`.
-      Prefs UI: new "Trashed folders: N [Restore folders…]" row,
-      hidden when none. Restore loop offers Restore/Skip per entry;
-      moves the dir back to its original (timestamp-stripped) name
-      with RST.6 collision suffix on the target side, then re-creates
-      the Zotero collection chain via `relativePathToCollection({
-      createIfMissing: true })`. 12 new UT-830/831 tests.
-- [x] **Bulk-delete protection for `watchFolder._handleZoteroTrash`
-      and `_handleExternalDeletions`.** Extracted `isBulkDelete` +
-      `confirmBulkDelete` from mirrorExecutor into
-      `content/bulkGuard.mjs`. mirrorExecutor + watchFolder now share
-      thresholds (>10 OR >20%). New tests: bulkGuard.test.mjs
-      (UT-110/111) + UT-094 in watchFolder. Decline at the
-      external-deletion guard demotes to "mark missing" (Mode 1/2
-      semantics) instead of aborting silently.
+- New features in `updates_22_05_26.md` that haven't been pulled
+  into a track yet (e.g. cross-library sync, smart-rule UI form
+  editor rather than JSON, file-naming template upgrades).
+- Migration to Zotero 9 once Zotero ships it (we already declare
+  `strict_max_version: 9.*`).
+- A v2.3 release tag once a meaningful set of polish items lands.
 
 ---
-
-## Project state at-a-glance
-
-- **Released:** `v2.2.0-alpha.1` (Mode 3 safe-delete + restore matrix
-  + bulk-delete protection + smart-rules editor + restore-folder UX).
-  Previous: `v2.1.0-alpha.1` (Mode 2 mirror-without-delete).
-- **Tests:** 20 files / 523 passing (zero skipped — v1-schema
-  UT-050/UT-051 placeholder bodies were removed in v2.2 cleanup).
-- **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
-  (v2.1) ✅ WARN.1 visual UI step completed via MCP screenshot pass.
-  `MODE3.md` runbook **still pending** — the canonical pre-tag
-  completion test for Mode 3 + restore matrix + plugin-trash +
-  bulk-delete protection.
-- **Auto-update:** `update.json` on `main` points at the v2.2 XPI;
-  existing v2.0 / v2.1 installs auto-discover.
-- **Architecture docs:** `CLAUDE.md` (project layout + invariants),
-  `updates_22_05_26.md` (v2 sync-model spec, source of truth for
-  behavior), `docs/CODEBASE_OVERVIEW.md` (long-form module tour —
-  partially stale; see CLAUDE.md for the current state).
 
 ## Quick commands
 
 ```sh
-npm test                              # vitest
+npm test                              # vitest, 523 passing / 0 skipped
 npm run bundle                        # rebuild dist/content/scripts/watchFolder.js
 npm run build && npm run bundle && npm run package
-                                      # full XPI rebuild
+                                      # full XPI rebuild → zotero-watch-folder-2.2.0-alpha.1.xpi
 gh release view v2.2.0-alpha.1        # release page
 ```
 
 When working with the live Zotero MCP bridge:
-- Health check: `zotero_plugin_list` (not `zotero_ping` — known broken)
+- Health check: `zotero_plugin_list` (not `zotero_ping` — known broken).
 - If the bridge wedges with "Could not find Zotero console actor",
   just retry — it's intermittent. If port 6100 stops listening,
   Zotero needs a restart.
 - `Zotero.DB.executeTransaction(async () => { await x.save(); })` is
   the reliable save pattern; bare `await x.saveTx()` silently fails
   in the bridge's IIFE wrapper.
+- Pre-warm MCP permissions before mobile sessions with the
+  `zotero-mcp-warmup` skill — see `.claude/skills/zotero-mcp-warmup/SKILL.md`.
+
+---
+
+## Where things live
+
+- `CLAUDE.md` — project layout, invariants, "don't touch without
+  understanding" notes. Read this BEFORE editing anything bigger
+  than a comment.
+- `updates_22_05_26.md` — the v2 sync-model spec. Source of truth
+  for behavior (restore matrix RST.1–RST.6, suppression rule,
+  mode definitions).
+- `test/README.md` — three test layers (unit / mcp / integration).
+- `test/mcp/INDEX.md` — per-runbook status table.
+- `test/mcp/MODE3.md` — the canonical v2.2 live-validation runbook
+  with run notes from 2026-05-25 and 2026-05-25b.
+- `docs/CODEBASE_OVERVIEW.md` — long-form module tour. **Partially
+  stale** from the v1 era; CLAUDE.md is the current state.
 
 ---
 
 ## Done
 
-- **v2.0 (`v2.0.0-alpha.1`)** — sync-root model (Phase A), Mode 1 import
-  wiring (B1/B3/B4/B6), prefs sync-root picker (C2), Phase 2 cleanup.
-- **v2.1 (`v2.1.0-alpha.1`)** — Mode 2 end-to-end:
-  - Phase A1–A6 event pipeline (collectionWatcher / folderEventDetector
-    / itemMembershipHandler / itemAddHandler / mirrorExecutor /
-    syncCoordinator with per-key promise locks + canSafelyMove conflict
-    gate + cross-FS move fallback + runtime mode-pref observer +
-    notifier serialization).
-  - Phase B 4-action suppression resolver + prefs UX.
-  - Phase C install-time baseline (B.1–B.7: mkdir / copy / adopt-into-
-    scope / late-attached PDF / hash reconcile).
-  - Phase C1 multi-step setup wizard.
-  - Phase D warningSink + prefs surface + suppressed/conflict counts.
-  - Hash strategy migrated to full-file SHA-256 (HASH_VERSION=2).
-  - Schema-drift fix: localPath/canonicalLocalPath consistently
-    sync-root-relative throughout watchFolder.mjs.
-  - 15 review findings + 8 live-MCP bugs fixed in commits
-    `fb371c4`..`2a98adf`.
-- **v2.1 Track A polish (on main, post-tag)** — `9fc1dde`, `71ca635`:
+- **v2.0 (`v2.0.0-alpha.1`)** — sync-root model (Phase A), Mode 1
+  import wiring (B1/B3/B4/B6), prefs sync-root picker (C2), Phase 2
+  cleanup.
+- **v2.1 (`v2.1.0-alpha.1`)** — Mode 2 end-to-end: Phase A1–A6 event
+  pipeline (collectionWatcher / folderEventDetector /
+  itemMembershipHandler / itemAddHandler / mirrorExecutor /
+  syncCoordinator with per-key promise locks + canSafelyMove
+  conflict gate + cross-FS move fallback + runtime mode-pref
+  observer + notifier serialization). Phase B 4-action suppression
+  resolver + prefs UX. Phase C install-time baseline (B.1–B.7).
+  Phase C1 multi-step setup wizard. Phase D warningSink + prefs
+  surface. Hash strategy → full-file SHA-256 (HASH_VERSION=2).
+  Schema-drift fix (localPath consistently sync-root-relative
+  throughout watchFolder.mjs). 15 review findings + 8 live-MCP
+  bugs fixed in commits `fb371c4`..`2a98adf`.
+- **v2.1 Track A polish (on main, post-tag)** — `9fc1dde`,
+  `71ca635`:
   - Folder + conflict resolution UX in suppressionResolver
-    (resolveCollection / resolveConflict) + prefs UI Resolve buttons.
-  - mirrorExecutor `_moveItem` stale-path race fix; `_moveFolder`
-    per-attachment locks during child rewrite.
+    (`resolveCollection` / `resolveConflict`) + prefs UI Resolve
+    buttons.
+  - `mirrorExecutor._moveItem` stale-path race fix;
+    `_moveFolder` per-attachment locks during child rewrite.
   - Resolver `save()` rollback across all 11 handlers.
-  - Singleton TrackingStore fix — WatchFolderService now shares the
-    suppressionResolver's singleton via `initTrackingStore()`.
+  - Singleton `TrackingStore` fix — `WatchFolderService` now
+    shares the resolver's singleton via `initTrackingStore()`.
 - **v2.2 (`v2.2.0-alpha.1`)** — Mode 3 safe-delete end-to-end —
   shipped via `39ea420`, `7a8ad88`, `a7e0bd1`, `1f86184`, `682e6a8`,
   `2262bde`, `1010b01`, `d98fad2`, `5f845c8`, `af807f5`, `6880b0b`,
-  `aebfe31`:
+  `aebfe31`, plus post-tag follow-ups `4b3da64`, `018fe04`, `e24da86`,
+  `25c5eb2`, `651b9e4`, `71f82c7`, `7bb395a`:
   - Cascading-trash bug fix: `_handleExternalDeletions` shadow guard +
     `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
-  - `.zotero-watch-trash/` plugin trash dir + `'plugin_trash'` action
-    + tombstone emission on recoverable trash.
-  - Restore matrix RST.1/2/3/4/5/6 (all six cases): parent-expand on
-    Zotero restore, deleted-check skip for RST.4, tombstone-aware
-    dedup for local restore, parent-re-attach via `importFromFile({
-    parentItemID })` for RST.5, collision suffix on restore for RST.6.
+  - `.zotero-watch-trash/` plugin trash dir + `'plugin_trash'` action +
+    tombstone emission on recoverable trash.
+  - Restore matrix RST.1/2/3/4/5/6 (all six): parent-expand on Zotero
+    restore (RST.2), deleted-check skip for RST.4, tombstone-aware
+    dedup for local restore (RST.3), parent-re-attach via
+    `importFromFile({parentItemID})` for RST.5, collision suffix on
+    restore for RST.6.
   - `mirrorExecutor._deleteFolder` Mode 3 wiring: recursive move into
     plugin trash with same collision policy + child-tracking cleanup.
-  - Bulk-delete protection: `_isBulkDelete` (>10 OR >20%) +
-    `_confirmBulkDelete` (Services.prompt with safe no-UI fallback)
-    in `_deleteFolder`.
-  - Smart rules JSON editor in prefs pane (replaces about:config).
-  - Deleted dormant `bulkOperations.mjs` (738 lines, unreachable in v2).
-  - `warningSink.clear()` contract documented (listeners survive).
+  - Bulk-delete protection via `content/bulkGuard.mjs` (>10 OR
+    >20% threshold; Services.prompt with safe no-UI fallback that
+    REFUSES). Applied to `_deleteFolder`, `_handleZoteroTrash`,
+    `_handleExternalDeletions`.
+  - Restore-folder UX in prefs pane (`listTrashedFolders` +
+    `restoreTrashedFolder` + new "Trashed folders: N
+    [Restore folders…]" row).
+  - Smart rules JSON editor in prefs pane.
+  - `enabled` pref runtime observer — toggling enabled in-process
+    starts/stops the scanner symmetrically.
+  - Mode display label fix (was "(v2.2, not yet active)").
+  - Deleted dormant `bulkOperations.mjs` (738 lines, unreachable
+    in v2).
+  - `warningSink.clear()` contract documented (listeners survive
+    Clear).
+  - `test/mcp/MODE3.md` runbook written + two live passes.
 - **Pre-v2** — Phase 1 (watch folder, auto-import, metadata retrieval,
   file renaming, first-run flow, post-import actions), Phase 2
   (collection ↔ folder mirroring), Phase 3 (smart rules, duplicate
