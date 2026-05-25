@@ -126,6 +126,20 @@ describe('UT-705: clear()', () => {
     expect(getRecent(10)).toEqual([]);
     expect(seen[seen.length - 1]).toMatchObject({ cleared: true });
   });
+
+  it('keeps listeners alive — subscribers still receive new entries after clear()', () => {
+    const seen = [];
+    subscribe((e) => seen.push(e));
+    report({ category: WARNING_CATEGORY.IO_ERROR, message: 'before clear' });
+    clear();
+    report({ category: WARNING_CATEGORY.IO_ERROR, message: 'after clear' });
+    // Expect: original entry, the synthetic `cleared` marker, and the
+    // post-clear entry — proving the subscriber wasn't dropped.
+    expect(seen).toHaveLength(3);
+    expect(seen[0]).toMatchObject({ message: 'before clear' });
+    expect(seen[1]).toMatchObject({ cleared: true });
+    expect(seen[2]).toMatchObject({ message: 'after clear' });
+  });
 });
 
 // ─── UT-706 ────────────────────────────────────────────────────────────────

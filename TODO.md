@@ -80,10 +80,14 @@ mostly orthogonal to v2.2.
       the pref (useful after editing in about:config). Kept the JSON
       textarea (rather than a form-based editor) because rule shape
       is small and power-user-friendly is fine for the first cut.
-- [ ] **Listener leak in `warningSink`.** `clear()` doesn't drop
-      `_listeners`. Currently no live subscriber outside the prefs pane,
-      so latent only. Document the contract OR drop listeners in
-      `clear()` (only `_resetForTesting` does so today).
+- [x] **Listener leak in `warningSink`.** Resolved by documentation,
+      not by code change. Dropping listeners on `clear()` would silently
+      unsubscribe the prefs pane the first time the user pressed Clear,
+      which is a worse bug than the "leak" (subscribers are bounded —
+      only the prefs pane subscribes today, and prefs window unload
+      naturally cleans them up). Updated `clear()` and `subscribe()`
+      JSDoc to make the contract explicit + added a regression test
+      that asserts subscribers survive `clear()`.
 
 ### Track C — start v2.2 (Mode 3 — safe delete)
 

@@ -103,7 +103,10 @@ export function getCountsByCategory() {
 
 /**
  * Subscribe to new warnings. Returns an unsubscribe function. Listeners
- * are called synchronously from `report()`.
+ * are called synchronously from `report()`. Subscriptions persist across
+ * `clear()` calls (subscriber lifecycle is orthogonal to the user
+ * dismissing the warning view) — call the returned unsubscriber when
+ * the consumer is genuinely done.
  * @param {(entry: Object) => void} fn
  * @returns {() => void}
  */
@@ -113,7 +116,16 @@ export function subscribe(fn) {
   return () => _listeners.delete(fn);
 }
 
-/** Drop all stored warnings + counts. Listeners get a synthetic `cleared` entry. */
+/**
+ * Drop all stored warnings + counts. Listeners are NOT dropped — the
+ * "Clear" action in the prefs pane is the user dismissing the warning
+ * display, not unsubscribing the prefs pane itself. Each listener
+ * receives a synthetic `{cleared: true}` entry so it can refresh its
+ * UI to reflect the now-empty state.
+ *
+ * Use `_resetForTesting` (not `clear`) when a test needs a true blank
+ * slate including no subscribers.
+ */
 export function clear() {
   _ring.length = 0;
   _counts.clear();
@@ -123,7 +135,10 @@ export function clear() {
   }
 }
 
-/** Test seam — also called from clear(). */
+/**
+ * Test seam — full reset including listeners. Production code must not
+ * call this; it would orphan live subscribers.
+ */
 export function _resetForTesting() {
   _ring.length = 0;
   _counts.clear();
