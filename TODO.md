@@ -117,14 +117,26 @@ Bigger scope. Reserve a longer session.
       regular hash-dedup. Match → un-trash Zotero attachment if still
       trashed, re-create FileRecord, drop tombstone. Attachment purged
       → drop tombstone, fall through to import-as-new.
-- [~] **Restore matrix — partial.** RST.1 (Zotero attachment restored
-      → move file out of plugin trash; new `_handleZoteroRestore` on
-      `'modify'` notifier, gated on tombstones-existing pre-filter),
-      RST.3 (local file reappears → re-link via tombstone-aware
-      dedup), RST.6 (collision suffix `<name>.restored.<ts>.<ext>`).
-      Still pending: RST.2 (multi-attachment parent restore), RST.4
-      (parent restored without attachment), RST.5 (local-restore after
-      parent was deleted).
+- [x] **Restore matrix — complete.** All six cases implemented.
+      - RST.1 (Zotero attachment restored → move file out of plugin
+        trash) — shipped previously via `_handleZoteroRestore`.
+      - RST.2 (parent restore expands to all live child attachments)
+        — `_handleZoteroRestore` now expands parent IDs into their
+        live attachments before the per-key restore loop.
+      - RST.3 (local file reappears → re-link via tombstone-aware
+        dedup) — shipped previously.
+      - RST.4 (parent restored but attachment still trashed → keep
+        local file trashed) — the same per-attachment `deleted ===
+        false` check skips trashed children, so RST.2's expansion
+        naturally honours RST.4. Locked in by UT-093.
+      - RST.5 (local-restore after parent deleted; attachment also
+        gone) — `_processNewFile` tombstone path now checks the
+        original parent (tombstone.zoteroItemKey) and, if still alive,
+        attaches the file as a child via `Zotero.Attachments.import
+        FromFile({parentItemID})` instead of importing as a new
+        top-level item. Falls through to import-as-new when the parent
+        is also gone.
+      - RST.6 (collision suffix) — shipped previously.
 - [ ] **`mirrorExecutor.deleteFolder` Mode 3 wiring.** Currently
       warn-only in both Mode 2 and Mode 3. Mode 3 should route folder
       deletes through plugin trash too — recursive move into
@@ -134,6 +146,16 @@ Bigger scope. Reserve a longer session.
       or >20% of the tree would be deleted, or when the watch volume
       goes offline. Add in `mirrorExecutor` before any bulk destructive
       op runs.
+
+### Track D — discovered while doing other items (autonomous queue)
+
+- [ ] **Unit test for RST.5 re-attach path** in
+      `_processNewFile`. The RST.5 implementation (re-attach to a
+      still-living parent when the original attachment was purged)
+      has no unit test — `_processNewFile` doesn't have a dedicated
+      describe block in `watchFolder.test.mjs`. Live MCP path covers
+      it indirectly. Add a focused test or stand up a small
+      `_processNewFile` test harness.
 
 ---
 

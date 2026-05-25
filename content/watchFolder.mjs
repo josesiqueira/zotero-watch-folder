@@ -558,8 +558,50 @@ export class WatchFolderService {
               Zotero.debug(`[WatchFolder] Tombstone re-link: ${filePath} → ${tombstone.zoteroAttachmentKey}`);
               return;
             }
-            // Attachment permanently purged from Zotero; drop the now-
-            // unreachable tombstone and let import-as-new run below.
+            // RST.5: attachment is gone but the original parent item may
+            // still exist. If so, attach the file as a child of that
+            // parent instead of importing it as a brand-new standalone
+            // top-level item. tombstone.zoteroItemKey holds the parent
+            // key when the original attachment had a parent; pre-v2
+            // standalone attachments stored their own key there as a
+            // fallback, so guard with an "is not itself an attachment"
+            // check to avoid attaching to a deleted attachment shell.
+            if (tombstone.zoteroItemKey && tombstone.zoteroItemKey !== tombstone.zoteroAttachmentKey) {
+              try {
+                const parent = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, tombstone.zoteroItemKey);
+                if (parent && !parent.deleted && (!parent.isAttachment || !parent.isAttachment())) {
+                  const newAttachment = await Zotero.Attachments.importFromFile({
+                    file: filePath,
+                    libraryID,
+                    parentItemID: parent.id,
+                  });
+                  if (newAttachment && newAttachment.key) {
+                    const watchPath = getPref('sourcePath') || '';
+                    const relFile = this._toRelativeForStore(filePath, watchPath);
+                    this._trackingStore.add(createFileRecord({
+                      localPath: relFile,
+                      canonicalLocalPath: relFile,
+                      lastSyncedHash: hash,
+                      lastSyncedSize,
+                      lastSyncedMtime,
+                      zoteroItemKey: parent.key,
+                      zoteroAttachmentKey: newAttachment.key,
+                      state: STATE.CLEAN,
+                    }));
+                    this._trackingStore.removeTombstoneByAttachmentKey(tombstone.zoteroAttachmentKey);
+                    await this._trackingStore.save();
+                    Zotero.debug(`[WatchFolder] RST.5: re-attached ${filePath} to parent ${parent.key} as new attachment ${newAttachment.key}`);
+                    return;
+                  }
+                }
+              } catch (rstErr) {
+                Zotero.debug(`[WatchFolder] RST.5: parent re-attach failed (${rstErr?.message ?? rstErr}); falling through to normal import`);
+              }
+            }
+
+            // Attachment permanently purged from Zotero AND no usable
+            // parent to re-attach under; drop the now-unreachable
+            // tombstone and let import-as-new run below.
             Zotero.debug(`[WatchFolder] Tombstone re-link: attachment ${tombstone.zoteroAttachmentKey} no longer in Zotero; dropping tombstone, importing as new`);
             this._trackingStore.removeTombstoneByAttachmentKey(tombstone.zoteroAttachmentKey);
             await this._trackingStore.save();
@@ -1516,19 +1558,51 @@ export class WatchFolderService {
     const watchPath = getPref('sourcePath');
     if (!watchPath) return;
 
+    // RST.2: when a parent item is restored, the 'modify' notifier may
+    // fire for the parent ID only (Zotero batches child attachments
+    // implicitly). Expand the ID list so each restored child attachment
+    // gets a chance to re-link.
+    //
+    // RST.4 is the natural inverse: if a parent is restored but a child
+    // attachment remains in trash (`deleted === true`), the per-item
+    // loop below skips it via the `attachment.deleted` check — local
+    // file stays trashed, exactly per spec.
+    const expandedItems = [];
+    const seenKeys = new Set();
     for (const id of ids) {
-      let attachmentKey = null;
-      let isRestored = false;
-      try {
-        const item = Zotero.Items.get(id);
-        if (!item || !item.key) continue;
-        if (item.isAttachment && !item.isAttachment()) continue;
-        attachmentKey = item.key;
-        // Only act on un-deleted attachments. Trash events on the same
-        // attachment fire 'modify' too; we want the restore direction.
-        isRestored = (item.deleted === false);
-      } catch (_e) { continue; }
-      if (!attachmentKey || !isRestored) continue;
+      let item;
+      try { item = Zotero.Items.get(id); }
+      catch (_e) { continue; }
+      if (!item || !item.key) continue;
+      const isAttachment = !item.isAttachment || item.isAttachment();
+      if (isAttachment) {
+        if (!seenKeys.has(item.key)) { seenKeys.add(item.key); expandedItems.push(item); }
+      } else {
+        // Parent item — enumerate its current attachments. Each one is
+        // re-checked for `deleted === false` below before any restore
+        // action runs.
+        let attIDs = [];
+        try { attIDs = item.getAttachments ? (item.getAttachments() || []) : []; }
+        catch (_e) { /* item didn't expose getAttachments — skip */ }
+        for (const aid of attIDs) {
+          let att;
+          try { att = Zotero.Items.get(aid); }
+          catch (_e) { continue; }
+          if (!att || !att.key) continue;
+          if (att.isAttachment && !att.isAttachment()) continue;
+          if (!seenKeys.has(att.key)) { seenKeys.add(att.key); expandedItems.push(att); }
+        }
+      }
+    }
+    if (expandedItems.length === 0) return;
+
+    for (const attachment of expandedItems) {
+      const attachmentKey = attachment.key;
+      // Only act on un-deleted attachments. Trash events on the same
+      // attachment fire 'modify' too; we want the restore direction.
+      // For RST.4 (parent restored, attachment still trashed), this
+      // skip leaves the local file in plugin trash.
+      if (attachment.deleted !== false) continue;
 
       const tombstone = this._trackingStore.findTombstoneByAttachmentKey(attachmentKey);
       if (!tombstone) continue; // not a tombstoned attachment — nothing to restore

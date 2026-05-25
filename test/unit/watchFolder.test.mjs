@@ -1873,3 +1873,147 @@ describe('UT-092: _handleZoteroRestore — RST.1 + RST.6', () => {
     expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-093: restore matrix RST.2 / RST.4 — parent-driven restore semantics
+//
+// RST.2: Restoring a parent item with attachments restores all matched
+//        local files if available (parent expansion).
+// RST.4: Restoring a parent item without restoring its attachment leaves
+//        the local file trashed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-093: _handleZoteroRestore — RST.2 (parent expansion) + RST.4 (selective restore)', () => {
+  let service;
+  let store;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => k === 'sourcePath' ? '/watch' : undefined);
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    const tombstones = [];
+    const files = [];
+    store = {
+      _tombstones: tombstones,
+      _files: files,
+      getAllOfType: vi.fn((t) => t === 'tombstone' ? tombstones.slice() : (t === 'file' ? files.slice() : [])),
+      findTombstoneByAttachmentKey: vi.fn((k) => tombstones.find(t => t.zoteroAttachmentKey === k) ?? null),
+      removeTombstoneByAttachmentKey: vi.fn((k) => {
+        let removed = 0;
+        for (let i = tombstones.length - 1; i >= 0; i--) {
+          if (tombstones[i].zoteroAttachmentKey === k) { tombstones.splice(i, 1); removed++; }
+        }
+        return removed;
+      }),
+      add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
+      save: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.makeDirectory = vi.fn(async () => {});
+    globalThis.IOUtils.move = vi.fn(async () => {});
+  });
+
+  it('RST.2: parent restore expands to all live (deleted=false) attachments', async () => {
+    // Parent item (id=100, key=PARENT1) restored along with 2 attachments.
+    // Both attachments have tombstones in the store.
+    const att1 = { id: 201, key: 'ATT001', deleted: false, isAttachment: () => true };
+    const att2 = { id: 202, key: 'ATT002', deleted: false, isAttachment: () => true };
+    const parent = {
+      id: 100, key: 'PARENT1', deleted: false, isAttachment: () => false,
+      getAttachments: () => [201, 202],
+    };
+    const items = new Map([[100, parent], [201, att1], [202, att2]]);
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    store._tombstones.push(
+      { type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+        trashPath: '.zotero-watch-trash/a.pdf', canonicalLocalPath: 'a.pdf', state: 'recoverable' },
+      { type: 'tombstone', zoteroAttachmentKey: 'ATT002', deletedFrom: 'zotero',
+        trashPath: '.zotero-watch-trash/b.pdf', canonicalLocalPath: 'b.pdf', state: 'recoverable' },
+    );
+    // exists returns true for both trash sources, false for destinations (no collision).
+    globalThis.IOUtils.exists = vi.fn(async (p) => p.includes('/.zotero-watch-trash/'));
+
+    // Notifier fires for the parent ID only.
+    await service._handleZoteroRestore([100]);
+
+    expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(2);
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT002');
+  });
+
+  it('RST.4: parent restored but child attachment still deleted → child skipped', async () => {
+    // Parent restored (deleted=false), child still in trash (deleted=true).
+    const att = { id: 201, key: 'ATT001', deleted: true, isAttachment: () => true };
+    const parent = {
+      id: 100, key: 'PARENT1', deleted: false, isAttachment: () => false,
+      getAttachments: () => [201],
+    };
+    const items = new Map([[100, parent], [201, att]]);
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    store._tombstones.push({
+      type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/a.pdf', canonicalLocalPath: 'a.pdf', state: 'recoverable',
+    });
+
+    await service._handleZoteroRestore([100]);
+
+    expect(globalThis.IOUtils.move).not.toHaveBeenCalled();
+    // Tombstone preserved — restore is conditional on attachment also being restored.
+    expect(store.removeTombstoneByAttachmentKey).not.toHaveBeenCalled();
+    expect(store._tombstones).toHaveLength(1);
+  });
+
+  it('RST.2: parent restore with mixed live + still-trashed children restores only the live ones', async () => {
+    const liveAtt = { id: 201, key: 'ATT001', deleted: false, isAttachment: () => true };
+    const trashedAtt = { id: 202, key: 'ATT002', deleted: true, isAttachment: () => true };
+    const parent = {
+      id: 100, key: 'PARENT1', deleted: false, isAttachment: () => false,
+      getAttachments: () => [201, 202],
+    };
+    const items = new Map([[100, parent], [201, liveAtt], [202, trashedAtt]]);
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    store._tombstones.push(
+      { type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+        trashPath: '.zotero-watch-trash/a.pdf', canonicalLocalPath: 'a.pdf', state: 'recoverable' },
+      { type: 'tombstone', zoteroAttachmentKey: 'ATT002', deletedFrom: 'zotero',
+        trashPath: '.zotero-watch-trash/b.pdf', canonicalLocalPath: 'b.pdf', state: 'recoverable' },
+    );
+    globalThis.IOUtils.exists = vi.fn(async (p) => p.includes('/.zotero-watch-trash/'));
+
+    await service._handleZoteroRestore([100]);
+
+    expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(1);
+    expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT001');
+    expect(store.removeTombstoneByAttachmentKey).not.toHaveBeenCalledWith('ATT002');
+  });
+
+  it('parent + attachment ID both in payload → no duplicate restore (dedupe by key)', async () => {
+    // Notifier sometimes fires for both the parent and each child. Make
+    // sure my dedupe doesn't trigger the restore twice.
+    const att = { id: 201, key: 'ATT001', deleted: false, isAttachment: () => true };
+    const parent = {
+      id: 100, key: 'PARENT1', deleted: false, isAttachment: () => false,
+      getAttachments: () => [201],
+    };
+    const items = new Map([[100, parent], [201, att]]);
+    globalThis.Zotero.Items.get = vi.fn((id) => items.get(id));
+
+    store._tombstones.push({
+      type: 'tombstone', zoteroAttachmentKey: 'ATT001', deletedFrom: 'zotero',
+      trashPath: '.zotero-watch-trash/a.pdf', canonicalLocalPath: 'a.pdf', state: 'recoverable',
+    });
+    globalThis.IOUtils.exists = vi.fn(async (p) => p.includes('/.zotero-watch-trash/'));
+
+    await service._handleZoteroRestore([100, 201]);
+
+    expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(1);
+  });
+});
