@@ -169,31 +169,14 @@ Bigger scope. Reserve a longer session.
 
 ### Remaining completion work (before tagging v2.2.0-alpha.1)
 
-- [ ] **`test/mcp/MODE3.md` MCP runbook.** Canonical live-Zotero
-      validation of everything shipped in v2.2. Should cover:
-      - Switch live install to Mode 3.
-      - File-side: drop a file → it imports. `rm` it → file moves
-        into `.zotero-watch-trash/` (verify path), Zotero attachment
-        trashed (verify), tombstone created (verify via DB or store
-        dump).
-      - Restore the Zotero attachment from trash → file appears back
-        at the canonical path; tombstone gone. (RST.1)
-      - Restore a parent item with attachments → all live children
-        come back. (RST.2 + RST.4 if any child stayed deleted)
-      - Drop a file whose hash matches a recoverable tombstone →
-        attachment un-trashes + re-links (RST.3).
-      - With parent intact + attachment purged: drop the file →
-        re-attaches under the parent via `importFromFile({
-        parentItemID })` (RST.5).
-      - Drop two files with same name to canonical path → second
-        gets `.restored.<ts>` suffix (RST.6).
-      - Delete a tracked collection in Zotero → its local folder
-        moves to plugin trash, child file records dropped.
-      - Bulk-delete trigger: rm a folder containing >10 files →
-        confirm prompt fires before the trash move.
-      - Smoke-check the new "Smart Rules" prefs section renders +
-        accepts a valid rule JSON.
-      Reuse the patterns from `test/mcp/MODE2.md`.
+- [~] **`test/mcp/MODE3.md` MCP runbook.** Document written
+      (`test/mcp/MODE3.md`, 200+ lines) covering preflight, SETUP.M3.1,
+      DEL.1/2/3, RST.1/2/3/4/5/6, FDEL.1/2, FRST.1, SR.1, cleanup.
+      Smoke-checked against live Zotero: new XPI installs, all 11
+      resolver exports present, baseline + warningSink intact.
+      **Full multi-scenario hands-on pass still pending** — should
+      be run by a human (or in a dedicated MCP session) before
+      tagging v2.2.0-alpha.1. Each scenario is self-contained.
 
 ### Track D — discovered while doing other items (autonomous queue)
 
