@@ -29,6 +29,10 @@ let watchFolderService = null;
 let metadataRetriever = null;
 let syncCoordinator = null;
 let firstRunNudgeShown = false;
+/** Pref-observer ID for `enabled` so runtime toggles start/stop the
+ *  scanner + coordinator without a plugin reload. Symmetric with
+ *  syncCoordinator's `_modeObserverID`. */
+let enabledObserverID = null;
 
 const PREF_BRANCH = "extensions.zotero.watchFolder.";
 
@@ -38,6 +42,41 @@ function getPref(key) {
 
 function setPref(key, value) {
     Zotero.Prefs.set(PREF_BRANCH + key, value, true);
+}
+
+/**
+ * Runtime handler for the `enabled` pref. Starts both the
+ * syncCoordinator (mode2/3) and the watchFolderService scan loop
+ * when enabled goes false → true; stops both on the inverse
+ * transition. Mirrors the onStartup ordering (coordinator first so
+ * baseline finishes before the first scan).
+ *
+ * No-op when the service isn't initialized yet (shutdown in flight,
+ * or plugin not fully loaded). Idempotent — guards on
+ * `watchFolderService._isWatching` so repeated true→true or
+ * false→false events don't double-start or double-stop.
+ */
+async function onEnabledChanged() {
+    if (!watchFolderService) return;
+    const wantEnabled = !!getPref("enabled");
+    const isWatching = watchFolderService._isWatching === true;
+    if (wantEnabled && !isWatching) {
+        if (syncCoordinator) {
+            try { await syncCoordinator.start(); }
+            catch (e) { Zotero.logError(`Zotero Watch Folder: coordinator.start on enabled→true failed - ${e?.message ?? e}`); }
+        }
+        try { await watchFolderService.startWatching(); }
+        catch (e) { Zotero.logError(`Zotero Watch Folder: startWatching on enabled→true failed - ${e?.message ?? e}`); }
+        Zotero.debug("Zotero Watch Folder: enabled→true at runtime — started");
+    } else if (!wantEnabled && isWatching) {
+        try { watchFolderService.stopWatching(); }
+        catch (e) { Zotero.logError(`Zotero Watch Folder: stopWatching on enabled→false failed - ${e?.message ?? e}`); }
+        if (syncCoordinator) {
+            try { await syncCoordinator.stop(); }
+            catch (e) { Zotero.logError(`Zotero Watch Folder: coordinator.stop on enabled→false failed - ${e?.message ?? e}`); }
+        }
+        Zotero.debug("Zotero Watch Folder: enabled→false at runtime — stopped");
+    }
 }
 
 /**
@@ -305,6 +344,22 @@ export const hooks = {
                 await watchFolderService.startWatching();
             }
 
+            // Runtime `enabled` pref observer (MODE3 live finding
+            // 2026-05-25): toggling enabled false → true used to leave
+            // the scanner idle until a plugin reload. Now we start/stop
+            // both halves in-process, mirroring onStartup's order.
+            try {
+                if (Zotero.Prefs && typeof Zotero.Prefs.registerObserver === 'function') {
+                    enabledObserverID = Zotero.Prefs.registerObserver(
+                        PREF_BRANCH + 'enabled',
+                        () => { onEnabledChanged().catch((e) => Zotero.logError(`Zotero Watch Folder: enabled observer error - ${e?.message ?? e}`)); },
+                        false,
+                    );
+                }
+            } catch (e) {
+                Zotero.debug(`Zotero Watch Folder: could not register enabled observer - ${e?.message ?? e}`);
+            }
+
             Zotero.debug("Zotero Watch Folder: Started successfully");
         } catch (error) {
             Zotero.logError(`Zotero Watch Folder: Failed to start - ${error.message}`);
@@ -338,6 +393,12 @@ export const hooks = {
 
     async onShutdown() {
         Zotero.debug("Zotero Watch Folder: Shutting down");
+
+        if (enabledObserverID && Zotero.Prefs && typeof Zotero.Prefs.unregisterObserver === 'function') {
+            try { Zotero.Prefs.unregisterObserver(enabledObserverID); }
+            catch (_e) { /* best effort */ }
+            enabledObserverID = null;
+        }
 
         if (syncCoordinator) {
             try {

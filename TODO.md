@@ -1,15 +1,17 @@
 # Zotero Watch Folder — TODO
 
-**v2.1.0-alpha.1 shipped** (commit `dc4ad27`, tag `v2.1.0-alpha.1`).
-Mode 2 (mirror without delete) is functional end-to-end against a real
-Zotero install. v2.0 (Mode 1) remains shipped and unchanged.
+**v2.2.0-alpha.1 shipped** (commit `aebfe31`, tag `v2.2.0-alpha.1`).
+Mode 3 (mirror with safe delete) is functional end-to-end against a
+real Zotero install. v2.0 (Mode 1) and v2.1 (Mode 2) remain shipped
+and unchanged.
 
 ---
 
 ## Start here next session
 
-Open this file first. Pick one of the three tracks below depending on
-what feels right. Each item is self-contained — none block the others.
+Open this file first. Tracks A–C are complete; Track D is the live
+follow-up queue (small items surfaced while building the bigger
+features). Pick whichever item lines up with the time you have.
 
 ### Track A — finish Mode 2 polish (small, well-defined)
 
@@ -89,9 +91,7 @@ mostly orthogonal to v2.2.
       JSDoc to make the contract explicit + added a regression test
       that asserts subscribers survive `clear()`.
 
-### Track C — start v2.2 (Mode 3 — safe delete)
-
-Bigger scope. Reserve a longer session.
+### Track C — v2.2 (Mode 3 — safe delete) ✅ shipped
 
 - [x] **Cascading-trash bug fixed first.** Both
       `_handleExternalDeletions` and `_handleZoteroTrash` v2 rewrite
@@ -167,21 +167,20 @@ Bigger scope. Reserve a longer session.
       live in watchFolder.mjs, not mirrorExecutor. Filed as a
       follow-up under Track D.
 
-### Remaining completion work (before tagging v2.2.0-alpha.1)
+### Live validation status
 
 - [~] **`test/mcp/MODE3.md` MCP runbook.** Document written
       (`test/mcp/MODE3.md`, 200+ lines) covering preflight, SETUP.M3.1,
       DEL.1/2/3, RST.1/2/3/4/5/6, FDEL.1/2, FRST.1, SR.1, cleanup.
-      **Partial live pass 2026-05-25** against XPI v2.2.0-alpha.1:
-      DEL.1, DEL.1.b, RST.1, FRST.1 all ✅. The critical Zotero ↔
-      disk ↔ tombstone ↔ restore loop validated end-to-end against
-      live Zotero 8.0.4. Remaining scenarios (DEL.2/3, RST.2/3/4/5/6,
-      FDEL.1/2, SR.1) deferred — unit-test coverage already in
-      place; live pass is a nice-to-have for v2.2 GA. See
-      `test/mcp/MODE3.md` "Run 2026-05-25" section for details +
-      two small surprises (scanner subfolder pickup latency,
-      enabled-pref toggle doesn't restart scanner in-process —
-      both filed under Track D below).
+      **Partial live pass 2026-05-25** against the shipped XPI
+      v2.2.0-alpha.1: DEL.1, DEL.1.b, RST.1, FRST.1 all ✅. The
+      critical Zotero ↔ disk ↔ tombstone ↔ restore loop validated
+      end-to-end against live Zotero 8.0.4. Remaining scenarios
+      (DEL.2/3, RST.2/3/4/5/6, FDEL.1/2, SR.1) deferred —
+      unit-test coverage already in place; a full hands-on pass
+      is a nice-to-have before v2.3. See `test/mcp/MODE3.md` "Run
+      2026-05-25" section for details + two small surprises (now
+      tracked under Track D below).
 
 ### Track D — discovered while doing other items (autonomous queue)
 
@@ -192,14 +191,14 @@ Bigger scope. Reserve a longer session.
       files imported in ~5–6 s. Likely a baseline /
       collectionWatcher interaction. Root-cause + reproducer
       welcome.
-- [ ] **`enabled` pref toggle does not restart the syncCoordinator
-      scan loop** in-process (also surfaced 2026-05-25). After
-      toggling `enabled` false → true the scanner stayed idle
-      until a plugin reload. The mode-pref observer watches
-      `mode`, not `enabled`; add a parallel observer (or gate
-      scanner start/stop on enabled at the watchFolderService
-      level) so toggling enabled at runtime is symmetric with what
-      the prefs UI does.
+- [x] **`enabled` pref toggle now restarts the scanner in-process.**
+      `content/index.mjs` registers a `Zotero.Prefs.registerObserver`
+      on `extensions.zotero.watchFolder.enabled` after the initial
+      startup-time start. The handler (`onEnabledChanged`) mirrors
+      onStartup's order: coordinator.start() then
+      watchFolderService.startWatching() on false → true; stop in
+      reverse on true → false. Idempotent via the `_isWatching`
+      guard. Observer is unregistered in onShutdown.
 - [x] **Unit test for RST.5 re-attach path** in `_processNewFile`.
       Stood up a `_processNewFile` test harness via mocking
       `_waitForFileStable` + injecting a hand-rolled tracking store
@@ -237,8 +236,8 @@ Bigger scope. Reserve a longer session.
   `MODE3.md` runbook **still pending** — the canonical pre-tag
   completion test for Mode 3 + restore matrix + plugin-trash +
   bulk-delete protection.
-- **Auto-update:** `update.json` on `main` points at the v2.1 XPI;
-  existing v2.0 installs auto-discover.
+- **Auto-update:** `update.json` on `main` points at the v2.2 XPI;
+  existing v2.0 / v2.1 installs auto-discover.
 - **Architecture docs:** `CLAUDE.md` (project layout + invariants),
   `updates_22_05_26.md` (v2 sync-model spec, source of truth for
   behavior), `docs/CODEBASE_OVERVIEW.md` (long-form module tour —
@@ -251,7 +250,7 @@ npm test                              # vitest
 npm run bundle                        # rebuild dist/content/scripts/watchFolder.js
 npm run build && npm run bundle && npm run package
                                       # full XPI rebuild
-gh release view v2.1.0-alpha.1        # release page
+gh release view v2.2.0-alpha.1        # release page
 ```
 
 When working with the live Zotero MCP bridge:
@@ -293,9 +292,10 @@ When working with the live Zotero MCP bridge:
   - Resolver `save()` rollback across all 11 handlers.
   - Singleton TrackingStore fix — WatchFolderService now shares the
     suppressionResolver's singleton via `initTrackingStore()`.
-- **v2.2 (on main, unreleased — Mode 3 safe-delete end-to-end)**
-  — `39ea420`, `7a8ad88`, `a7e0bd1`, `1f86184`, `682e6a8`,
-  `2262bde`, `1010b01`, `d98fad2`, `5f845c8`:
+- **v2.2 (`v2.2.0-alpha.1`)** — Mode 3 safe-delete end-to-end —
+  shipped via `39ea420`, `7a8ad88`, `a7e0bd1`, `1f86184`, `682e6a8`,
+  `2262bde`, `1010b01`, `d98fad2`, `5f845c8`, `af807f5`, `6880b0b`,
+  `aebfe31`:
   - Cascading-trash bug fix: `_handleExternalDeletions` shadow guard +
     `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
   - `.zotero-watch-trash/` plugin trash dir + `'plugin_trash'` action
