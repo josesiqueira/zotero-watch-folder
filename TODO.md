@@ -167,6 +167,34 @@ Bigger scope. Reserve a longer session.
       live in watchFolder.mjs, not mirrorExecutor. Filed as a
       follow-up under Track D.
 
+### Remaining completion work (before tagging v2.2.0-alpha.1)
+
+- [ ] **`test/mcp/MODE3.md` MCP runbook.** Canonical live-Zotero
+      validation of everything shipped in v2.2. Should cover:
+      - Switch live install to Mode 3.
+      - File-side: drop a file → it imports. `rm` it → file moves
+        into `.zotero-watch-trash/` (verify path), Zotero attachment
+        trashed (verify), tombstone created (verify via DB or store
+        dump).
+      - Restore the Zotero attachment from trash → file appears back
+        at the canonical path; tombstone gone. (RST.1)
+      - Restore a parent item with attachments → all live children
+        come back. (RST.2 + RST.4 if any child stayed deleted)
+      - Drop a file whose hash matches a recoverable tombstone →
+        attachment un-trashes + re-links (RST.3).
+      - With parent intact + attachment purged: drop the file →
+        re-attaches under the parent via `importFromFile({
+        parentItemID })` (RST.5).
+      - Drop two files with same name to canonical path → second
+        gets `.restored.<ts>` suffix (RST.6).
+      - Delete a tracked collection in Zotero → its local folder
+        moves to plugin trash, child file records dropped.
+      - Bulk-delete trigger: rm a folder containing >10 files →
+        confirm prompt fires before the trash move.
+      - Smoke-check the new "Smart Rules" prefs section renders +
+        accepts a valid rule JSON.
+      Reuse the patterns from `test/mcp/MODE2.md`.
+
 ### Track D — discovered while doing other items (autonomous queue)
 
 - [ ] **Unit test for RST.5 re-attach path** in
@@ -199,16 +227,16 @@ Bigger scope. Reserve a longer session.
 ## Project state at-a-glance
 
 - **Released:** `v2.1.0-alpha.1` (https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.1.0-alpha.1).
-- **`main` is ahead of the tag** with v2.1 Track A polish + v2.2 in-progress
-  (cascading-trash fix, `.zotero-watch-trash/`, restore matrix RST.1/3/6,
-  tombstone-aware dedup, singleton-store fix). Bump to `v2.2.0-alpha.1`
-  once the remaining Track C items land (`_deleteFolder` Mode 3,
-  bulk-delete protection, RST.2/4/5).
-- **Tests:** 19 files / 486 passing + 21 skipped (`npm test`).
+- **`main` is ahead of the tag** with all of Track A polish + Track B
+  cleanup + Track C v2.2 (Mode 3 safe-delete end-to-end). Ready to
+  tag `v2.2.0-alpha.1` once `MODE3.md` MCP runbook validates the new
+  surface live (see "Remaining completion work" below).
+- **Tests:** 19 files / 493 passing + 21 skipped (`npm test`).
 - **MCP runbooks:** `test/mcp/MODE1.md` (v2.0) ✅, `test/mcp/MODE2.md`
   (v2.1) ✅ WARN.1 visual UI step completed via MCP screenshot pass.
-  `MODE3.md` runbook still pending for Mode 3 / restore matrix
-  live-validation.
+  `MODE3.md` runbook **still pending** — the canonical pre-tag
+  completion test for Mode 3 + restore matrix + plugin-trash +
+  bulk-delete protection.
 - **Auto-update:** `update.json` on `main` points at the v2.1 XPI;
   existing v2.0 installs auto-discover.
 - **Architecture docs:** `CLAUDE.md` (project layout + invariants),
@@ -265,13 +293,25 @@ When working with the live Zotero MCP bridge:
   - Resolver `save()` rollback across all 11 handlers.
   - Singleton TrackingStore fix — WatchFolderService now shares the
     suppressionResolver's singleton via `initTrackingStore()`.
-- **v2.2 in-progress (on main, unreleased)** — `39ea420`, `7a8ad88`,
-  `a7e0bd1`:
+- **v2.2 (on main, unreleased — Mode 3 safe-delete end-to-end)**
+  — `39ea420`, `7a8ad88`, `a7e0bd1`, `1f86184`, `682e6a8`,
+  `2262bde`, `1010b01`, `d98fad2`, `5f845c8`:
   - Cascading-trash bug fix: `_handleExternalDeletions` shadow guard +
     `_handleZoteroTrash` v2 rewrite (canonical-only disk-delete).
   - `.zotero-watch-trash/` plugin trash dir + `'plugin_trash'` action
     + tombstone emission on recoverable trash.
-  - Restore matrix RST.1 + RST.3 + RST.6 + tombstone-aware dedup.
+  - Restore matrix RST.1/2/3/4/5/6 (all six cases): parent-expand on
+    Zotero restore, deleted-check skip for RST.4, tombstone-aware
+    dedup for local restore, parent-re-attach via `importFromFile({
+    parentItemID })` for RST.5, collision suffix on restore for RST.6.
+  - `mirrorExecutor._deleteFolder` Mode 3 wiring: recursive move into
+    plugin trash with same collision policy + child-tracking cleanup.
+  - Bulk-delete protection: `_isBulkDelete` (>10 OR >20%) +
+    `_confirmBulkDelete` (Services.prompt with safe no-UI fallback)
+    in `_deleteFolder`.
+  - Smart rules JSON editor in prefs pane (replaces about:config).
+  - Deleted dormant `bulkOperations.mjs` (738 lines, unreachable in v2).
+  - `warningSink.clear()` contract documented (listeners survive).
 - **Pre-v2** — Phase 1 (watch folder, auto-import, metadata retrieval,
   file renaming, first-run flow, post-import actions), Phase 2
   (collection ↔ folder mirroring), Phase 3 (smart rules, duplicate
