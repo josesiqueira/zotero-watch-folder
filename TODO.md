@@ -150,10 +150,22 @@ Bigger scope. Reserve a longer session.
       behavior unchanged. 4 new UT-419 tests cover all branches.
       Restore-folder UX is filed under Track D — for now users
       recover by manually moving the dir out of plugin trash.
-- [ ] **Bulk-delete protection.** Pause + confirm prompt when >10 files
-      or >20% of the tree would be deleted, or when the watch volume
-      goes offline. Add in `mirrorExecutor` before any bulk destructive
-      op runs.
+- [x] **Bulk-delete protection.** Added `_isBulkDelete` (>10 files OR
+      >20% of tracked tree) + `_confirmBulkDelete` (Services.prompt
+      with safe fallback for no-UI contexts → refuses rather than
+      silently executing) helpers in mirrorExecutor. Wired into
+      `_deleteFolder` Mode 3 before the recursive move: counts files
+      under the subtree, prompts on threshold cross, returns
+      `{ok:false, reason:'bulk-confirm-denied'}` on decline.
+      Watch-volume-offline check was already handled at a higher
+      level in `_handleExternalDeletions` (pauses sync globally via
+      `isWatchRootAvailable`), so no extra work needed there.
+      5 new UT-420 tests cover both thresholds, under-threshold
+      skip, user decline, and the no-prompt-available refusal.
+      **NOTE:** the spec mentions `watchFolder._handleZoteroTrash`
+      and `_handleExternalDeletions` are also bulk-capable; both
+      live in watchFolder.mjs, not mirrorExecutor. Filed as a
+      follow-up under Track D.
 
 ### Track D — discovered while doing other items (autonomous queue)
 
@@ -171,6 +183,16 @@ Bigger scope. Reserve a longer session.
       listing dirs in `.zotero-watch-trash/` with a Restore action
       that moves them back + re-creates the collection — would
       close this loop.
+- [ ] **Bulk-delete protection for `watchFolder._handleZoteroTrash`
+      and `_handleExternalDeletions`.** The new mirrorExecutor
+      protection only covers `_deleteFolder`. The same threshold
+      logic should apply to `_handleZoteroTrash` (large batch of
+      attachment trashes → many disk deletes) and
+      `_handleExternalDeletions` Mode 3 (many missing files →
+      many Zotero-side trashes). Factor `_isBulkDelete` +
+      `_confirmBulkDelete` into a shared module (probably a new
+      `content/bulkGuard.mjs`) so all three callers use the same
+      thresholds.
 
 ---
 

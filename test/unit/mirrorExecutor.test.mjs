@@ -985,3 +985,126 @@ describe('UT-419: _deleteFolder Mode 3 routes through plugin trash', () => {
     expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
   });
 });
+
+// ─── UT-420 (Track C — bulk-delete protection) ──────────────────────────────
+
+describe('UT-420: _deleteFolder bulk-delete protection (Mode 3)', () => {
+  beforeEach(() => {
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode3';
+      return undefined;
+    });
+    // Reset confirmEx to the default (approve) at the start of each test.
+    Services.prompt.confirmEx.mockReturnValue(0);
+    IOUtils.exists.mockImplementation(async (p) => p === '/watch/Big');
+  });
+
+  function seedBigFolder(store, fileCount) {
+    store.add(createCollectionRecord({
+      localPath: 'Big', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    for (let i = 0; i < fileCount; i++) {
+      store.add(createFileRecord({
+        localPath: `Big/file${i}.pdf`, canonicalLocalPath: `Big/file${i}.pdf`,
+        zoteroAttachmentKey: `K${i}`, lastSyncedHash: `h${i}`, state: STATE.CLEAN,
+      }));
+    }
+  }
+
+  it('over-threshold by count (>10) prompts before moving', async () => {
+    const store = await makeStore();
+    seedBigFolder(store, 11);
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Big' },
+    });
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+    expect(IOUtils.move).toHaveBeenCalled();
+  });
+
+  it('over-threshold by percent (>20%) prompts before moving', async () => {
+    const store = await makeStore();
+    // 3 files in Big + 2 files outside → 3/5 = 60% over threshold.
+    seedBigFolder(store, 3);
+    store.add(createFileRecord({ localPath: 'Other/x.pdf', canonicalLocalPath: 'Other/x.pdf', zoteroAttachmentKey: 'OK1', lastSyncedHash: 'h', state: STATE.CLEAN }));
+    store.add(createFileRecord({ localPath: 'Other/y.pdf', canonicalLocalPath: 'Other/y.pdf', zoteroAttachmentKey: 'OK2', lastSyncedHash: 'h', state: STATE.CLEAN }));
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Big' },
+    });
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+  });
+
+  it('under both thresholds (≤10 AND ≤20%) skips the prompt entirely', async () => {
+    const store = await makeStore();
+    // 2 files in Big + 20 files outside → 2 ≤10 AND 2/22 = ~9% ≤20%.
+    seedBigFolder(store, 2);
+    for (let i = 0; i < 20; i++) {
+      store.add(createFileRecord({
+        localPath: `Other/o${i}.pdf`, canonicalLocalPath: `Other/o${i}.pdf`,
+        zoteroAttachmentKey: `OK${i}`, lastSyncedHash: 'h', state: STATE.CLEAN,
+      }));
+    }
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Big' },
+    });
+
+    expect(Services.prompt.confirmEx).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(IOUtils.move).toHaveBeenCalled();
+  });
+
+  it('user declines → no move, no tracking change, returns bulk-confirm-denied', async () => {
+    Services.prompt.confirmEx.mockReturnValue(1); // user chose Cancel
+    const store = await makeStore();
+    seedBigFolder(store, 15);
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Big' },
+    });
+
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('bulk-confirm-denied');
+    expect(result.affectedCount).toBe(15);
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    // Tracking record untouched.
+    expect(store.getCollectionRecord('SUB1')).not.toBe(null);
+    expect(store.getByLocalPath('Big/file0.pdf')).not.toBe(null);
+  });
+
+  it('no Services.prompt available → refuses (safer than silent execution)', async () => {
+    const originalPrompt = Services.prompt;
+    Services.prompt = undefined;
+    try {
+      const store = await makeStore();
+      seedBigFolder(store, 15);
+      init({ trackingStore: store });
+
+      const result = await execute({
+        type: 'deleteFolder',
+        payload: { collectionKey: 'SUB1', oldRelativePath: 'Big' },
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('bulk-confirm-denied');
+      expect(IOUtils.move).not.toHaveBeenCalled();
+    } finally {
+      Services.prompt = originalPrompt;
+    }
+  });
+});

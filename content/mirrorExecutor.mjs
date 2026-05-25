@@ -184,6 +184,57 @@ function _absPath(relOrAbs) {
 }
 
 /**
+ * Bulk-delete safety thresholds. Spec (TODO Track C): block + prompt
+ * when an op would remove >10 tracked files OR more than 20% of the
+ * tracked tree in one batch. Either threshold trips the prompt.
+ */
+const BULK_FILE_THRESHOLD = 10;
+const BULK_PERCENT_THRESHOLD = 0.20;
+
+function _isBulkDelete(affectedCount, totalTracked) {
+  if (affectedCount <= 1) return false;
+  if (affectedCount > BULK_FILE_THRESHOLD) return true;
+  if (totalTracked > 0 && (affectedCount / totalTracked) > BULK_PERCENT_THRESHOLD) return true;
+  return false;
+}
+
+/**
+ * Show a confirmation dialog before running a bulk destructive op.
+ * Returns `true` if the user approves, `false` otherwise. Safe to
+ * call without an active Zotero window: tries `Services.wm` to find
+ * one, falls back to a null parent (Zotero attaches a default).
+ *
+ * In automated / headless contexts where `Services.prompt` is
+ * unavailable, refuses the op rather than silently proceeding — the
+ * whole point of the threshold is "don't auto-destroy lots of files".
+ */
+async function _confirmBulkDelete({ action, path, affectedCount, totalTracked }) {
+  let win = null;
+  try {
+    if (typeof Services !== 'undefined' && Services.wm && typeof Services.wm.getMostRecentWindow === 'function') {
+      win = Services.wm.getMostRecentWindow('navigator:browser');
+    }
+  } catch (_e) { /* fall through with null window */ }
+  if (typeof Services === 'undefined' || !Services.prompt || typeof Services.prompt.confirmEx !== 'function') {
+    Zotero.debug(`[WatchFolder] mirrorExecutor: bulk-delete refused (no Services.prompt) — ${action} ${affectedCount}/${totalTracked} ${path}`);
+    return false;
+  }
+  const pct = totalTracked > 0 ? Math.round((affectedCount / totalTracked) * 100) : 0;
+  const msg =
+    `About to ${action} ${affectedCount} tracked file(s)` +
+    (totalTracked > 0 ? ` — roughly ${pct}% of ${totalTracked} tracked` : '') +
+    `\nunder "${path}".\n\nThis is a bulk destructive action. Proceed?`;
+  const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+              + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+              + Services.prompt.BUTTON_POS_1_DEFAULT; // Cancel is the default
+  const result = Services.prompt.confirmEx(
+    win, 'Watch Folder — bulk delete', msg, flags,
+    'Proceed', null, null, null, { value: false },
+  );
+  return result === 0;
+}
+
+/**
  * If `path` is `oldRel` or sits under `oldRel + '/'`, rewrite the prefix
  * to `newRel`. Otherwise return `path` unchanged. Used by moveFolder's
  * second-pass canonicalLocalPath fixup.
@@ -449,6 +500,41 @@ async function _deleteFolder(payload) {
       try { if (_store) await _store.save(); } catch (_e) { /* logged */ }
       Zotero.debug(`[WatchFolder] mirrorExecutor: deleteFolder ${oldRelativePath} — source already missing, tracking dropped`);
       return { ok: true, reason: 'already-missing' };
+    }
+
+    // Bulk-delete protection (Track C). Count tracked files inside the
+    // subtree about to be moved; if it crosses the threshold, prompt
+    // before proceeding. Refusal returns `{ok:false, reason:'bulk-
+    // confirm-denied'}` — leaves the disk + tracking store untouched.
+    if (_store) {
+      const prefix = oldRelativePath + '/';
+      const allFiles = _store.getAllOfType('file');
+      let affected = 0;
+      for (const r of allFiles) {
+        if (r.localPath === oldRelativePath
+            || (typeof r.localPath === 'string' && r.localPath.startsWith(prefix))) {
+          affected++;
+        }
+      }
+      if (_isBulkDelete(affected, allFiles.length)) {
+        const approved = await _confirmBulkDelete({
+          action: 'move to plugin trash',
+          path: oldRelativePath,
+          affectedCount: affected,
+          totalTracked: allFiles.length,
+        });
+        if (!approved) {
+          reportWarning({
+            category: WARNING_CATEGORY.SUPPRESSED,
+            actionType: 'deleteFolder',
+            collectionKey,
+            path: oldRelativePath,
+            reason: 'bulk-confirm-denied',
+            message: `Bulk-delete refused: ${affected}/${allFiles.length} tracked file(s) under "${oldRelativePath}" were not moved to plugin trash (user declined or no UI).`,
+          });
+          return { ok: false, reason: 'bulk-confirm-denied', affectedCount: affected, totalTracked: allFiles.length };
+        }
+      }
     }
 
     // Compute destination under plugin trash. Collision policy mirrors
