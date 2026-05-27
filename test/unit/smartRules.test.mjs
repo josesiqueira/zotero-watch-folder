@@ -548,3 +548,168 @@ describe('UT-027 — factory functions', () => {
     expect(action).toEqual({ type: 'setField', value: 'foo', field: 'title' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-028 (WP-B / B5) — pre-compile matchesRegex at loadRules time
+// ---------------------------------------------------------------------------
+describe('UT-028 — pre-compile matchesRegex at loadRules / addRule (WP-B / B5)', () => {
+  let engine;
+  let item;
+
+  beforeEach(() => {
+    engine = makeEngine();
+    item = makeMockItem();
+    Zotero.Prefs.get.mockReset();
+  });
+
+  function rulesPref(rules) {
+    return JSON.stringify(rules);
+  }
+
+  it('a: loadRules stamps _compiled onto every matchesRegex condition', async () => {
+    Zotero.Prefs.get.mockImplementation((key) => {
+      if (key.endsWith('smartRules')) {
+        return rulesPref([{
+          id: 'r1', name: 'R1',
+          conditions: [
+            { field: 'title', operator: 'matchesRegex', value: '\\d{4}' },
+            { field: 'title', operator: 'contains', value: 'foo' },
+          ],
+          actions: [{ type: 'addTag', value: 't' }],
+        }]);
+      }
+      return undefined;
+    });
+    await engine.loadRules();
+    const rule = engine.getRule('r1');
+    expect(rule).toBeTruthy();
+    expect(rule.conditions[0]._compiled).toBeInstanceOf(RegExp);
+    // Non-matchesRegex condition is not touched.
+    expect(rule.conditions[1]._compiled).toBeUndefined();
+  });
+
+  it('b: precompiled regex honours the caseSensitive flag (default off → "i")', async () => {
+    Zotero.Prefs.get.mockImplementation((key) => {
+      if (key.endsWith('smartRules')) {
+        return rulesPref([{
+          id: 'r1', name: 'R1',
+          conditions: [{ field: 'title', operator: 'matchesRegex', value: 'foo' }],
+          actions: [{ type: 'addTag', value: 't' }],
+        }]);
+      }
+      return undefined;
+    });
+    await engine.loadRules();
+    const cond = engine.getRule('r1').conditions[0];
+    expect(cond._compiled.flags).toBe('i');
+  });
+
+  it('c: oversized pattern (>512 chars) is NOT compiled (ReDoS cap enforced at load)', async () => {
+    const big = 'a'.repeat(513);
+    Zotero.Prefs.get.mockImplementation((key) => {
+      if (key.endsWith('smartRules')) {
+        return rulesPref([{
+          id: 'r1', name: 'R1',
+          conditions: [{ field: 'title', operator: 'matchesRegex', value: big }],
+          actions: [{ type: 'addTag', value: 't' }],
+        }]);
+      }
+      return undefined;
+    });
+    await engine.loadRules();
+    const cond = engine.getRule('r1').conditions[0];
+    expect(cond._compiled).toBe(null);
+  });
+
+  it('d: invalid regex (syntax error) is NOT compiled (logged + nulled)', async () => {
+    Zotero.Prefs.get.mockImplementation((key) => {
+      if (key.endsWith('smartRules')) {
+        return rulesPref([{
+          id: 'r1', name: 'R1',
+          conditions: [{ field: 'title', operator: 'matchesRegex', value: '[invalid' }],
+          actions: [{ type: 'addTag', value: 't' }],
+        }]);
+      }
+      return undefined;
+    });
+    await engine.loadRules();
+    const cond = engine.getRule('r1').conditions[0];
+    expect(cond._compiled).toBe(null);
+  });
+
+  it('e: evaluateCondition reuses the precompiled regex (no recompile on hit)', async () => {
+    Zotero.Prefs.get.mockImplementation((key) => {
+      if (key.endsWith('smartRules')) {
+        return rulesPref([{
+          id: 'r1', name: 'R1',
+          conditions: [{ field: 'title', operator: 'matchesRegex', value: 'foo' }],
+          actions: [{ type: 'addTag', value: 't' }],
+        }]);
+      }
+      return undefined;
+    });
+    await engine.loadRules();
+    const cond = engine.getRule('r1').conditions[0];
+    const compiled = cond._compiled;
+    expect(compiled).toBeInstanceOf(RegExp);
+    // Spy on RegExp construction — if evaluation reuses the compiled
+    // regex, no new RegExp should be created.
+    const origRegExp = globalThis.RegExp;
+    const ctorSpy = vi.fn((...args) => new origRegExp(...args));
+    globalThis.RegExp = ctorSpy;
+    try {
+      vi.spyOn(engine, 'getFieldValue').mockReturnValue('foobar');
+      const result = engine.evaluateCondition(cond, item);
+      expect(result).toBe(true);
+      expect(ctorSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.RegExp = origRegExp;
+    }
+  });
+
+  it('f: evaluateCondition still works when _compiled is null (falls back to live compile)', () => {
+    // Ad-hoc condition with no precompile step.
+    const cond = { field: 'title', operator: 'matchesRegex', value: 'foo' };
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('foobar');
+    expect(engine.evaluateCondition(cond, item)).toBe(true);
+  });
+
+  it('g: addRule precompiles matchesRegex conditions on the new rule', () => {
+    const r = engine.addRule({
+      name: 'X',
+      conditions: [{ field: 'title', operator: 'matchesRegex', value: 'NEEDLE' }],
+      actions: [{ type: 'addTag', value: 't' }],
+    });
+    expect(r.conditions[0]._compiled).toBeInstanceOf(RegExp);
+  });
+
+  it('h: updateRule re-compiles when condition.value changes', () => {
+    const r = engine.addRule({
+      name: 'X',
+      conditions: [{ field: 'title', operator: 'matchesRegex', value: 'FOO' }],
+      actions: [{ type: 'addTag', value: 't' }],
+    });
+    const before = r.conditions[0]._compiled.source;
+    expect(before).toBe('FOO');
+    engine.updateRule(r.id, {
+      conditions: [{ field: 'title', operator: 'matchesRegex', value: 'BAR' }],
+    });
+    const after = engine.getRule(r.id).conditions[0]._compiled.source;
+    expect(after).toBe('BAR');
+  });
+
+  it('i: evaluateCondition recompiles when value drifts from _compiledPattern', () => {
+    // Simulate an externally-mutated value (e.g. test fixture or
+    // a code path that didn't go through addRule/updateRule).
+    const cond = {
+      field: 'title',
+      operator: 'matchesRegex',
+      value: 'NEW',
+      _compiled: /OLD/i,
+      _compiledPattern: 'OLD',
+      _compiledFlags: 'i',
+    };
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('NEW match');
+    expect(engine.evaluateCondition(cond, item)).toBe(true);
+  });
+});

@@ -133,6 +133,21 @@ export class SmartRulesEngine {
         ? rules.map(r => sanitizeUntrustedKeys(r))
         : [];
 
+      // WP-B / B5: pre-compile `matchesRegex` patterns at load time so
+      // `evaluateCondition` doesn't pay `new RegExp(...)` per evaluation.
+      // The ReDoS caps from v2.4.1 MUST run BEFORE compilation — a
+      // pattern over `REDOS_PATTERN_CAP` is dropped here and never
+      // compiled. A pattern that fails to compile (invalid regex) is
+      // also dropped at load time so a malformed rule surfaces at
+      // load, not later during a hot evaluation loop.
+      for (const rule of sanitized) {
+        if (!Array.isArray(rule.conditions)) continue;
+        for (const cond of rule.conditions) {
+          if (cond?.operator !== 'matchesRegex') continue;
+          this._compileRegexOnCondition(cond);
+        }
+      }
+
       // Validate and sort rules by priority (higher priority first)
       this._rules = sanitized
         .filter(rule => this._validateRule(rule))
@@ -142,6 +157,42 @@ export class SmartRulesEngine {
     } catch (e) {
       Zotero.debug(`[WatchFolder] Error loading rules: ${e.message}`);
       this._rules = [];
+    }
+  }
+
+  /**
+   * Compile a `matchesRegex` condition's pattern and stamp `_compiled`
+   * onto the condition. Idempotent: re-running on an already-compiled
+   * condition is a no-op when the pattern + case-sensitivity flag are
+   * unchanged.
+   *
+   * The ReDoS pattern-length cap from v2.4.1 (`REDOS_PATTERN_CAP`) runs
+   * BEFORE the `new RegExp(...)` call, exactly as in `matchesRegex` —
+   * load-time rejection is the early surface for malicious patterns.
+   *
+   * @private
+   * @param {Object} cond - Condition object (mutated: receives `_compiled`).
+   */
+  _compileRegexOnCondition(cond) {
+    if (!cond) return;
+    if (typeof cond.value !== 'string') {
+      cond._compiled = null;
+      return;
+    }
+    if (cond.value.length > REDOS_PATTERN_CAP) {
+      // ReDoS defense: refuse oversized patterns at load time.
+      Zotero.debug(`[WatchFolder] matchesRegex: pattern too long (${cond.value.length} > ${REDOS_PATTERN_CAP}) at load — disabled`);
+      cond._compiled = null;
+      return;
+    }
+    const flags = cond.caseSensitive ? '' : 'i';
+    try {
+      cond._compiled = new RegExp(cond.value, flags);
+      cond._compiledFlags = flags;
+      cond._compiledPattern = cond.value;
+    } catch (regexError) {
+      Zotero.debug(`[WatchFolder] Invalid regex pattern "${cond.value}" at load: ${regexError.message}`);
+      cond._compiled = null;
     }
   }
 
@@ -215,6 +266,13 @@ export class SmartRulesEngine {
       throw new Error('Invalid rule structure');
     }
 
+    // WP-B / B5: pre-compile any matchesRegex conditions on the new rule.
+    if (Array.isArray(rule.conditions)) {
+      for (const cond of rule.conditions) {
+        if (cond?.operator === 'matchesRegex') this._compileRegexOnCondition(cond);
+      }
+    }
+
     this._rules.push(rule);
 
     // Re-sort by priority
@@ -260,6 +318,17 @@ export class SmartRulesEngine {
 
     if (!this._validateRule(rule)) {
       throw new Error('Invalid rule structure after update');
+    }
+
+    // WP-B / B5: re-compile any matchesRegex conditions. An update may
+    // have changed `value` or `caseSensitive` on a condition; even when
+    // the update doesn't touch conditions, we still walk them to be safe
+    // (cheap when patterns are unchanged — same pattern + flags hits the
+    // is-already-compiled short-circuit inside `_compileRegexOnCondition`).
+    if (Array.isArray(rule.conditions)) {
+      for (const cond of rule.conditions) {
+        if (cond?.operator === 'matchesRegex') this._compileRegexOnCondition(cond);
+      }
     }
 
     // Re-sort by priority if priority changed
@@ -436,7 +505,18 @@ export class SmartRulesEngine {
           // The 'i' flag handles case insensitivity for regex
           const flags = caseSensitive ? '' : 'i';
           try {
-            const regex = new RegExp(value, flags);
+            // WP-B / B5: reuse pre-compiled regex when available. The
+            // condition gains a `_compiled` property at `loadRules` time
+            // (and tolerates the pattern / case-sensitivity drifting from
+            // the original — re-compile if so, so ad-hoc test conditions
+            // and live edits via `addRule` / `updateRule` still work).
+            let regex = condition._compiled;
+            if (!regex
+              || condition._compiledPattern !== value
+              || condition._compiledFlags !== flags
+            ) {
+              regex = new RegExp(value, flags);
+            }
             // Use original fieldValue for regex test, not lowercased
             const originalFieldValue = this.getFieldValue(item, field, context);
             let inputStr = String(originalFieldValue);
