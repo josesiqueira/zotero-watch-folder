@@ -11,10 +11,22 @@ import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs'
 import * as warningSink from './warningSink.mjs';
 import * as suppressionResolver from './suppressionResolver.mjs';
 import * as baseline from './baseline.mjs';
+import * as hashCache from './_hashCache.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
 // sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline}.
 export { warningSink, suppressionResolver, baseline };
+
+// Diagnostic surface — read-only stats from the WP-A1 hash cache plus
+// a clear hook for fresh measurements. Used to verify steady-state
+// scan cycles hit the cache instead of re-hashing files. Reached from
+// `zotero_execute_js` as `Zotero.WatchFolder.__perf.hashCacheStats()`.
+// Side-effect-free except for `hashCacheClear()` which resets counters
+// and evicts entries (used to start a clean measurement window).
+export const __perf = {
+    hashCacheStats: () => hashCache.stats(),
+    hashCacheClear: () => hashCache.clear(),
+};
 // v2.1 Mode 2 modules (collectionWatcher / folderEventDetector /
 // itemMembershipHandler / mirrorExecutor) are skeletons today — they
 // exist so the lifecycle wires through SyncCoordinator. The coordinator
