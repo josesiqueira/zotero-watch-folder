@@ -435,9 +435,11 @@
     }
 
     /**
-     * Open one of the bundled HTML user-docs in the user's default browser.
-     * Pages live in dist/content/docs/ (copied at build time from the repo
-     * root by build/build.mjs).
+     * Open one of the bundled HTML user-docs. Pages live in
+     * dist/content/docs/ (copied at build time from the repo root by
+     * build/build.mjs). Served via chrome:// — Zotero.launchURL refuses
+     * chrome scheme for safety, so we use Zotero.openInViewer (or fall
+     * back to opening a chrome window).
      */
     function openDocs(which) {
         const map = {
@@ -448,11 +450,21 @@
         const file = map[which];
         if (!file) return;
         const url = `chrome://zotero-watch-folder/content/docs/${file}`;
+        // Preferred path: Zotero's internal viewer (accepts chrome URLs).
         try {
-            Zotero.launchURL(url);
+            if (typeof Zotero.openInViewer === 'function') {
+                Zotero.openInViewer(url);
+                return;
+            }
+        } catch (_e) { /* fall through to openDialog */ }
+        // Fallback: open the chrome URL in a new top-level chrome window.
+        try {
+            window.openDialog(url, 'watch-folder-docs-' + which,
+                'chrome,centerscreen,resizable,width=980,height=800');
+            return;
         } catch (e) {
             Services.prompt.alert(window, 'Watch Folder',
-                `Could not open documentation: ${e.message}\n\nTry: ${url}`);
+                `Could not open documentation (${e?.message ?? e}).\n\nURL: ${url}`);
         }
     }
 
