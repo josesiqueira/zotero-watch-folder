@@ -2117,3 +2117,131 @@ describe('UT-094: _handleExternalDeletions bulk guard (Mode 3)', () => {
     expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).toHaveBeenCalledTimes(15);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-A1: WP-A1 hash-cache integration into _handleExternalDeletions
+// move detection. Two scan cycles with unchanged disk contents should
+// hash each candidate at most once (cache hit on the second cycle).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-A1: _handleExternalDeletions consults the module-level hash cache', () => {
+  let service;
+  let getPrefMock;
+  let getFileHashMock;
+  let hashCache;
+  const INBOX = { id: 5, key: 'INBOX', name: 'Inbox', libraryID: 1 };
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getFileHashMock = utils.getFileHash;
+
+    const cp = await import('../../content/canonicalPath.mjs');
+    cp.resolveSyncRoot.mockResolvedValue({ collection: INBOX, libraryID: 1 });
+    cp.relativePathToCollection.mockResolvedValue(INBOX);
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._windows.add({ document: {} });
+
+    getPrefMock.mockImplementation((k) => {
+      if (k === 'diskDeleteSync') return 'auto';
+      if (k === 'mode') return 'mode1';
+      if (k === 'sourcePath') return '/watch';
+      return undefined;
+    });
+
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({
+      deleted: false,
+      getCollections: vi.fn(() => [5]),
+      removeFromCollection: vi.fn(),
+      addToCollection: vi.fn(),
+      saveTx: vi.fn(),
+      getDisplayTitle: vi.fn(() => 't'),
+      getField: vi.fn(() => ''),
+    }));
+
+    service._trackingStore = {
+      getAllOfType: vi.fn(() => []),
+      remove: vi.fn(() => true),
+      removeByAttachmentKey: vi.fn(() => true),
+      add: vi.fn(),
+      update: vi.fn(),
+      save: vi.fn(async () => {}),
+      hasPath: vi.fn(() => false),
+    };
+
+    // Default stat: stable (size, mtime). hashFile() will cache by this key.
+    globalThis.IOUtils.exists = vi.fn(async () => false);
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({ size: 4242, lastModified: 7777, type: 'regular', path: p }));
+
+    // Clear the module-level cache so test order doesn't matter.
+    hashCache = await import('../../content/_hashCache.mjs');
+    hashCache.clear();
+  });
+
+  it('second cycle on unchanged disk contents skips re-hashing (cache hit)', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/orig.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
+    // Stable hash mock — same content across both cycles.
+    getFileHashMock.mockResolvedValue('abc');
+
+    // Cycle 1 — candidate is at /watch/sub/orig.pdf.
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/orig.pdf']),
+      [{ path: '/watch/sub/orig.pdf' }]
+    );
+    const callsAfterCycle1 = getFileHashMock.mock.calls.length;
+    expect(callsAfterCycle1).toBeGreaterThan(0); // at least one hash on first cycle
+
+    // Cycle 2 — exact same candidate. The first cycle already moved the
+    // record; reset the tracked record to make the second call still
+    // exercise the candidate-hash codepath.
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK99', localPath: '/watch/different.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/orig.pdf']),
+      [{ path: '/watch/sub/orig.pdf' }]
+    );
+
+    // Cache hit on /watch/sub/orig.pdf — getFileHash should NOT have been
+    // called for it a second time.
+    const callsAfterCycle2 = getFileHashMock.mock.calls.length;
+    expect(callsAfterCycle2).toBe(callsAfterCycle1);
+    expect(hashCache.stats().hits).toBeGreaterThan(0);
+  });
+
+  it('stat-change (mtime advance) bypasses cache + re-hashes', async () => {
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK42', localPath: '/watch/orig.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
+    getFileHashMock.mockResolvedValue('abc');
+
+    // Cycle 1
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/orig.pdf']),
+      [{ path: '/watch/sub/orig.pdf' }]
+    );
+    const callsAfterCycle1 = getFileHashMock.mock.calls.length;
+
+    // Bump mtime — file was edited between cycles.
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({ size: 4242, lastModified: 9999, type: 'regular', path: p }));
+
+    service._trackingStore.getAllOfType = vi.fn((t) => t === 'file' ? [
+      { type: 'file', zoteroAttachmentKey: 'AK99', localPath: '/watch/different.pdf', lastSyncedHash: 'abc', state: 'clean' },
+    ] : []);
+
+    await service._handleExternalDeletions(
+      new Set(['/watch/sub/orig.pdf']),
+      [{ path: '/watch/sub/orig.pdf' }]
+    );
+
+    const callsAfterCycle2 = getFileHashMock.mock.calls.length;
+    expect(callsAfterCycle2).toBeGreaterThan(callsAfterCycle1);
+  });
+});

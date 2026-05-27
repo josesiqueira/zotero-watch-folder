@@ -215,3 +215,60 @@ describe('UT-020 — ISBN round-trip conversion', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-A1-dd: findByHash routes through the WP-A1 module-level LRU hash cache.
+// Two calls on the same (path, size, mtime) tuple should compute the
+// hash only once — the second call is served from cache.
+// ---------------------------------------------------------------------------
+describe('UT-A1-dd: findByHash routes through the module-level hash cache', () => {
+  let detector;
+  let hashCache;
+  let utils;
+
+  beforeEach(async () => {
+    detector = makeDetector();
+    hashCache = await import('../../content/_hashCache.mjs');
+    hashCache.clear();
+    utils = await import('../../content/utils.mjs');
+
+    // Stable stat — first call caches, second call hits.
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({
+      size: 12345, lastModified: 6789, type: 'regular', path: p,
+    }));
+    // Mocked Zotero.Search → returns no results so findByHash returns null,
+    // but the hash WILL have been computed first.
+    const search = {
+      libraryID: 1,
+      addCondition: vi.fn(),
+      search: vi.fn(async () => []),
+    };
+    globalThis.Zotero.Search = vi.fn(() => search);
+  });
+
+  it('a: two findByHash calls for the same file → one underlying read.read', async () => {
+    // Spy on IOUtils.read which getFileHash uses under the hood.
+    const readSpy = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    globalThis.IOUtils.read = readSpy;
+
+    await detector.findByHash('/sample.pdf');
+    await detector.findByHash('/sample.pdf');
+
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(hashCache.stats().hits).toBeGreaterThanOrEqual(1);
+  });
+
+  it('b: stat change between calls forces a fresh hash computation', async () => {
+    const readSpy = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    globalThis.IOUtils.read = readSpy;
+
+    await detector.findByHash('/sample.pdf');
+    // Advance mtime — cache key changes.
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({
+      size: 12345, lastModified: 99999, type: 'regular', path: p,
+    }));
+    await detector.findByHash('/sample.pdf');
+
+    expect(readSpy).toHaveBeenCalledTimes(2);
+  });
+});

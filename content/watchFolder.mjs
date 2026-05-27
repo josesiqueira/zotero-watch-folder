@@ -5,6 +5,7 @@
  */
 
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
+import { hashFile as _hashFileCached } from './_hashCache.mjs';
 import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, createTombstoneRecord, STATE } from './trackingStore.mjs';
@@ -1080,11 +1081,10 @@ export class WatchFolderService {
     // descendant update and won't need a per-child rename.
     missing.sort((a, b) => a._absLocalPath.split('/').length - b._absLocalPath.split('/').length);
 
-    const hashCache = new Map();
-    const hashOf = async (p) => {
-      if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
-      return hashCache.get(p);
-    };
+    // WP-A1 (perf): module-level (path, size, mtime) LRU cache — survives
+    // across scan cycles, so a re-scan with unchanged disk contents hits
+    // the cache instead of re-hashing every candidate. See _hashCache.mjs.
+    const hashOf = async (p) => _hashFileCached(p);
 
     // Index scanned files by their absolute ancestor dirs so candidate
     // matching can do O(1) tail lookups against the absolute-path schema.
@@ -2004,11 +2004,10 @@ export class WatchFolderService {
       const candidates = allFiles
         .map(f => f.path)
         .filter(p => !trackedPaths.has(p) && !this._processingFiles.has(p));
-      const hashCache = new Map();
-      const hashOf = async (p) => {
-        if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
-        return hashCache.get(p);
-      };
+      // WP-A1 (perf): module-level (path, size, mtime) LRU cache — replaces
+      // the per-invocation Map. Files with unchanged size + mtime hit the
+      // cache instead of re-reading the full file every scan cycle.
+      const hashOf = async (p) => _hashFileCached(p);
 
       for (const record of missing) {
         if (!record.lastSyncedHash) { trulyMissing.push(record); continue; }

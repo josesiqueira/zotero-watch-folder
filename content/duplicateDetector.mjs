@@ -14,6 +14,7 @@
  */
 
 import { getPref, getFileHash } from './utils.mjs';
+import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
 // Tag added to items imported despite being duplicates
 const DUPLICATE_TAG = '_duplicate';
@@ -632,8 +633,10 @@ export class DuplicateDetector {
     if (!filePath) return null;
 
     try {
-      // Single source of truth for the hash function (utils.getFileHash).
-      const hash = await getFileHash(filePath);
+      // WP-A1 (perf): route through the module-level (path, size, mtime)
+      // LRU cache. Falls through to utils.getFileHash on miss / unstattable
+      // files — same hash invariant (full-file SHA-256, HASH_VERSION=2).
+      const hash = await _hashFileCached(filePath);
       if (!hash) {
         Zotero.debug(`[WatchFolder] findByHash: getFileHash returned null for ${filePath}`);
         return null;
