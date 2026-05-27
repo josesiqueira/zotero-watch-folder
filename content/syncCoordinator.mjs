@@ -84,10 +84,16 @@ export class SyncCoordinator {
     // mode at runtime, transition without requiring a restart.
     try {
       if (Zotero.Prefs && typeof Zotero.Prefs.registerObserver === 'function') {
+        // Third arg MUST be `true` (global) when passing a full
+        // `extensions.zotero.X` path — see content/index.mjs for the
+        // same fix on the `enabled` observer. Without this, the handler
+        // is bound to a double-prefixed path and never fires; mode
+        // changes only take effect when the scan loop next reads
+        // getPref('mode'), which masked the bug in this case.
         this._modeObserverID = Zotero.Prefs.registerObserver(
           'extensions.zotero.watchFolder.mode',
           () => { this._onModeChanged().catch((e) => Zotero.logError(`[WatchFolder] mode observer: ${e?.message ?? e}`)); },
-          false,
+          true,
         );
       }
     } catch (e) {

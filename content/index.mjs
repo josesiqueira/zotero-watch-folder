@@ -482,10 +482,17 @@ export const hooks = {
             // both halves in-process, mirroring onStartup's order.
             try {
                 if (Zotero.Prefs && typeof Zotero.Prefs.registerObserver === 'function') {
+                    // Third arg MUST be `true` (global) when passing a full
+                    // `extensions.zotero.X` path. Zotero.Prefs.registerObserver
+                    // prepends `extensions.zotero.` to `name` when global is
+                    // falsy, so passing it with `false` registers the observer
+                    // on a double-prefixed path that the actual pref set/get
+                    // never touches — the handler then silently never fires
+                    // (S.7 bug, shipped broken since v2.2).
                     enabledObserverID = Zotero.Prefs.registerObserver(
                         PREF_BRANCH + 'enabled',
                         () => { onEnabledChanged().catch((e) => Zotero.logError(`Zotero Watch Folder: enabled observer error - ${e?.message ?? e}`)); },
-                        false,
+                        true,
                     );
                 }
             } catch (e) {
