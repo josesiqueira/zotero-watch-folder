@@ -1,12 +1,12 @@
 # Zotero Watch Folder — TODO
 
-**Status:** **`v2.3.1`** stable (security hardening). Builds on `2.3.0` with
-two MEDIUM-severity fixes from the 2026-05-27 security audit: path-traversal
-defense against unsafe Zotero collection names, and symlink-skip in the
-recursive scanner. Unit-test-covered (**552 passing across 20 files**,
-zero skipped) AND live-MCP-validated on both Zotero 8.0.4 (MODE3 runs
-2026-05-25 / b / c, MODE2 run 2026-05-25c) and Zotero 9.0.4 (verification
-2026-05-26). **Compatible with Zotero 7, 8, 9.**
+**Status:** **`v2.3.2`** stable. Builds on `2.3.1` (security hardening)
+with the trashed-sync-root hardening — closing the live-finding from the
+2026-05-26 Zotero 9 verification pass: a trashed sync-root collection now
+pauses sync cleanly instead of silently misclassifying every import as
+out-of-scope-suppressed. Unit-test-covered (**555 passing across 20 files**,
+zero skipped) AND live-MCP-validated on both Zotero 8.0.4 and Zotero 9.0.4.
+**Compatible with Zotero 7, 8, 9.**
 
 ---
 

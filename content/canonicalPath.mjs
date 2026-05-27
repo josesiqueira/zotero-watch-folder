@@ -82,6 +82,20 @@ export async function resolveSyncRoot() {
       `Sync-root collection ${key} not found in library ${libraryID}`
     );
   }
+  // Trashed-sync-root hardening (2026-05-27 live finding on Zotero 9):
+  // a trashed sync-root collection is found by getByLibraryAndKeyAsync but
+  // its children's `getCollections()` calls filter it out — so the plugin
+  // would silently classify every import as out-of-scope-suppressed.
+  // Treat trashed sync-roots as missing: callers (watchFolder._processNewFile,
+  // syncCoordinator) already catch SyncRootMissingError and pause cleanly,
+  // surfacing a clear log message instead of a silent misclassification.
+  // To restore: un-trash the collection in Zotero (Bin → right-click → Restore).
+  if (collection.deleted) {
+    throw new SyncRootMissingError(
+      `Sync-root collection ${key} is in Zotero's trash — pausing sync. `
+      + `Restore the collection from Zotero's Bin to resume.`
+    );
+  }
   return { collection, libraryID };
 }
 

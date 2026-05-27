@@ -97,6 +97,32 @@ describe('UT-201: resolveSyncRoot', () => {
     const result = await resolveSyncRoot();
     expect(result.libraryID).toBe(1);
   });
+
+  // Trashed-sync-root hardening (2026-05-27 live finding on Zotero 9 verification).
+  it('throws SyncRootMissingError when the resolved sync-root collection is in Zotero trash', async () => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null, deleted: true },
+    ]);
+    await expect(resolveSyncRoot()).rejects.toBeInstanceOf(SyncRootMissingError);
+  });
+
+  it('error message for trashed sync-root mentions the Bin (so users know how to restore)', async () => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null, deleted: true },
+    ]);
+    await expect(resolveSyncRoot()).rejects.toThrow(/trash|bin/i);
+  });
+
+  it('still resolves cleanly when the sync-root collection is NOT trashed', async () => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null, deleted: false },
+    ]);
+    const result = await resolveSyncRoot();
+    expect(result.collection.key).toBe('ROOT1');
+  });
 });
 
 // ─── UT-202 ────────────────────────────────────────────────────────────────
