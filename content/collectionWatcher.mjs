@@ -36,6 +36,21 @@ import { handleCollectionItemEvent } from './itemMembershipHandler.mjs';
 import * as baseline from './baseline.mjs';
 import { getPref } from './utils.mjs';
 
+// WP-C #4: optional canonical-path cache invalidator from perf/wp-b.
+// When a collection is renamed/reparented or deleted, the cached
+// canonical-path mapping for its key (and descendants) is stale —
+// notify the cache so the next lookup recomputes. Stub pattern: try/
+// catch around the import; no-op when WP-B hasn't merged yet.
+// TODO(perf-C4-integration): collapse to a plain import once perf/wp-b lands.
+async function _invalidateCanonicalPathCache(collectionKey) {
+  try {
+    const mod = await import('./canonicalPath.mjs');
+    if (typeof mod.invalidateCanonicalPathCache === 'function') {
+      mod.invalidateCanonicalPathCache(collectionKey);
+    }
+  } catch (_e) { /* module export not present yet */ }
+}
+
 /**
  * @typedef {Object} MirrorAction
  * @property {'createFolder'|'moveFolder'|'deleteFolder'|'moveItem'|'addItemMembership'|'removeItemMembership'} type
@@ -58,6 +73,70 @@ let _store = null;
  */
 let _notifyChain = Promise.resolve();
 
+// ─── WP-C #4: debounce + batching ─────────────────────────────────────────
+//
+// Zotero fires fine-grained notifier events: a single user action (drag
+// 30 items into a collection) can fan out as 30 separate `add`
+// collection-item events. Each previously bought its own pass through
+// the async decision layer + per-event call into the membership
+// handler. Debouncing for `DEBOUNCE_MS` collapses bursts into a single
+// batched pass: same-collection adds become one grouped payload for
+// the handler, and collection-event types still go through their
+// per-id dispatch but on the same scheduled drain.
+//
+// The existing `_notifyChain` invariant is preserved: drains feed into
+// the chain so two drains never run concurrently.
+
+let _debounceMs = 100;
+let _pendingBuffer = [];      // {event, type, ids, extraData}[]
+let _pendingPromise = null;   // resolves when the current batch has drained
+let _pendingTimer = null;
+
+/**
+ * Test seam — override the debounce window. Pass 0 in tests so a
+ * single `await observer.notify(...)` settles immediately.
+ */
+export function __test_setDebounceMs(ms) {
+  _debounceMs = Math.max(0, Number(ms) || 0);
+}
+
+/** Test seam — flush any pending debounce buffer right now. */
+export function __test_flush() {
+  if (_pendingTimer) {
+    clearTimeout(_pendingTimer);
+    _pendingTimer = null;
+    _drainPending();
+  }
+  return _pendingPromise || Promise.resolve();
+}
+
+function _scheduleDrain() {
+  if (_pendingTimer) return;
+  _pendingTimer = setTimeout(() => {
+    _pendingTimer = null;
+    _drainPending();
+  }, _debounceMs);
+}
+
+function _drainPending() {
+  const batch = _pendingBuffer;
+  _pendingBuffer = [];
+  const resolveCurrent = _pendingResolve;
+  _pendingResolve = null;
+  _pendingPromise = null;
+  // Feed the batch through the existing chain to preserve serialization.
+  const next = _notifyChain
+    .catch(() => {})
+    .then(() => _processBatch(batch))
+    .catch((e) => {
+      Zotero.logError(`[WatchFolder] collectionWatcher batch: ${e?.message ?? e}`);
+    });
+  _notifyChain = next;
+  if (resolveCurrent) next.then(() => resolveCurrent());
+}
+
+let _pendingResolve = null;
+
 /**
  * Register the Zotero notifier observer. Idempotent — calling twice is
  * harmless.
@@ -69,20 +148,17 @@ export function start(coordinator) {
   _store = coordinator?._trackingStore ?? null;
 
   const observer = {
-    // Zotero's notifier ignores our return value, but returning the
-    // promise lets tests `await observer.notify(...)` deterministically.
-    // Wraps in a chain so concurrent batches serialize through the
-    // decision layer (collectionKeyToRelativePath + store lookups).
-    // Errors are caught so the chain isn't poisoned.
+    // WP-C #4: debounce-buffer the event then schedule a drain. Multiple
+    // notify() calls within DEBOUNCE_MS join the same batch and share
+    // its return promise. The drain feeds into _notifyChain so the
+    // existing serialization invariant is preserved.
     notify: (event, type, ids, extraData) => {
-      const next = _notifyChain
-        .catch(() => {})
-        .then(() => _onNotify(event, type, ids, extraData))
-        .catch((e) => {
-          Zotero.logError(`[WatchFolder] collectionWatcher notify: ${e?.message ?? e}`);
-        });
-      _notifyChain = next;
-      return next;
+      _pendingBuffer.push({ event, type, ids, extraData });
+      if (!_pendingPromise) {
+        _pendingPromise = new Promise((resolve) => { _pendingResolve = resolve; });
+      }
+      _scheduleDrain();
+      return _pendingPromise;
     },
   };
   _observerID = Zotero.Notifier.registerObserver(
@@ -111,6 +187,15 @@ export function stop() {
   _store = null;
   _registered = false;
   _notifyChain = Promise.resolve();
+  // Clear any pending debounce buffer so a stale event from a previous
+  // session doesn't fire after stop().
+  if (_pendingTimer) {
+    clearTimeout(_pendingTimer);
+    _pendingTimer = null;
+  }
+  _pendingBuffer = [];
+  if (_pendingResolve) { _pendingResolve(); _pendingResolve = null; }
+  _pendingPromise = null;
   Zotero.debug('[WatchFolder] collectionWatcher: unregistered');
 }
 
@@ -125,6 +210,71 @@ async function _onNotify(event, type, ids, extraData) {
     await _dispatchCollection(event, ids, extraData ?? {});
   } else if (type === 'collection-item') {
     await handleCollectionItemEvent(event, ids, extraData ?? {}, _coordinator);
+  }
+}
+
+/**
+ * Process a coalesced batch of (event, type, ids, extraData) tuples.
+ * Same-(event,type) groups are merged so the existing single-pass
+ * dispatch sees the union of ids. `collection` events still get
+ * per-id resolution inside `_dispatchCollection` (each id may have a
+ * different state); `collection-item` events go to the handler as a
+ * combined compositeIDs array — the handler iterates internally.
+ */
+async function _processBatch(batch) {
+  if (!Array.isArray(batch) || batch.length === 0) return;
+
+  // Group by (event,type). Coalesce ids + merge extraData.
+  // Key shape: "event||type"
+  const grouped = new Map();
+  for (const entry of batch) {
+    const { event, type, ids, extraData } = entry || {};
+    if (!event || !type || !Array.isArray(ids) || ids.length === 0) continue;
+    const key = `${event}||${type}`;
+    let g = grouped.get(key);
+    if (!g) {
+      g = { event, type, ids: [], idSeen: new Set(), extraData: {} };
+      grouped.set(key, g);
+    }
+    for (const id of ids) {
+      if (g.idSeen.has(id)) continue;
+      g.idSeen.add(id);
+      g.ids.push(id);
+    }
+    if (extraData && typeof extraData === 'object') {
+      Object.assign(g.extraData, extraData);
+    }
+  }
+
+  // Invalidate canonical-path cache entries for modify/delete on
+  // collection events BEFORE dispatch — downstream
+  // collectionKeyToRelativePath lookups must see fresh data.
+  for (const g of grouped.values()) {
+    if (g.type !== 'collection') continue;
+    if (g.event !== 'modify' && g.event !== 'delete' && g.event !== 'trash') continue;
+    for (const id of g.ids) {
+      let key = null;
+      if (g.event === 'delete' || g.event === 'trash') {
+        // The collection is already gone; use extraData per Notifier convention.
+        key = g.extraData?.[id]?.key ?? null;
+      } else {
+        const collection = Zotero.Collections.get(id);
+        key = collection?.key ?? null;
+      }
+      if (key) await _invalidateCanonicalPathCache(key);
+    }
+  }
+
+  for (const g of grouped.values()) {
+    try {
+      if (g.type === 'collection') {
+        await _dispatchCollection(g.event, g.ids, g.extraData);
+      } else if (g.type === 'collection-item') {
+        await handleCollectionItemEvent(g.event, g.ids, g.extraData, _coordinator);
+      }
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] collectionWatcher process ${g.event}/${g.type}: ${e?.message ?? e}`);
+    }
   }
 }
 

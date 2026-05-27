@@ -29,7 +29,7 @@ vi.mock('../../content/baseline.mjs', () => ({
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import { handleCollectionItemEvent } from '../../content/itemMembershipHandler.mjs';
 import * as baseline from '../../content/baseline.mjs';
-import { start, stop, _isRegistered } from '../../content/collectionWatcher.mjs';
+import { start, stop, _isRegistered, __test_setDebounceMs, __test_flush } from '../../content/collectionWatcher.mjs';
 
 // ─── Test fixtures ─────────────────────────────────────────────────────────
 
@@ -91,6 +91,10 @@ beforeEach(() => {
   Zotero.Libraries = { userLibraryID: 1, publicationsLibraryID: 4 };
   // Always make sure the watcher is unregistered between tests.
   stop();
+  // WP-C #4: drain the debounce buffer immediately in tests so a single
+  // `await observer.notify(...)` settles synchronously (after the next
+  // microtask tick rather than after 100ms).
+  __test_setDebounceMs(0);
 });
 
 // ─── UT-301 ────────────────────────────────────────────────────────────────
@@ -390,5 +394,100 @@ describe('UT-309: collection-item events → forwarded to membership handler', (
     await getObs().notify('remove', 'collection-item', ['100-500'], {});
 
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-311 (WP-C #4 — debounce + per-collection coalescing) ──────────────
+
+describe('UT-311: notifier debounce + coalescing (WP-C #4)', () => {
+  it('coalesces same-(event,type) calls within the debounce window into one handler call', async () => {
+    makeCollectionRegistry([SYNC_ROOT]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    const observer = getObs();
+
+    // Two collection-item add events on the same collection → one
+    // handler call with merged ids.
+    const p1 = observer.notify('add', 'collection-item', ['100-500'], { '100-500': {} });
+    const p2 = observer.notify('add', 'collection-item', ['100-501'], { '100-501': {} });
+    await Promise.all([p1, p2]);
+
+    expect(handleCollectionItemEvent).toHaveBeenCalledTimes(1);
+    const [event, ids] = handleCollectionItemEvent.mock.calls[0];
+    expect(event).toBe('add');
+    expect(ids.sort()).toEqual(['100-500', '100-501']);
+  });
+
+  it('returns the SAME promise from notify() calls within the window', async () => {
+    makeCollectionRegistry([SYNC_ROOT]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    const observer = getObs();
+
+    const p1 = observer.notify('add', 'collection-item', ['100-500'], {});
+    const p2 = observer.notify('add', 'collection-item', ['100-501'], {});
+    expect(p1).toBe(p2);
+    await p1;
+  });
+
+  it('deduplicates the same id across multiple calls in one batch', async () => {
+    makeCollectionRegistry([SYNC_ROOT]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    const observer = getObs();
+
+    // Three notifies, but two share an id → handler sees only the unique ids.
+    const p = Promise.all([
+      observer.notify('add', 'collection-item', ['100-500'], {}),
+      observer.notify('add', 'collection-item', ['100-500'], {}),
+      observer.notify('add', 'collection-item', ['100-501'], {}),
+    ]);
+    await p;
+    expect(handleCollectionItemEvent).toHaveBeenCalledTimes(1);
+    const [, ids] = handleCollectionItemEvent.mock.calls[0];
+    expect(ids.sort()).toEqual(['100-500', '100-501']);
+  });
+
+  it('starts a new batch after a drain', async () => {
+    makeCollectionRegistry([SYNC_ROOT]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    const observer = getObs();
+
+    await observer.notify('add', 'collection-item', ['100-500'], {});
+    // First batch fully drained → next call starts a fresh batch.
+    await observer.notify('add', 'collection-item', ['100-501'], {});
+
+    expect(handleCollectionItemEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('different (event,type) pairs in the same batch dispatch separately', async () => {
+    const sub = { id: 200, key: 'SUB1', name: 'Methods', libraryID: 1, parentID: 100 };
+    makeCollectionRegistry([SYNC_ROOT, sub]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    const observer = getObs();
+
+    // One collection.add + one collection-item.add in the same batch.
+    const p = Promise.all([
+      observer.notify('add', 'collection', [200], {}),
+      observer.notify('add', 'collection-item', ['100-500'], {}),
+    ]);
+    await p;
+    // Collection-item handler called once with the item id.
+    expect(handleCollectionItemEvent).toHaveBeenCalledTimes(1);
+    // mirrorExecutor.execute called once with the createFolder for SUB1.
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('createFolder');
   });
 });
