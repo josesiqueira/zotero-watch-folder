@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet href="chrome://global/skin/global.css" type="text/css"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml"
+        title="Watch Folder — Smart Rules editor"
+        windowtype="watch-folder-smart-rules"
+        width="700" height="520"
+        persist="screenX screenY width height"
+        onload="WatchFolderSmartRulesEditor.onLoad()">
+
+  <script><![CDATA[
+    var WatchFolderSmartRulesEditor = (function () {
+      'use strict';
+      const PREF = 'extensions.zotero.watchFolder.smartRules';
+
+      function $(id) { return document.getElementById(id); }
+
+      function loadFromPref() {
+        try {
+          $('rules-textarea').value = Zotero.Prefs.get(PREF, true) || '[]';
+          status('Loaded from preferences.', 'gray');
+        } catch (e) {
+          status('Failed to load: ' + (e?.message ?? e), 'crimson');
+        }
+      }
+
+      function save() {
+        const raw = $('rules-textarea').value;
+        let parsed;
+        try { parsed = JSON.parse(raw); }
+        catch (e) { return status('Invalid JSON: ' + e.message, 'crimson'); }
+        if (!Array.isArray(parsed)) return status('Top-level value must be a JSON array.', 'crimson');
+        // Per-rule shape check mirrors smartRules._validateRule.
+        for (let i = 0; i < parsed.length; i++) {
+          const r = parsed[i];
+          if (!r || typeof r !== 'object') return status('Rule ' + i + ': not an object.', 'crimson');
+          if (typeof r.id !== 'string' || !r.id) return status('Rule ' + i + ': missing id.', 'crimson');
+          if (typeof r.name !== 'string' || !r.name) return status('Rule ' + i + ': missing name.', 'crimson');
+          if (!Array.isArray(r.conditions)) return status('Rule ' + i + ': conditions must be an array.', 'crimson');
+          if (!Array.isArray(r.actions)) return status('Rule ' + i + ': actions must be an array.', 'crimson');
+        }
+        Zotero.Prefs.set(PREF, raw, true);
+        try { Zotero.WatchFolder && Zotero.WatchFolder.smartRules && Zotero.WatchFolder.smartRules.loadRules(); } catch (_) {}
+        status('Saved (' + parsed.length + ' rule' + (parsed.length === 1 ? '' : 's') + ').', 'seagreen');
+      }
+
+      function insertExample() {
+        const example = [
+          {
+            id: 'tag-arxiv',
+            name: 'Tag arXiv papers',
+            conditions: [
+              { field: 'url', operator: 'contains', value: 'arxiv.org' }
+            ],
+            actions: [
+              { type: 'addTag', value: 'arxiv' }
+            ]
+          }
+        ];
+        const cur = $('rules-textarea').value.trim();
+        const merged = (cur === '' || cur === '[]') ? example : (function () {
+          try {
+            const arr = JSON.parse(cur);
+            if (Array.isArray(arr)) { arr.push(...example); return arr; }
+          } catch (_) {}
+          return example;
+        })();
+        $('rules-textarea').value = JSON.stringify(merged, null, 2);
+        status('Example inserted. Review then press Save.', 'gray');
+      }
+
+      function status(msg, color) {
+        const el = $('rules-status');
+        el.value = msg;
+        el.style.color = color || 'inherit';
+      }
+
+      function onLoad() {
+        loadFromPref();
+        $('rules-textarea').focus();
+      }
+
+      return { onLoad, save, insertExample, reload: loadFromPref };
+    })();
+  ]]></script>
+
+  <vbox flex="1" style="padding: 12px;">
+    <html:p style="margin: 0 0 8px 0;">
+      Smart rules let you apply automatic tags, collection assignments, or item-field
+      updates to imported files. Rules are JSON objects with <html:code>conditions</html:code>
+      (matched with AND logic) and <html:code>actions</html:code>. Press
+      <html:strong>Insert example</html:strong> for a starter template.
+    </html:p>
+
+    <html:textarea id="rules-textarea"
+                   style="flex: 1; font-family: monospace; font-size: 0.9em; min-height: 280px;"
+                   spellcheck="false"/>
+
+    <hbox align="center" style="margin-top: 8px;">
+      <button label="Save" oncommand="WatchFolderSmartRulesEditor.save()"/>
+      <button label="Insert example" oncommand="WatchFolderSmartRulesEditor.insertExample()"/>
+      <button label="Reload from prefs" oncommand="WatchFolderSmartRulesEditor.reload()"/>
+      <spacer flex="1"/>
+      <label id="rules-status" value="" style="margin-right: 8px;"/>
+      <button label="Close" oncommand="window.close()"/>
+    </hbox>
+  </vbox>
+</window>

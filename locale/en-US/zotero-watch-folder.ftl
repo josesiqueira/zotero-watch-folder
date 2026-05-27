@@ -1,60 +1,85 @@
-# Zotero Watch Folder - Fluent Localization (en-US)
+# Zotero Watch Folder — Fluent Localization (en-US)
 # All identifiers prefixed with "watch-folder-" to avoid namespace collisions
 
-# Preference pane sections
+# ─── Preference pane sections ─────────────────────────────────────
 watch-folder-pref-section-about = About this plugin
+watch-folder-pref-section-setup = Get started
 watch-folder-pref-section-watch = Watch Folder
-watch-folder-pref-section-import = Import Settings
 watch-folder-pref-section-naming = File Naming
+watch-folder-pref-section-advanced = Advanced settings
+watch-folder-pref-section-import = Import Settings
+watch-folder-pref-section-smart-rules = Smart Rules
 
-# About box (top of preferences pane)
-watch-folder-pref-about-text = This plugin watches a folder you pick and automatically imports any PDFs (or other file types you list) into Zotero. When a new file appears, the plugin imports it, retrieves metadata, and renames the attachment using a template.
-watch-folder-pref-about-storage = Each imported file is copied into Zotero's own storage (under ~/Zotero/storage/). By default the original file is left in your watch folder untouched, so you have two copies — your library is safe even if you later delete from the watch folder.
-watch-folder-pref-about-trash = If you move an imported item to Zotero's bin, the plugin asks what to do with the source file (move to OS trash, keep, or delete permanently). If you delete a tracked file from the watch folder, the matching Zotero item moves to the bin and a popup notifies you.
+# ─── About box ────────────────────────────────────────────────────
+watch-folder-pref-about-blurb = Watch Folder watches a folder you pick. Drop a PDF in — the plugin imports it into Zotero, fetches metadata, renames the file, and (in mirror modes) keeps your Zotero collections in sync with the folder layout on disk.
 
-# Watch folder settings
-watch-folder-pref-source-dir = Source Folder:
-watch-folder-pref-source-path = Source Folder:
-watch-folder-pref-browse = Browse…
+watch-folder-pref-docs-userguide = User guide
+watch-folder-pref-docs-modes = Modes explained
+watch-folder-pref-docs-behavior = Behavior reference
+
+# Legacy (kept for compatibility — no longer rendered)
+watch-folder-pref-about-text = Watch Folder watches a folder you pick and imports new PDFs into Zotero with automatic metadata + renaming. See the user guide for details.
+watch-folder-pref-about-storage = Imported files are copied into Zotero's storage (~/Zotero/storage/) by default; the original stays in your watch folder untouched.
+watch-folder-pref-about-trash = If you move an imported item to Zotero's bin, the plugin asks what to do with the source file. Disk deletions in mirror modes propagate back to Zotero with confirmation prompts for bulk operations.
+
+# ─── Get started ──────────────────────────────────────────────────
+watch-folder-pref-setup-blurb = First time here, or want to start fresh? The setup wizard walks you through picking your watch folder, the Zotero collection to sync into, and the sync mode that matches how you work.
+watch-folder-pref-setup-cta = Set up Watch Folder…
+
+# ─── Watch folder essentials ──────────────────────────────────────
 watch-folder-pref-enabled = Enable watch folder monitoring
-watch-folder-pref-poll-interval = Poll interval:
-watch-folder-pref-poll-interval-suffix = seconds
-watch-folder-pref-file-types = File types to watch:
-watch-folder-pref-file-types-desc = Comma-separated extensions (e.g., pdf,epub,djvu)
-watch-folder-pref-sync-root = Zotero sync root:
+watch-folder-pref-source-path = Source folder:
+watch-folder-pref-browse = Browse…
+watch-folder-pref-sync-root = Zotero collection:
 watch-folder-pref-sync-root-change = Change…
 watch-folder-pref-mode = Sync mode:
+
+watch-folder-pref-mode1-label = Import only
+watch-folder-pref-mode1-desc = Copy files in. Never modify your Zotero collections from the disk side. Safest — recommended if you want the plugin to stay out of your way after import.
+
+watch-folder-pref-mode2-label = Mirror, no delete
+watch-folder-pref-mode2-desc = Keep Zotero collections aligned with the folder layout. Add a subfolder on disk → add a subcollection in Zotero. Disk deletions DO NOT trash Zotero items (warn-only).
+
+watch-folder-pref-mode3-label = Mirror, safe delete
+watch-folder-pref-mode3-desc = Full two-way sync. Adds, renames, AND deletions propagate from disk to Zotero. Bulk deletions ask for confirmation. Deleted files go to a recoverable plugin trash, not permanent deletion.
+
 watch-folder-pref-rerun-wizard = Re-run setup wizard…
+
+# ─── Attention rows (only shown when non-zero) ────────────────────
 watch-folder-pref-warnings = Sync warnings:
 watch-folder-pref-warnings-view = View
 watch-folder-pref-warnings-clear = Clear
 watch-folder-pref-suppressed = Suppressed items:
 watch-folder-pref-suppressed-resolve = Resolve…
-watch-folder-pref-conflicted = Conflict-blocked:
 watch-folder-pref-suppressed-resolve-folders = Resolve folders…
+watch-folder-pref-conflicted = Conflict-blocked:
 watch-folder-pref-conflicted-resolve = Resolve…
 watch-folder-pref-trashed-folders = Trashed folders:
 watch-folder-pref-trashed-folders-restore = Restore folders…
 
-# Import settings
-watch-folder-pref-import-mode = Import mode:
-watch-folder-pref-import-mode-stored = Stored Copy (copy file to Zotero storage)
-watch-folder-pref-import-mode-linked = Linked File (keep file in original location)
-watch-folder-pref-post-import = After import:
-watch-folder-pref-post-import-leave = Leave file in watch folder
-watch-folder-pref-post-import-delete = Delete source file
-watch-folder-pref-post-import-move = Move to 'imported' subfolder
-
-# File naming settings
-watch-folder-pref-rename-pattern = Rename pattern:
-watch-folder-pref-rename-pattern-desc = Available: {"{firstCreator}"}, {"{year}"}, {"{title}"}, {"{shortTitle}"}, {"{DOI}"}
-watch-folder-pref-rename-pattern-help = Variables: {"{firstCreator}"}, {"{year}"}, {"{title}"}, {"{shortTitle}"}, {"{DOI}"}
+# ─── File naming ──────────────────────────────────────────────────
 watch-folder-pref-auto-rename = Auto-rename files after metadata retrieval
-watch-folder-pref-max-length = Maximum filename length:
+watch-folder-pref-rename-pattern = Rename pattern:
+watch-folder-pref-rename-pattern-help = Variables: {"{firstCreator}"}, {"{year}"}, {"{title}"}, {"{shortTitle}"}, {"{DOI}"}
+
+# ─── Advanced settings ────────────────────────────────────────────
+watch-folder-pref-advanced-blurb = These options have sensible defaults and most users don't need to change them.
+
+watch-folder-pref-poll-interval = Poll interval:
+watch-folder-pref-poll-interval-suffix = seconds
+watch-folder-pref-poll-interval-help = How often the plugin checks the folder for new files. Lower = faster pickup, higher = less CPU. Default 5.
+
+watch-folder-pref-file-types = File types to watch:
+watch-folder-pref-file-types-help = Comma-separated extensions, e.g. "pdf, epub". PDF is what almost everyone wants.
+
 watch-folder-pref-max-filename = Maximum filename length:
 watch-folder-pref-max-filename-suffix = characters
 
-# Status and notifications
+watch-folder-pref-smart-rules-enabled = Enable smart rules
+watch-folder-pref-smart-rules-blurb = Smart rules apply automatic tags, collection assignments, or item-field updates to imports. Rules are JSON; click "Open editor" to author or paste them. Leave disabled if you're not sure.
+watch-folder-pref-smart-rules-open-editor = Open Smart Rules editor…
+
+# ─── Status and notifications (used elsewhere) ────────────────────
 watch-folder-status-watching = Watching folder: { $path }
 watch-folder-status-disabled = Watch folder disabled
 watch-folder-import-complete = Imported { $count } file(s)
@@ -62,19 +87,21 @@ watch-folder-import-error = Failed to import: { $filename }
 watch-folder-metadata-failed = Metadata retrieval failed for: { $title }
 watch-folder-folder-not-found = Watch folder not found: { $path }
 
-# First run / existing files
+# ─── First run / existing files (legacy modal — kept for fallback) ──
 watch-folder-first-run-title = Existing Files Detected
 watch-folder-first-run-message = Found { $count } file(s) in the watch folder. Would you like to import them?
 watch-folder-first-run-import = Import All
 watch-folder-first-run-skip = Skip
 
-watch-folder-pref-section-smart-rules = Smart Rules
-watch-folder-pref-smart-rules-enabled = Enable smart rules
-watch-folder-pref-smart-rules-help = Rules below are JSON. Each rule has an id, name, conditions (AND logic), and actions. Use the Insert example button for a starter template; press Save to validate + persist.
+# ─── Tags ─────────────────────────────────────────────────────────
+watch-folder-tag-needs-review = _needs-review
+watch-folder-tag-import-error = _import-error
+
+# ─── Smart rules editor (separate window) — legacy strings kept ───
+# These three are unused in the redesigned prefs pane but kept so the
+# in-window Smart Rules editor (chrome://.../smartRulesEditor.xhtml)
+# can still pick them up if it ever switches to FTL.
 watch-folder-pref-smart-rules-save = Save
 watch-folder-pref-smart-rules-insert-example = Insert example
 watch-folder-pref-smart-rules-reload = Reload from prefs
-
-# Tags
-watch-folder-tag-needs-review = _needs-review
-watch-folder-tag-import-error = _import-error
+watch-folder-pref-smart-rules-help = Rules below are JSON. Each rule has an id, name, conditions (AND logic), and actions.

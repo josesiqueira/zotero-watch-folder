@@ -141,6 +141,25 @@ async function build() {
     }
     console.log();
 
+    // Step 5: Bundle user-facing HTML docs into dist/content/docs/ so the
+    // prefs pane can link to them via chrome://zotero-watch-folder/content/docs/...
+    // The three HTML pages live at the repo root; copy them in so users get
+    // offline docs that ship with the XPI.
+    console.log('Copying user-facing HTML docs...');
+    const docsOut = path.join(DIST_DIR, 'content', 'docs');
+    await fs.mkdir(docsOut, { recursive: true });
+    const docPages = ['index.html', 'test-plan.html', 'test-cases.html'];
+    for (const page of docPages) {
+        const src = path.join(ROOT_DIR, page);
+        if (await exists(src)) {
+            await copyFile(src, path.join(docsOut, page));
+            console.log(`  ✓ Copied: content/docs/${page}`);
+        } else {
+            console.log(`  ⚠ Skipped (not found): ${page}`);
+        }
+    }
+    console.log();
+
     // Verify bundled script exists
     const bundledScript = path.join(DIST_DIR, 'content', 'scripts', 'watchFolder.js');
     if (await exists(bundledScript)) {

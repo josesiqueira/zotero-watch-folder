@@ -379,18 +379,100 @@
     }
 
     /**
-     * Refresh the mode display ("Mode 1 — Import only", etc.).
+     * Refresh the mode picker (radiogroup) to match the stored pref.
+     * Replaces the previous read-only display.
      */
-    function refreshModeDisplay() {
-        const display = document.getElementById('watch-folder-mode-display');
-        if (!display) return;
+    function refreshModeRadio() {
+        const radio = document.getElementById('watch-folder-mode-radio');
+        if (!radio) return;
         const mode = getPref('mode') || 'mode1';
-        const labels = {
-            mode1: 'Mode 1 — Import only',
-            mode2: 'Mode 2 — Mirror without delete (v2.1)',
-            mode3: 'Mode 3 — Mirror with safe delete (v2.2)',
+        // Only valid modes set the radio; unknown values leave it cleared.
+        if (mode === 'mode1' || mode === 'mode2' || mode === 'mode3') {
+            radio.value = mode;
+        }
+    }
+
+    /**
+     * Confirm-and-apply on mode change. The radiogroup's oncommand fires
+     * when the user clicks a different radio; we confirm before
+     * persisting. Cancel reverts the visual selection.
+     */
+    function changeMode(newMode) {
+        if (!newMode || (newMode !== 'mode1' && newMode !== 'mode2' && newMode !== 'mode3')) return;
+        const current = getPref('mode') || 'mode1';
+        if (newMode === current) return;
+
+        const descriptions = {
+            mode1: 'Import only — copy files in, never touch your Zotero collections from disk.',
+            mode2: 'Mirror without delete — keep Zotero collections in sync with folder layout. Disk deletions warn-only.',
+            mode3: 'Mirror with safe delete — also propagate deletions, with confirmations for bulk operations.',
         };
-        display.value = labels[mode] || `Unknown mode: ${mode}`;
+        const ok = Services.prompt.confirm(
+            window,
+            'Change sync mode?',
+            `Switching from "${current}" to "${newMode}".\n\n${descriptions[newMode]}\n\n`
+            + 'This changes how the plugin handles deletions and folder structure. '
+            + 'Existing tracked items keep their state; the new mode applies to subsequent changes.\n\nContinue?'
+        );
+        if (!ok) {
+            // Revert the visual selection.
+            refreshModeRadio();
+            return;
+        }
+        setPref('mode', newMode);
+        Zotero.debug(`[Watch Folder] Mode changed via prefs UI: ${current} → ${newMode}`);
+    }
+
+    /**
+     * Toggle the Advanced section's visibility + caret arrow.
+     */
+    function toggleAdvanced() {
+        const body = document.getElementById('watch-folder-advanced-body');
+        const caret = document.getElementById('watch-folder-advanced-caret');
+        if (!body || !caret) return;
+        body.hidden = !body.hidden;
+        caret.value = body.hidden ? '▸' : '▾';
+    }
+
+    /**
+     * Open one of the bundled HTML user-docs in the user's default browser.
+     * Pages live in dist/content/docs/ (copied at build time from the repo
+     * root by build/build.mjs).
+     */
+    function openDocs(which) {
+        const map = {
+            'index': 'index.html',
+            'test-plan': 'test-plan.html',
+            'test-cases': 'test-cases.html',
+        };
+        const file = map[which];
+        if (!file) return;
+        const url = `chrome://zotero-watch-folder/content/docs/${file}`;
+        try {
+            Zotero.launchURL(url);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder',
+                `Could not open documentation: ${e.message}\n\nTry: ${url}`);
+        }
+    }
+
+    /**
+     * Open the standalone Smart Rules editor window. Keeps the JSON
+     * textarea + Save/Insert-example/Reload controls out of the main
+     * prefs pane (those controls only matter to power users).
+     */
+    function openSmartRulesEditor() {
+        try {
+            const url = 'chrome://zotero-watch-folder/content/smartRulesEditor.xhtml';
+            // Reuse existing window if one is open.
+            const existing = Services.wm.getMostRecentWindow('watch-folder-smart-rules');
+            if (existing) { existing.focus(); return; }
+            window.openDialog(url, 'watch-folder-smart-rules',
+                'chrome,centerscreen,resizable=yes,dialog=no');
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder',
+                `Could not open Smart Rules editor: ${e.message}`);
+        }
     }
 
     /**
@@ -701,14 +783,11 @@
 
             // Sync-root + mode displays — v2.
             refreshSyncRootDisplay();
-            refreshModeDisplay();
+            refreshModeRadio();
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
             refreshTrashedFoldersDisplay();
-
-            // Smart-rules editor — load current pref into the textarea.
-            reloadSmartRules();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
@@ -734,7 +813,7 @@
             Services.prompt.alert(window, 'Watch Folder', `Wizard error: ${e.message}`);
         }
         refreshSyncRootDisplay();
-        refreshModeDisplay();
+        refreshModeRadio();
     }
 
     // Expose to window so oncommand attributes in the XHTML can reach these.
@@ -748,9 +827,11 @@
         resolveConflicts,
         restoreTrashedFolders,
         runSetupWizard,
-        reloadSmartRules,
-        saveSmartRules,
-        insertSmartRuleExample,
+        // v2.5: new live mode picker + advanced disclosure + bundled docs + smart rules window.
+        changeMode,
+        toggleAdvanced,
+        openDocs,
+        openSmartRulesEditor,
         onLoad: init,
     };
 

@@ -4,17 +4,39 @@
       style="overflow: auto;"
       onload="if (typeof WatchFolderPrefs !== 'undefined' &amp;&amp; WatchFolderPrefs.onLoad) WatchFolderPrefs.onLoad()">
 
-  <!-- About Section -->
+  <!-- ─── About + doc links ──────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-about"/></label>
     <vbox style="margin: 4px 8px;">
-      <html:p data-l10n-id="watch-folder-pref-about-text" style="margin: 4px 0; line-height: 1.4;"/>
-      <html:p data-l10n-id="watch-folder-pref-about-storage" style="margin: 4px 0; line-height: 1.4;"/>
-      <html:p data-l10n-id="watch-folder-pref-about-trash" style="margin: 4px 0; line-height: 1.4;"/>
+      <html:p data-l10n-id="watch-folder-pref-about-blurb" style="margin: 4px 0; line-height: 1.5;"/>
+      <hbox align="center" style="margin: 6px 0; gap: 12px;">
+        <html:a href="#" data-l10n-id="watch-folder-pref-docs-userguide"
+                onclick="WatchFolderPrefs.openDocs('index'); return false;"/>
+        <label value="·" style="color: gray;"/>
+        <html:a href="#" data-l10n-id="watch-folder-pref-docs-modes"
+                onclick="WatchFolderPrefs.openDocs('test-plan'); return false;"/>
+        <label value="·" style="color: gray;"/>
+        <html:a href="#" data-l10n-id="watch-folder-pref-docs-behavior"
+                onclick="WatchFolderPrefs.openDocs('test-cases'); return false;"/>
+      </hbox>
     </vbox>
   </groupbox>
 
-  <!-- Watch Folder Section -->
+  <!-- ─── Hero CTA: Set up Watch Folder ──────────────────────────── -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-setup"/></label>
+    <vbox style="margin: 4px 8px;">
+      <html:p data-l10n-id="watch-folder-pref-setup-blurb" style="margin: 4px 0; line-height: 1.4; color: #666;"/>
+      <hbox style="margin: 8px 0;">
+        <button id="watch-folder-setup-cta-btn"
+                data-l10n-id="watch-folder-pref-setup-cta"
+                oncommand="WatchFolderPrefs.runSetupWizard()"
+                style="font-weight: 600; padding: 6px 16px;"/>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ─── Watch Folder essentials ────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-watch"/></label>
 
@@ -34,48 +56,42 @@
     </hbox>
 
     <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-poll-interval" control="watch-folder-poll-interval"/>
-      <html:input id="watch-folder-poll-interval" type="number" min="1" max="60"
-                  preference="extensions.zotero.watchFolder.pollInterval"
-                  style="width: 60px;"/>
-      <label data-l10n-id="watch-folder-pref-poll-interval-suffix"/>
-    </hbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-file-types" control="watch-folder-file-types"/>
-      <html:input id="watch-folder-file-types" type="text"
-                  preference="extensions.zotero.watchFolder.fileTypes"
-                  style="width: 200px;"/>
-    </hbox>
-
-    <!-- Sync root collection (v2 — replaces the v1 targetCollection name).
-         Files from the watch folder land in this Zotero collection. The
-         button opens a picker over the user library's collections. -->
-    <hbox align="center">
       <label data-l10n-id="watch-folder-pref-sync-root" control="watch-folder-sync-root-display"/>
       <html:input id="watch-folder-sync-root-display" type="text" style="flex: 1;" readonly="true"/>
       <button id="watch-folder-sync-root-btn" data-l10n-id="watch-folder-pref-sync-root-change"
               oncommand="WatchFolderPrefs.pickSyncRoot()"/>
     </hbox>
 
-    <!-- Sync mode display. v2.1 ships Mode 1 + Mode 2 (functional); Mode 3
-         is reserved for v2.2 (safe-delete). The wizard surfaces only the
-         working modes. -->
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-mode" control="watch-folder-mode-display"/>
-      <html:input id="watch-folder-mode-display" type="text" style="width: 280px;" readonly="true"/>
-    </hbox>
+    <!-- ─── Live mode picker ────────────────────────────────────── -->
+    <vbox style="margin-top: 8px;">
+      <label data-l10n-id="watch-folder-pref-mode"/>
+      <radiogroup id="watch-folder-mode-radio"
+                  oncommand="WatchFolderPrefs.changeMode(event.target.value)"
+                  style="margin: 4px 0 0 16px;">
+        <vbox style="margin-bottom: 6px;">
+          <radio value="mode1" data-l10n-id="watch-folder-pref-mode1-label"/>
+          <html:p data-l10n-id="watch-folder-pref-mode1-desc"
+                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+        </vbox>
+        <vbox style="margin-bottom: 6px;">
+          <radio value="mode2" data-l10n-id="watch-folder-pref-mode2-label"/>
+          <html:p data-l10n-id="watch-folder-pref-mode2-desc"
+                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+        </vbox>
+        <vbox>
+          <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label"/>
+          <html:p data-l10n-id="watch-folder-pref-mode3-desc"
+                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+        </vbox>
+      </radiogroup>
+    </vbox>
 
-    <!-- Re-run setup wizard. Useful after the user changes their library
-         organization or wants to switch modes from scratch. -->
-    <hbox align="center">
+    <hbox align="center" style="margin-top: 8px;">
       <button id="watch-folder-rerun-wizard-btn" data-l10n-id="watch-folder-pref-rerun-wizard"
               oncommand="WatchFolderPrefs.runSetupWizard()"/>
     </hbox>
 
-    <!-- Sync warnings — Phase D. Populated from Zotero.WatchFolder.warningSink.
-         Shows running count + a View button that opens an alert with the
-         recent entries. Hidden when count is 0. -->
+    <!-- ─── Attention rows (hidden when empty) ──────────────────── -->
     <hbox id="watch-folder-warnings-row" align="center" hidden="true">
       <label data-l10n-id="watch-folder-pref-warnings" control="watch-folder-warnings-count"/>
       <html:input id="watch-folder-warnings-count" type="text" style="width: 60px;" readonly="true"/>
@@ -85,9 +101,6 @@
               oncommand="WatchFolderPrefs.clearWarnings()"/>
     </hbox>
 
-    <!-- Suppressed items — Phase B. Items whose last sync-root membership
-         was removed in Zotero; the local file is preserved until the user
-         picks a resolution (Re-add / Keep local / Trash / Move outside). -->
     <hbox id="watch-folder-suppressed-row" align="center" hidden="true">
       <label data-l10n-id="watch-folder-pref-suppressed" control="watch-folder-suppressed-count"/>
       <html:input id="watch-folder-suppressed-count" type="text" style="width: 160px;" readonly="true"/>
@@ -98,10 +111,6 @@
               oncommand="WatchFolderPrefs.resolveSuppressedFolders()"/>
     </hbox>
 
-    <!-- Conflict-blocked items — Phase D adjunct. Files whose conflict
-         gate refused a move/delete because of local hash drift. The
-         Resolve… button opens the 3-action picker (re-stamp baseline /
-         discard local / pause sync) per record. -->
     <hbox id="watch-folder-conflicted-row" align="center" hidden="true">
       <label data-l10n-id="watch-folder-pref-conflicted" control="watch-folder-conflicted-count"/>
       <html:input id="watch-folder-conflicted-count" type="text" style="width: 60px;" readonly="true"/>
@@ -109,10 +118,6 @@
               oncommand="WatchFolderPrefs.resolveConflicts()"/>
     </hbox>
 
-    <!-- Trashed folders — v2.2 Mode 3. mirrorExecutor.deleteFolder
-         moves deleted folders into .zotero-watch-trash/; the user can
-         restore them back into the sync root + re-create the Zotero
-         collection. Hidden when none. -->
     <hbox id="watch-folder-trashed-folders-row" align="center" hidden="true">
       <label data-l10n-id="watch-folder-pref-trashed-folders" control="watch-folder-trashed-folders-count"/>
       <html:input id="watch-folder-trashed-folders-count" type="text" style="width: 60px;" readonly="true"/>
@@ -122,12 +127,7 @@
     </hbox>
   </groupbox>
 
-  <!-- Import Mode / Post-Import Action removed from the visible UI.
-       They remain functional preferences (extensions.zotero.watchFolder.importMode,
-       extensions.zotero.watchFolder.postImportAction). Defaults — stored + leave —
-       suit nearly every workflow. Change via about:config if you need to. -->
-
-  <!-- File Naming Section -->
+  <!-- ─── File Naming ────────────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>
 
@@ -147,50 +147,67 @@
     <vbox>
       <label data-l10n-id="watch-folder-pref-rename-pattern-help" style="font-size: 0.9em; color: gray;"/>
     </vbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-max-filename" control="watch-folder-max-filename"/>
-      <html:input id="watch-folder-max-filename" type="number" min="50" max="255"
-                  preference="extensions.zotero.watchFolder.maxFilenameLength"
-                  style="width: 80px;"/>
-      <label data-l10n-id="watch-folder-pref-max-filename-suffix"/>
-    </hbox>
   </groupbox>
 
-  <!-- Smart Rules Section. The engine in content/smartRules.mjs reads the
-       JSON from `extensions.zotero.watchFolder.smartRules` and evaluates
-       each rule's conditions/actions against newly-imported items. The
-       textarea below edits that JSON directly (manual save — NOT bound
-       to the pref, so users don't save broken JSON on every keystroke). -->
+  <!-- ─── Advanced (collapsed by default) ────────────────────────── -->
   <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-smart-rules"/></label>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-smart-rules-enabled" control="watch-folder-smart-rules-enabled"/>
-      <checkbox id="watch-folder-smart-rules-enabled"
-                preference="extensions.zotero.watchFolder.smartRulesEnabled"/>
+    <hbox align="center" style="cursor: pointer;"
+          onclick="WatchFolderPrefs.toggleAdvanced()">
+      <label id="watch-folder-advanced-caret" value="▸" style="font-family: monospace; margin-right: 6px;"/>
+      <html:h2 data-l10n-id="watch-folder-pref-section-advanced" style="margin: 0;"/>
     </hbox>
+    <vbox id="watch-folder-advanced-body" hidden="true" style="margin-top: 8px;">
+      <html:p data-l10n-id="watch-folder-pref-advanced-blurb"
+              style="margin: 0 0 8px 0; font-size: 0.9em; color: #666; line-height: 1.4;"/>
 
-    <vbox style="margin: 4px 0;">
-      <label data-l10n-id="watch-folder-pref-smart-rules-help" style="font-size: 0.9em; color: gray;"/>
+      <hbox align="center">
+        <label data-l10n-id="watch-folder-pref-poll-interval" control="watch-folder-poll-interval"/>
+        <html:input id="watch-folder-poll-interval" type="number" min="1" max="60"
+                    preference="extensions.zotero.watchFolder.pollInterval"
+                    style="width: 60px;"/>
+        <label data-l10n-id="watch-folder-pref-poll-interval-suffix"/>
+      </hbox>
+      <vbox>
+        <label data-l10n-id="watch-folder-pref-poll-interval-help"
+               style="font-size: 0.85em; color: gray; margin: 0 0 6px 16px;"/>
+      </vbox>
+
+      <hbox align="center">
+        <label data-l10n-id="watch-folder-pref-file-types" control="watch-folder-file-types"/>
+        <html:input id="watch-folder-file-types" type="text"
+                    preference="extensions.zotero.watchFolder.fileTypes"
+                    style="width: 200px;"/>
+      </hbox>
+      <vbox>
+        <label data-l10n-id="watch-folder-pref-file-types-help"
+               style="font-size: 0.85em; color: gray; margin: 0 0 6px 16px;"/>
+      </vbox>
+
+      <hbox align="center">
+        <label data-l10n-id="watch-folder-pref-max-filename" control="watch-folder-max-filename"/>
+        <html:input id="watch-folder-max-filename" type="number" min="50" max="255"
+                    preference="extensions.zotero.watchFolder.maxFilenameLength"
+                    style="width: 80px;"/>
+        <label data-l10n-id="watch-folder-pref-max-filename-suffix"/>
+      </hbox>
+
+      <vbox style="margin-top: 12px;">
+        <hbox align="center">
+          <label data-l10n-id="watch-folder-pref-smart-rules-enabled" control="watch-folder-smart-rules-enabled"/>
+          <checkbox id="watch-folder-smart-rules-enabled"
+                    preference="extensions.zotero.watchFolder.smartRulesEnabled"/>
+        </hbox>
+        <vbox style="margin: 4px 0 0 16px;">
+          <label data-l10n-id="watch-folder-pref-smart-rules-blurb"
+                 style="font-size: 0.85em; color: gray; line-height: 1.4;"/>
+          <hbox style="margin-top: 4px;">
+            <button id="watch-folder-smart-rules-open-editor-btn"
+                    data-l10n-id="watch-folder-pref-smart-rules-open-editor"
+                    oncommand="WatchFolderPrefs.openSmartRulesEditor()"/>
+          </hbox>
+        </vbox>
+      </vbox>
     </vbox>
-
-    <html:textarea id="watch-folder-smart-rules-editor"
-                   rows="12"
-                   style="width: 100%; font-family: monospace; font-size: 0.9em;"
-                   spellcheck="false"/>
-
-    <hbox align="center" style="margin-top: 4px;">
-      <button id="watch-folder-smart-rules-save-btn"
-              data-l10n-id="watch-folder-pref-smart-rules-save"
-              oncommand="WatchFolderPrefs.saveSmartRules()"/>
-      <button id="watch-folder-smart-rules-insert-btn"
-              data-l10n-id="watch-folder-pref-smart-rules-insert-example"
-              oncommand="WatchFolderPrefs.insertSmartRuleExample()"/>
-      <button id="watch-folder-smart-rules-reload-btn"
-              data-l10n-id="watch-folder-pref-smart-rules-reload"
-              oncommand="WatchFolderPrefs.reloadSmartRules()"/>
-    </hbox>
   </groupbox>
 
 </vbox>
