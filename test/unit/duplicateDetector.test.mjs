@@ -272,3 +272,128 @@ describe('UT-A1-dd: findByHash routes through the module-level hash cache', () =
     expect(readSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-A3: WP-A3 — title cache prewarm + first-call short-circuit + parallel batches.
+// ---------------------------------------------------------------------------
+describe('UT-A3: title cache prewarm + first-call short-circuit', () => {
+  let detector;
+
+  beforeEach(() => {
+    detector = makeDetector();
+    // Bypass init's notifier registration paths.
+    detector._initialized = true;
+    detector._enabled = true;
+    detector._matchTitle = true;
+    // Provide a Zotero.Search stub (constructor — called via `new`).
+    let pendingResolvers = [];
+    globalThis.Zotero.Search = vi.fn(function() {
+      this.libraryID = 1;
+      this.addCondition = vi.fn();
+      this.search = vi.fn(() => new Promise((resolve) => pendingResolvers.push(resolve)));
+    });
+    globalThis._pendingSearchResolvers = pendingResolvers;
+    globalThis.Zotero.Items.getAsync = vi.fn(async (ids) => {
+      // ids is an array — return one item per id, each with a unique title.
+      return ids.map((id) => ({
+        id,
+        deleted: false,
+        getField: (k) => k === 'title' ? `Title ${id}` : '',
+      }));
+    });
+  });
+
+  it('a: first findByTitle returns null AND kicks off background prewarm', async () => {
+    // Search never resolves during this test — verifying the
+    // short-circuit happens before the build completes.
+    const result = await detector.findByTitle('Some long title');
+    expect(result).toBeNull();
+    expect(detector._titleCachePrewarm).not.toBeNull();
+    // We didn't await the prewarm; cache still not ready.
+    expect(detector._titleCacheReady).toBe(false);
+  });
+
+  it('b: prewarmTitleCache is idempotent (second call returns same promise)', () => {
+    const p1 = detector.prewarmTitleCache();
+    const p2 = detector.prewarmTitleCache();
+    expect(p1).toBe(p2);
+  });
+
+  it('c: after prewarm finishes, findByTitle uses the populated cache', async () => {
+    // Set search to resolve immediately with a single item id.
+    globalThis.Zotero.Search = vi.fn(function() {
+      this.libraryID = 1;
+      this.addCondition = vi.fn();
+      this.search = vi.fn(async () => [42]);
+    });
+    const makeItem = (id) => ({
+      id, deleted: false,
+      getField: (k) => k === 'title' ? 'A Distinctive Paper Title' : '',
+    });
+    globalThis.Zotero.Items.getAsync = vi.fn(async (idOrIds) => {
+      // findByTitle calls getAsync with a single ID; _buildTitleCache calls with an array.
+      if (Array.isArray(idOrIds)) return idOrIds.map(makeItem);
+      return makeItem(idOrIds);
+    });
+
+    await detector.prewarmTitleCache();
+    expect(detector._titleCacheReady).toBe(true);
+
+    const result = await detector.findByTitle('A Distinctive Paper Title');
+    expect(result).not.toBeNull();
+    expect(result.isDuplicate).toBe(true);
+    expect(result.existingItem.id).toBe(42);
+  });
+
+  it('d: _buildTitleCache issues batches in waves of CONCURRENCY=3', async () => {
+    // 1500 ids → 3 batches of 500 → exactly one wave.
+    // 2000 ids → 4 batches → two waves (3 + 1).
+    const ids = Array.from({ length: 2000 }, (_, i) => i + 1);
+    globalThis.Zotero.Search = vi.fn(function() {
+      this.libraryID = 1;
+      this.addCondition = vi.fn();
+      this.search = vi.fn(async () => ids);
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    globalThis.Zotero.Items.getAsync = vi.fn(async (batchIDs) => {
+      inFlight++;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      // Microtask-yield to allow concurrent dispatch.
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight--;
+      return batchIDs.map((id) => ({
+        id, deleted: false,
+        getField: (k) => k === 'title' ? `t${id}` : '',
+      }));
+    });
+
+    await detector._buildTitleCache();
+
+    // 4 batches dispatched, max 3 in flight at any time.
+    expect(globalThis.Zotero.Items.getAsync).toHaveBeenCalledTimes(4);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2); // at least some parallelism
+  });
+
+  it('e: prewarm failure resets _titleCachePrewarm so a later retry can run', async () => {
+    globalThis.Zotero.Search = vi.fn(function() {
+      this.libraryID = 1;
+      this.addCondition = vi.fn();
+      this.search = vi.fn(async () => { throw new Error('DB unavailable'); });
+    });
+
+    await detector.prewarmTitleCache();
+    expect(detector._titleCachePrewarm).toBeNull();
+    expect(detector._titleCacheReady).toBe(false);
+  });
+
+  it('f: invalidateTitleCache resets prewarm promise', () => {
+    detector._titleCachePrewarm = Promise.resolve();
+    detector._titleCacheReady = true;
+    detector.invalidateTitleCache();
+    expect(detector._titleCachePrewarm).toBeNull();
+    expect(detector._titleCacheReady).toBe(false);
+  });
+});
