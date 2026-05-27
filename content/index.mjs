@@ -6,6 +6,7 @@
 import { getWatchFolderService } from './watchFolder.mjs';
 import { initMetadataRetriever, shutdownMetadataRetriever } from './metadataRetriever.mjs';
 import { shutdownDuplicateDetector } from './duplicateDetector.mjs';
+import { getTrackingStore } from './trackingStore.mjs';
 import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs';
 import * as warningSink from './warningSink.mjs';
 import * as suppressionResolver from './suppressionResolver.mjs';
@@ -566,6 +567,19 @@ export const hooks = {
             shutdownDuplicateDetector();
         } catch (error) {
             Zotero.logError(`Zotero Watch Folder: Duplicate detector shutdown error - ${error.message}`);
+        }
+
+        // WP-B3 integration: flush any pending debounced trackingStore
+        // writes before we exit, otherwise a 50ms-window write can be
+        // lost on plugin unload. Safe to call even if the store was
+        // never used (no-op for an empty/uninitialized singleton).
+        try {
+            const store = getTrackingStore();
+            if (store && typeof store.flush === 'function') {
+                await store.flush();
+            }
+        } catch (error) {
+            Zotero.logError(`Zotero Watch Folder: Tracking store flush error - ${error.message}`);
         }
     }
 };

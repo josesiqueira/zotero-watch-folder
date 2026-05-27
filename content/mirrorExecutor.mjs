@@ -31,33 +31,7 @@ import { createFileRecord, createCollectionRecord, STATE } from './trackingStore
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { collectionKeyToRelativePath } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
-
-// WP-C #2: optional hash cache (perf/wp-a). Resolved lazily via dynamic
-// import so this slice merges cleanly when WP-A is not yet present —
-// missing-module errors fall through to direct `getFileHash`.
-// TODO(perf-C2-integration): remove fallback once perf/wp-a lands.
-let _hashCacheResolved = false;
-let _hashCacheRef = null;
-async function _getHashCache() {
-  if (_hashCacheResolved) return _hashCacheRef;
-  _hashCacheResolved = true;
-  try {
-    const mod = await import('./_hashCache.mjs');
-    _hashCacheRef = mod?.hashCache ?? null;
-  } catch (_e) {
-    _hashCacheRef = null; // module not present yet
-  }
-  return _hashCacheRef;
-}
-
-/**
- * Test seam — reset the lazy hash-cache reference so a test can re-mock
- * `./_hashCache.mjs` between cases. Internal; not part of the public API.
- */
-export function _resetHashCacheRef() {
-  _hashCacheResolved = false;
-  _hashCacheRef = null;
-}
+import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;
@@ -217,22 +191,16 @@ export async function canSafelyMove(record, absPath) {
     return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
   }
   if (!exists) return { ok: false, reason: 'missing-file' };
-  // WP-C #2: try the (path, size, mtime) hash cache before paying for a
-  // full SHA-256 read. The cache is keyed so an unchanged file hits
-  // O(1); an edited file (mtime advances) naturally misses and falls
-  // through to a fresh hash. Cache absent (module not yet merged) →
-  // fall through to direct `getFileHash`.
-  // TODO(perf-C2-integration): collapse to a plain import when WP-A lands.
+  // WP-C #2: consult the (path, size, mtime) hash cache. An unchanged
+  // file hits O(1); an edited file (mtime advances) naturally misses
+  // and computes a fresh hash. Runtime safety net: if hashFile throws
+  // or returns null we fall through to direct getFileHash so a cache
+  // bug can never wedge the move gate.
   let currentHash = null;
-  const cache = await _getHashCache();
-  if (cache && typeof cache.hashFile === 'function') {
-    let statHint = null;
-    try { statHint = await IOUtils.stat(absPath); } catch (_e) { /* fall through */ }
-    try {
-      currentHash = await cache.hashFile(absPath, statHint);
-    } catch (_e) {
-      currentHash = null; // cache failed → fall through to direct hash
-    }
+  try {
+    currentHash = await _hashFileCached(absPath);
+  } catch (_e) {
+    currentHash = null;
   }
   if (!currentHash) {
     currentHash = await getFileHash(absPath);

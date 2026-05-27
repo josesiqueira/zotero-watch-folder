@@ -42,7 +42,8 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
   };
 });
 
-import { execute, canSafelyMove, init, reset, _getStore, _resetHashCacheRef } from '../../content/mirrorExecutor.mjs';
+import { execute, canSafelyMove, init, reset, _getStore } from '../../content/mirrorExecutor.mjs';
+import * as hashCache from '../../content/_hashCache.mjs';
 import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from '../../content/trackingStore.mjs';
 import { getFileHash, getPref } from '../../content/utils.mjs';
 import { collectionKeyToRelativePath } from '../../content/canonicalPath.mjs';
@@ -1177,19 +1178,16 @@ describe('UT-420: _deleteFolder bulk-delete protection (Mode 3)', () => {
 // ─── UT-422 (WP-C #2 — canSafelyMove consults the hash cache) ───────────
 
 describe('UT-422: canSafelyMove hash cache integration (WP-C #2)', () => {
-  // The hash cache is a separate slice (perf/wp-a). When the module is
-  // not yet present in the source tree, the dynamic import in
-  // mirrorExecutor fails and `canSafelyMove` falls back to direct
-  // `getFileHash`. These tests cover both paths.
+  // canSafelyMove routes through _hashCache.hashFile (perf/wp-a). The
+  // cache delegates to getFileHash on a miss, so the mocked getFileHash
+  // still records the underlying call. The runtime safety-net path —
+  // direct getFileHash when hashFile throws — is also covered.
 
   beforeEach(() => {
-    _resetHashCacheRef();
+    hashCache.clear();
   });
 
-  it('falls back to getFileHash when _hashCache.mjs is not present (current state)', async () => {
-    // The fallback path is what the current source tree exercises since
-    // perf/wp-a hasn't merged. `getFileHash` returns 'fakehash' (mocked),
-    // matching the record's lastSyncedHash → gate ok.
+  it('consults the hash cache and returns ok when hash matches', async () => {
     const record = {
       lastSyncedHash: 'fakehash',
       localPath: 'x.pdf',
@@ -1198,10 +1196,11 @@ describe('UT-422: canSafelyMove hash cache integration (WP-C #2)', () => {
     IOUtils.exists.mockResolvedValue(true);
     const gate = await canSafelyMove(record, '/watch/x.pdf');
     expect(gate.ok).toBe(true);
+    // The cache delegates to getFileHash on a miss.
     expect(getFileHash).toHaveBeenCalledWith('/watch/x.pdf');
   });
 
-  it('returns hash-drifted when fallback hash differs from record', async () => {
+  it('returns hash-drifted when current hash differs from record', async () => {
     const record = { lastSyncedHash: 'oldhash', localPath: 'x.pdf', canonicalLocalPath: 'x.pdf' };
     IOUtils.exists.mockResolvedValue(true);
     getFileHash.mockResolvedValueOnce('newhash');

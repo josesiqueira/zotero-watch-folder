@@ -30,26 +30,16 @@
  * @module collectionWatcher
  */
 
-import { collectionKeyToRelativePath, isSpecialCollection, resolveSyncRoot } from './canonicalPath.mjs';
+import {
+  collectionKeyToRelativePath,
+  isSpecialCollection,
+  resolveSyncRoot,
+  invalidateCanonicalPathCache,
+} from './canonicalPath.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { handleCollectionItemEvent } from './itemMembershipHandler.mjs';
 import * as baseline from './baseline.mjs';
 import { getPref } from './utils.mjs';
-
-// WP-C #4: optional canonical-path cache invalidator from perf/wp-b.
-// When a collection is renamed/reparented or deleted, the cached
-// canonical-path mapping for its key (and descendants) is stale —
-// notify the cache so the next lookup recomputes. Stub pattern: try/
-// catch around the import; no-op when WP-B hasn't merged yet.
-// TODO(perf-C4-integration): collapse to a plain import once perf/wp-b lands.
-async function _invalidateCanonicalPathCache(collectionKey) {
-  try {
-    const mod = await import('./canonicalPath.mjs');
-    if (typeof mod.invalidateCanonicalPathCache === 'function') {
-      mod.invalidateCanonicalPathCache(collectionKey);
-    }
-  } catch (_e) { /* module export not present yet */ }
-}
 
 /**
  * @typedef {Object} MirrorAction
@@ -261,7 +251,9 @@ async function _processBatch(batch) {
         const collection = Zotero.Collections.get(id);
         key = collection?.key ?? null;
       }
-      if (key) await _invalidateCanonicalPathCache(key);
+      // The cache invalidates wholesale (descendant paths can change too)
+      // — `key` is informational. See canonicalPath.mjs B4.
+      if (key) invalidateCanonicalPathCache();
     }
   }
 

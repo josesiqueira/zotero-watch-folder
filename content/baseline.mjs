@@ -35,43 +35,19 @@ import {
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { scanFolderRecursive } from './fileScanner.mjs';
-
-// WP-C #3: optional hash cache (perf/wp-a). Resolved lazily via dynamic
-// import so this slice merges cleanly when WP-A is not yet present —
-// missing-module errors fall through to direct `getFileHash`.
-// TODO(perf-C3-integration): remove fallback once perf/wp-a lands.
-let _hashCacheResolved = false;
-let _hashCacheRef = null;
-async function _getHashCache() {
-  if (_hashCacheResolved) return _hashCacheRef;
-  _hashCacheResolved = true;
-  try {
-    const mod = await import('./_hashCache.mjs');
-    _hashCacheRef = mod?.hashCache ?? null;
-  } catch (_e) {
-    _hashCacheRef = null; // module not present yet
-  }
-  return _hashCacheRef;
-}
-
-/** Test seam — reset the lazy cache reference between cases. */
-export function _resetHashCacheRef() {
-  _hashCacheResolved = false;
-  _hashCacheRef = null;
-}
+import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
 /**
- * Hash a path via the optional cache module, falling back to direct
- * `getFileHash`. `statHint` (size+mtime, if already obtained) lets the
- * cache key off (path, size, mtime) without re-statting. Returns the
- * hex digest or null on failure.
+ * Hash a path via the (path, size, mtime) cache. `statHint` lets callers
+ * skip a redundant `IOUtils.stat` when they already have one. Falls back
+ * to a direct `getFileHash` if the cache call throws or returns null —
+ * a runtime safety net so a cache bug can never block reconcile.
  */
 async function _hashViaCache(absPath, statHint) {
-  const cache = await _getHashCache();
-  if (cache && typeof cache.hashFile === 'function') {
-    try { return await cache.hashFile(absPath, statHint); }
-    catch (_e) { /* fall through */ }
-  }
+  try {
+    const h = await _hashFileCached(absPath, statHint);
+    if (h) return h;
+  } catch (_e) { /* fall through */ }
   return getFileHash(absPath);
 }
 

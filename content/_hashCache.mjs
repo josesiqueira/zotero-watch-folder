@@ -96,18 +96,25 @@ export function set(absPath, size, mtime, hash) {
  * denied, etc.) falls back to a direct `getFileHash` call without
  * caching — preserves legacy behavior at the cost of one extra read.
  *
+ * Callers that already have a stat handy (e.g. baseline's reconcile
+ * loop) can pass `statHint = {size, lastModified}` to skip the
+ * redundant stat call.
+ *
  * @param {string} absPath
+ * @param {{size?: number, lastModified?: number}|null} [statHint]
  * @returns {Promise<string|null>}
  */
-export async function hashFile(absPath) {
+export async function hashFile(absPath, statHint) {
   if (!absPath) return null;
-  let stat = null;
-  try {
-    stat = await IOUtils.stat(absPath);
-  } catch (_e) {
-    // stat failed — fall through to a stat-less hash call. No cache
-    // because we have no key.
-    return await getFileHash(absPath);
+  let stat = statHint;
+  if (!stat) {
+    try {
+      stat = await IOUtils.stat(absPath);
+    } catch (_e) {
+      // stat failed — fall through to a stat-less hash call. No cache
+      // because we have no key.
+      return await getFileHash(absPath);
+    }
   }
   if (!stat) return await getFileHash(absPath);
   const size = stat.size ?? 0;

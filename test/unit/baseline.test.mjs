@@ -51,6 +51,7 @@ import {
   isSpecialCollection,
 } from '../../content/canonicalPath.mjs';
 import { scanFolderRecursive } from '../../content/fileScanner.mjs';
+import * as hashCache from '../../content/_hashCache.mjs';
 
 const SYNC_ROOT = {
   collection: { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
@@ -70,6 +71,11 @@ function prefStubs(values) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Hash cache is now a real module-level singleton; previous tests can
+  // pollute it with stale entries keyed by (path, size, mtime). Clear
+  // between cases so each test's mocked getFileHash result is the one
+  // the cache returns.
+  hashCache.clear();
   Zotero.debug = vi.fn();
   Zotero.logError = vi.fn();
   Zotero.Collections.get = vi.fn();
