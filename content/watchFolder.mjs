@@ -1062,7 +1062,11 @@ export class WatchFolderService {
     // every scan and trigger spurious "no tracked file hashes — skip" log.
     const onDiskDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
     for (const fileInfo of scannedFiles) {
-      const rel = relativePath(fileInfo.path, watchPath);
+      // WP-A2 (perf): prefer the scanner-provided relativePath when present
+      // (avoids recomputing from absPath + watchPath each iteration). Falls
+      // back to the legacy compute for callers that didn't pass new-shape
+      // entries.
+      const rel = fileInfo.relativePath ?? relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop(); // drop filename
@@ -1090,7 +1094,8 @@ export class WatchFolderService {
     // matching can do O(1) tail lookups against the absolute-path schema.
     const scannedByAbsDir = new Map(); // absDir → [{absPath}, …]
     for (const fileInfo of scannedFiles) {
-      const rel = relativePath(fileInfo.path, watchPath);
+      // WP-A2 (perf): use scanner-provided relativePath when available.
+      const rel = fileInfo.relativePath ?? relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop();

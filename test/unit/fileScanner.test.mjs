@@ -208,3 +208,66 @@ describe('UT-042: scanner refuses to follow symlinks', () => {
     expect(() => __test_setSymlinkDetector(42)).toThrow();
   });
 });
+
+// ─── UT-A2: WP-A2 result shape — relativePath + isSymlink fields ─────────
+
+describe('UT-A2: scanner result shape (relativePath + isSymlink)', () => {
+  beforeEach(() => {
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      if (p === '/watch' || /^\/watch\/[^./]+$/.test(p)) {
+        return { type: 'directory', size: 0, lastModified: 0 };
+      }
+      return { type: 'regular', size: 1234, lastModified: 5678 };
+    });
+    globalThis.Zotero.Prefs.get = vi.fn(() => undefined);
+    __test_setSymlinkDetector(null);
+  });
+
+  it('scanFolder result includes relativePath relative to folderPath and isSymlink=false', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async () => ['/watch/a.pdf', '/watch/b.pdf']);
+
+    const files = await scanFolder('/watch');
+
+    expect(files).toHaveLength(2);
+    expect(files[0]).toEqual(expect.objectContaining({
+      path: '/watch/a.pdf',
+      size: 1234,
+      mtime: 5678,
+      isSymlink: false,
+      relativePath: 'a.pdf',
+    }));
+    expect(files[1].relativePath).toBe('b.pdf');
+  });
+
+  it('scanFolderRecursive result anchors relativePath at the TOP-LEVEL folder, not the recursive sub-folder', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/sub'];
+      if (p === '/watch/sub') return ['/watch/sub/paper.pdf'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      if (p.endsWith('.pdf')) return { type: 'regular', size: 100, lastModified: 7 };
+      return { type: 'directory', size: 0, lastModified: 0 };
+    });
+
+    const files = await scanFolderRecursive('/watch');
+
+    expect(files).toHaveLength(1);
+    expect(files[0].relativePath).toBe('sub/paper.pdf'); // anchored at /watch
+    expect(files[0].isSymlink).toBe(false);
+  });
+
+  it('scanFolder skips symlinks before stat — symlinks never appear in result', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async () => ['/watch/real.pdf', '/watch/link.pdf']);
+    __test_setSymlinkDetector((p) => p === '/watch/link.pdf');
+
+    const files = await scanFolder('/watch');
+
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('/watch/real.pdf');
+    // No entry for the symlink — its isSymlink is implicitly true but never observed.
+    expect(files.find(f => f.path === '/watch/link.pdf')).toBeUndefined();
+    __test_setSymlinkDetector(null);
+  });
+});
