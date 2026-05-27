@@ -32,7 +32,7 @@ vi.mock('../../content/utils.mjs', async () => {
   };
 });
 
-import { start, stop, _isRegistered } from '../../content/itemAddHandler.mjs';
+import { start, stop, _isRegistered, __test_setDebounceMs } from '../../content/itemAddHandler.mjs';
 import * as baseline from '../../content/baseline.mjs';
 import { resolveSyncRoot } from '../../content/canonicalPath.mjs';
 import { getPref } from '../../content/utils.mjs';
@@ -77,6 +77,9 @@ beforeEach(() => {
     return undefined;
   });
   stop();
+  // WP-C #4: drop the debounce window to 0 in tests so a single
+  // `await observer.notify(...)` settles on the next microtask.
+  __test_setDebounceMs(0);
 });
 
 // ─── UT-1001 ───────────────────────────────────────────────────────────────

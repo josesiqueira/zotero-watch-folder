@@ -29,21 +29,74 @@ let _coordinator = null;
 let _store = null;
 let _notifyChain = Promise.resolve();
 
+// WP-C #4: debounce + batching. Mirrors the design used in
+// collectionWatcher.mjs — collect ['item'] add events for
+// `_debounceMs` then drain via a single pass into `_notifyChain`.
+// Multiple notify() calls within the window share one return promise
+// and one drain. This collapses a Zotero "drop 30 PDFs" burst (30
+// separate `add` item events) into a single iteration with a shared
+// sync-root resolve + watch-root pref read.
+let _debounceMs = 100;
+let _pendingBuffer = [];      // [{event, type, ids, extraData}]
+let _pendingPromise = null;
+let _pendingResolve = null;
+let _pendingTimer = null;
+
+/** Test seam — set the debounce window. Pass 0 in tests. */
+export function __test_setDebounceMs(ms) {
+  _debounceMs = Math.max(0, Number(ms) || 0);
+}
+
+/** Test seam — drain any pending events right now. */
+export function __test_flush() {
+  if (_pendingTimer) {
+    clearTimeout(_pendingTimer);
+    _pendingTimer = null;
+    _drainPending();
+  }
+  return _pendingPromise || Promise.resolve();
+}
+
+function _scheduleDrain() {
+  if (_pendingTimer) return;
+  _pendingTimer = setTimeout(() => {
+    _pendingTimer = null;
+    _drainPending();
+  }, _debounceMs);
+}
+
+function _drainPending() {
+  const batch = _pendingBuffer;
+  _pendingBuffer = [];
+  const resolveCurrent = _pendingResolve;
+  _pendingResolve = null;
+  _pendingPromise = null;
+  const next = _notifyChain
+    .catch(() => {})
+    .then(() => _processBatch(batch))
+    .catch((e) => {
+      Zotero.logError(`[WatchFolder] itemAddHandler batch: ${e?.message ?? e}`);
+    });
+  _notifyChain = next;
+  if (resolveCurrent) next.then(() => resolveCurrent());
+}
+
 export function start(coordinator) {
   if (_registered) return;
   _coordinator = coordinator;
   _store = coordinator?._trackingStore ?? null;
 
   const observer = {
+    // WP-C #4: debounce-buffer events; drain after `_debounceMs`. All
+    // notify() calls within the window share one return promise so a
+    // caller awaiting `notify(...)` still sees end-of-processing.
     notify: (event, type, ids, extraData) => {
-      const next = _notifyChain
-        .catch(() => {})
-        .then(() => _onNotify(event, type, ids, extraData))
-        .catch((e) => {
-          Zotero.logError(`[WatchFolder] itemAddHandler notify: ${e?.message ?? e}`);
-        });
-      _notifyChain = next;
-      return next;
+      _pendingBuffer.push({ event, type, ids, extraData });
+      if (!_pendingPromise) {
+        _pendingPromise = new Promise((resolve) => { _pendingResolve = resolve; });
+      }
+      _scheduleDrain();
+      return _pendingPromise;
     },
   };
   _observerID = Zotero.Notifier.registerObserver(observer, ['item'], 'watchFolder-itemAdd');
@@ -62,20 +115,34 @@ export function stop() {
   _store = null;
   _registered = false;
   _notifyChain = Promise.resolve();
+  if (_pendingTimer) { clearTimeout(_pendingTimer); _pendingTimer = null; }
+  _pendingBuffer = [];
+  if (_pendingResolve) { _pendingResolve(); _pendingResolve = null; }
+  _pendingPromise = null;
   Zotero.debug('[WatchFolder] itemAddHandler: unregistered');
 }
 
 export function _isRegistered() { return _registered; }
 
-async function _onNotify(event, type, ids, extraData) {
-  if (event !== 'add' || type !== 'item') return;
-  if (!Array.isArray(ids) || ids.length === 0) return;
+async function _processBatch(batch) {
+  if (!Array.isArray(batch) || batch.length === 0) return;
   if (!_store) return;
 
+  // Coalesce all `add`/`item` events in the batch into one dedup'd id list.
+  const idSet = new Set();
+  for (const entry of batch) {
+    const { event, type, ids } = entry || {};
+    if (event !== 'add' || type !== 'item') continue;
+    if (!Array.isArray(ids)) continue;
+    for (const id of ids) idSet.add(id);
+  }
+  if (idSet.size === 0) return;
+
+  // Per-batch overhead — resolved ONCE.
   let syncRoot;
   try { syncRoot = await resolveSyncRoot(); }
   catch (e) {
-    Zotero.logError(`[WatchFolder] itemAddHandler: ${e?.message ?? e}`);
+    Zotero.logError(`[WatchFolder] itemAddHandler resolveSyncRoot: ${e?.message ?? e}`);
     return;
   }
   if (!syncRoot) return;
@@ -83,7 +150,7 @@ async function _onNotify(event, type, ids, extraData) {
   const watchRoot = getPref('sourcePath');
   if (!watchRoot) return;
 
-  for (const id of ids) {
+  for (const id of idSet) {
     try {
       const item = Zotero.Items.get(id);
       if (!item) continue;
