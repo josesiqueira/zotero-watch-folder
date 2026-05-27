@@ -672,11 +672,26 @@ export class WatchFolderService {
                   parentKey = existing.parentItem?.key ?? null;
                 } else {
                   // Parent item — walk children to find the matching attachment.
+                  // WP-A4 (perf): batch the attachment fetch (array form of
+                  // Zotero.Items.getAsync), then iterate with cached hashes.
+                  // Path + hash still need per-item awaits because we break
+                  // on first match, but the cache (WP-A1) makes the hash
+                  // step itself near-free when re-scanning the same files.
                   parentKey = existing.key;
                   const attIDs = (typeof existing.getAttachments === 'function')
                     ? (existing.getAttachments() || []) : [];
-                  for (const aid of attIDs) {
-                    const att = Zotero.Items.get(aid);
+                  let atts = [];
+                  if (attIDs.length > 0) {
+                    try {
+                      const fetched = await Zotero.Items.getAsync(attIDs);
+                      atts = Array.isArray(fetched) ? fetched : [];
+                    } catch (_e) { atts = []; }
+                    if (atts.length === 0) {
+                      // Fallback: per-id sync (legacy Zotero.Items.get).
+                      atts = attIDs.map(aid => Zotero.Items.get(aid));
+                    }
+                  }
+                  for (const att of atts) {
                     if (!att || !att.isAttachment || !att.isAttachment()) continue;
                     let attPath = null;
                     try { attPath = await att.getFilePathAsync(); }
@@ -689,7 +704,7 @@ export class WatchFolderService {
                   // sync pending), use the first attachment if there's
                   // exactly one. Otherwise we can't safely pick.
                   if (!attachment && attIDs.length === 1) {
-                    const sole = Zotero.Items.get(attIDs[0]);
+                    const sole = atts[0] ?? Zotero.Items.get(attIDs[0]);
                     if (sole?.isAttachment?.()) attachment = sole;
                   }
                 }

@@ -32,6 +32,32 @@ const MAX_TITLE_CACHE_SIZE = 10000;
 // before the new full-file hashes take over.
 
 /**
+ * Fallback batched Zotero.Items.getAsync (WP-A4): on Zotero builds where
+ * the array form throws or returns a non-array, fan out per-id with a
+ * Promise.all wave of CONCURRENCY. Returns an array of (item|null) in
+ * input order. Errors per-id resolve to null (matching the per-id
+ * try/catch pattern in the previous sequential implementation).
+ *
+ * @private
+ * @param {number[]} ids
+ * @param {number} concurrency
+ * @returns {Promise<Array<object|null>>}
+ */
+async function _batchGetItemsAsync(ids, concurrency = 8) {
+  const out = new Array(ids.length);
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const wave = ids.slice(i, i + concurrency).map((id, j) =>
+      Zotero.Items.getAsync(id).then(
+        (v) => { out[i + j] = v; },
+        () => { out[i + j] = null; },
+      )
+    );
+    await Promise.all(wave);
+  }
+  return out;
+}
+
+/**
  * Result from duplicate detection
  * @typedef {Object} DuplicateResult
  * @property {boolean} isDuplicate - Whether a duplicate was found
@@ -169,10 +195,22 @@ export class DuplicateDetector {
             }
           }
         } else if (event === 'add') {
-          // Add new items to cache incrementally
-          for (const id of ids) {
+          // WP-A4 (perf): batch the getAsync call once with the array form
+          // instead of iterating sequentially. On Zotero builds where the
+          // array form is supported (current behavior on Z7/8/9) this is a
+          // single async call instead of N. Fall back to per-id if the
+          // array form throws (defensive).
+          let items;
+          try { items = await Zotero.Items.getAsync(ids); }
+          catch (_e) { items = null; }
+          if (!Array.isArray(items)) {
+            // Per-id fallback with Promise.all + cap 8.
+            items = await _batchGetItemsAsync(ids, 8);
+          }
+          for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            const item = items[i];
             try {
-              const item = await Zotero.Items.getAsync(id);
               if (item && item.isRegularItem() && !item.deleted) {
                 const title = item.getField('title');
                 if (title) {
@@ -191,10 +229,17 @@ export class DuplicateDetector {
             }
           }
         } else if (event === 'modify') {
-          // For modifications, update specific items
-          for (const id of ids) {
+          // WP-A4 (perf): same batching pattern as the 'add' branch.
+          let items;
+          try { items = await Zotero.Items.getAsync(ids); }
+          catch (_e) { items = null; }
+          if (!Array.isArray(items)) {
+            items = await _batchGetItemsAsync(ids, 8);
+          }
+          for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            const item = items[i];
             try {
-              const item = await Zotero.Items.getAsync(id);
               if (item && item.isRegularItem() && !item.deleted) {
                 // Remove old entries for this item
                 for (const [normalizedTitle, entry] of this._titleCache.entries()) {

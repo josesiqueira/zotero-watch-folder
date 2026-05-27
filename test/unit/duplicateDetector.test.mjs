@@ -397,3 +397,91 @@ describe('UT-A3: title cache prewarm + first-call short-circuit', () => {
     expect(detector._titleCacheReady).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-A4: WP-A4 — batch getAsync in notifier handler (add/modify).
+// One Zotero.Items.getAsync(ids) array call instead of N per-id awaits.
+// ---------------------------------------------------------------------------
+describe('UT-A4: _handleNotify batches Zotero.Items.getAsync', () => {
+  let detector;
+  beforeEach(() => {
+    detector = makeDetector();
+    detector._initialized = true;
+    detector._titleCacheReady = true; // skip the build path
+    detector._titleCache = new Map();
+  });
+
+  it('a: add event uses array form when supported (1 call, not N)', async () => {
+    const ids = [10, 11, 12, 13];
+    const items = ids.map((id) => ({
+      id, deleted: false,
+      isRegularItem: () => true,
+      getField: (k) => k === 'title' ? `Paper ${id}` : '',
+    }));
+    globalThis.Zotero.Items.getAsync = vi.fn(async (arg) => Array.isArray(arg) ? items : items[0]);
+
+    await detector._handleNotify('add', 'item', ids, {});
+
+    expect(globalThis.Zotero.Items.getAsync).toHaveBeenCalledTimes(1);
+    expect(globalThis.Zotero.Items.getAsync).toHaveBeenCalledWith(ids);
+    expect(detector._titleCache.size).toBe(4);
+  });
+
+  it('b: modify event uses array form (1 call, not N)', async () => {
+    const ids = [20, 21];
+    const items = ids.map((id) => ({
+      id, deleted: false,
+      isRegularItem: () => true,
+      getField: (k) => k === 'title' ? `t${id}` : '',
+    }));
+    globalThis.Zotero.Items.getAsync = vi.fn(async (arg) => Array.isArray(arg) ? items : items[0]);
+
+    await detector._handleNotify('modify', 'item', ids, {});
+
+    expect(globalThis.Zotero.Items.getAsync).toHaveBeenCalledTimes(1);
+    expect(detector._titleCache.size).toBe(2);
+  });
+
+  it('c: per-id fallback (cap 8) kicks in when array form throws', async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => 100 + i);
+    let arrayCalls = 0, perIdCalls = 0, inFlight = 0, maxInFlight = 0;
+    globalThis.Zotero.Items.getAsync = vi.fn(async (arg) => {
+      if (Array.isArray(arg)) { arrayCalls++; throw new Error('array form unsupported here'); }
+      perIdCalls++;
+      inFlight++;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight--;
+      return {
+        id: arg, deleted: false,
+        isRegularItem: () => true,
+        getField: (k) => k === 'title' ? `t${arg}` : '',
+      };
+    });
+
+    await detector._handleNotify('add', 'item', ids, {});
+
+    expect(arrayCalls).toBe(1);
+    expect(perIdCalls).toBe(12);
+    // 12 ids, cap 8 → first wave 8, second wave 4; max in flight ≤ 8.
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+  });
+
+  it('d: per-id error resolves to null without breaking the wave', async () => {
+    const ids = [1, 2, 3];
+    globalThis.Zotero.Items.getAsync = vi.fn(async (arg) => {
+      if (Array.isArray(arg)) throw new Error('no array form');
+      if (arg === 2) throw new Error('deleted mid-flight');
+      return {
+        id: arg, deleted: false,
+        isRegularItem: () => true,
+        getField: (k) => k === 'title' ? `t${arg}` : '',
+      };
+    });
+
+    await detector._handleNotify('add', 'item', ids, {});
+
+    // 1 and 3 cached; 2 missing.
+    expect(detector._titleCache.size).toBe(2);
+  });
+});
