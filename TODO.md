@@ -18,18 +18,20 @@ suite already covers.
 
 ### Small follow-ups (not blocking)
 
-- [ ] **Fix `enabled` pref-toggle runtime observer.** Discovered
-      during the 2026-05-27 SMOKE S.7 run against v2.5.0-alpha.1.
-      Setting `extensions.zotero.watchFolder.enabled=false` via
-      `Zotero.Prefs.set` does NOT stop the scan loop — files
-      dropped while the pref says `false` still get imported.
-      `AddonManager.disable()` works correctly (proper lifecycle),
-      so the bug is specifically in the `enabledObserverID` handler
-      in `content/index.mjs`. Documented in v2.2 release notes as
-      "Toggling enabled off → on now starts/stops in-process" — the
-      stop direction is broken. Likely needs `clearTimeout(_timer)`
-      or equivalent in the stop path. Independent of the WP-A/B/C
-      perf pass; was likely shipped broken since v2.2.
+- [x] **Fix `enabled` pref-toggle runtime observer.** Fixed
+      2026-05-28 (`3d2a60e`). Root cause was the third-arg shape
+      of `Zotero.Prefs.registerObserver(name, handler, global)`:
+      when `global` is falsy the function prepends
+      `extensions.zotero.` to `name`, so passing
+      `extensions.zotero.watchFolder.enabled` + `false` bound the
+      handler to `extensions.zotero.extensions.zotero.watchFolder.enabled`
+      — a path no caller writes to. Fix: third arg `true`.
+      Same one-line fix applied to `syncCoordinator._modeObserverID`
+      where the same bug existed but was masked by the scan loop
+      reading `getPref('mode')` each cycle. Live re-verified on
+      v2.5.0-alpha.2: enabled true→false stops the scanner, drop
+      ignored after 18s; enabled false→true resumes, picks up the
+      file dropped during the disabled window.
 
 - [ ] **Bulk-delete prompt re-entrancy.** Discovered during the
       2026-05-27 DEL.3 live run. `confirmBulkDelete` correctly
