@@ -36,6 +36,45 @@ import { createFileRecord, createCollectionRecord, STATE } from './trackingStore
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { scanFolderRecursive } from './fileScanner.mjs';
 
+// WP-C #3: optional hash cache (perf/wp-a). Resolved lazily via dynamic
+// import so this slice merges cleanly when WP-A is not yet present —
+// missing-module errors fall through to direct `getFileHash`.
+// TODO(perf-C3-integration): remove fallback once perf/wp-a lands.
+let _hashCacheResolved = false;
+let _hashCacheRef = null;
+async function _getHashCache() {
+  if (_hashCacheResolved) return _hashCacheRef;
+  _hashCacheResolved = true;
+  try {
+    const mod = await import('./_hashCache.mjs');
+    _hashCacheRef = mod?.hashCache ?? null;
+  } catch (_e) {
+    _hashCacheRef = null; // module not present yet
+  }
+  return _hashCacheRef;
+}
+
+/** Test seam — reset the lazy cache reference between cases. */
+export function _resetHashCacheRef() {
+  _hashCacheResolved = false;
+  _hashCacheRef = null;
+}
+
+/**
+ * Hash a path via the optional cache module, falling back to direct
+ * `getFileHash`. `statHint` (size+mtime, if already obtained) lets the
+ * cache key off (path, size, mtime) without re-statting. Returns the
+ * hex digest or null on failure.
+ */
+async function _hashViaCache(absPath, statHint) {
+  const cache = await _getHashCache();
+  if (cache && typeof cache.hashFile === 'function') {
+    try { return await cache.hashFile(absPath, statHint); }
+    catch (_e) { /* fall through */ }
+  }
+  return getFileHash(absPath);
+}
+
 const BASELINE_PREF = 'baselineCompletedForRoot';
 
 /**
@@ -336,37 +375,33 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   // Before copying from Zotero storage, see if disk already has the
   // same content at a non-canonical path. If yes, adopt that file
   // instead of duplicating bytes.
-  if (diskHashIndex && !dryRun) {
-    const attHash = await _attachmentContentHash(attachment);
-    if (attHash) {
-      const matchAbs = diskHashIndex.get(attHash);
-      if (matchAbs && matchAbs !== absDest) {
-        const matchRel = relativePath(matchAbs, watchRoot);
-        if (matchRel != null && matchRel !== '') {
-          // Don't double-claim: a future iteration with the same hash
-          // (e.g. two Zotero attachments sharing bytes) must fall
-          // through to its own copy.
-          diskHashIndex.delete(attHash);
-          let stat = null;
-          try { stat = await IOUtils.stat(matchAbs); } catch (_e) { /* best effort */ }
-          // Accept the disk layout — localPath = disk path,
-          // canonicalLocalPath also = disk path so canonical recompute
-          // doesn't immediately relocate the user's chosen layout.
-          store.add(createFileRecord({
-            localPath: matchRel,
-            canonicalLocalPath: matchRel,
-            lastSyncedHash: attHash,
-            lastSyncedSize: stat?.size ?? 0,
-            lastSyncedMtime: stat?.lastModified ?? 0,
-            zoteroItemKey: _parentItemKey(attachment),
-            zoteroAttachmentKey: attachment.key,
-            canonicalCollectionKey: canonical.key,
-            collectionMembershipKeys: _itemMembershipKeys(item),
-            state: STATE.CLEAN,
-          }));
-          Zotero.debug(`[WatchFolder] baseline B.7: linked ${attachment.key} → existing disk file ${matchRel} (canonical would have been ${relPath})`);
-          return 'adopted-different-path';
-        }
+  //
+  // WP-C #3: the index API is `lookupForAttachment(attachment)` — it
+  // consults `attachmentFileSize` first and only hashes candidates in
+  // the matching size bucket. Claim semantics (one disk file per
+  // attachment) are owned by the index itself.
+  if (diskHashIndex && !dryRun && typeof diskHashIndex.lookupForAttachment === 'function') {
+    const matchAbs = await diskHashIndex.lookupForAttachment(attachment);
+    if (matchAbs && matchAbs !== absDest) {
+      const matchRel = relativePath(matchAbs, watchRoot);
+      if (matchRel != null && matchRel !== '') {
+        let stat = null;
+        try { stat = await IOUtils.stat(matchAbs); } catch (_e) { /* best effort */ }
+        const attHash = await _attachmentContentHashCached(attachment);
+        store.add(createFileRecord({
+          localPath: matchRel,
+          canonicalLocalPath: matchRel,
+          lastSyncedHash: attHash,
+          lastSyncedSize: stat?.size ?? 0,
+          lastSyncedMtime: stat?.lastModified ?? 0,
+          zoteroItemKey: _parentItemKey(attachment),
+          zoteroAttachmentKey: attachment.key,
+          canonicalCollectionKey: canonical.key,
+          collectionMembershipKeys: _itemMembershipKeys(item),
+          state: STATE.CLEAN,
+        }));
+        Zotero.debug(`[WatchFolder] baseline B.7: linked ${attachment.key} → existing disk file ${matchRel} (canonical would have been ${relPath})`);
+        return 'adopted-different-path';
       }
     }
   }
@@ -405,9 +440,9 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
     }
     await IOUtils.copy(srcPath, absDest);
 
-    const hash = await getFileHash(absDest);
     let stat = null;
     try { stat = await IOUtils.stat(absDest); } catch (_e) { /* best effort */ }
+    const hash = await _hashViaCache(absDest, stat);
 
     store.add(createFileRecord({
       localPath: relPath,
@@ -426,9 +461,9 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
 }
 
 async function _adoptExistingDestFile({ attachment, item, canonical, relPath, absDest, store }) {
-  const hash = await getFileHash(absDest);
   let stat = null;
   try { stat = await IOUtils.stat(absDest); } catch (_e) { /* best effort */ }
+  const hash = await _hashViaCache(absDest, stat);
   store.add(createFileRecord({
     localPath: relPath,
     canonicalLocalPath: relPath,
@@ -557,38 +592,108 @@ async function _enumerateUnderSyncRoot(syncRoot) {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Walk the watch folder and hash every file. Returns a Map<hash, absPath>
- * keyed by full-file SHA-256 (see utils.getFileHash). On hash collision
- * (multiple disk files sharing content), the FIRST encountered path
- * wins; subsequent paths are silently dropped.
+ * Walk the watch folder ONCE and build a size-bucketed index — NOT a
+ * pre-hashed index. WP-C #3 perf: the previous implementation hashed
+ * every disk file up front, which was the dominant cost of baseline on
+ * libraries with thousands of PDFs (a 10k-attachment library could pay
+ * for 10k full-file SHA-256 reads at install). Most hash comparisons
+ * are guaranteed-misses by file size, so size first / hash on demand
+ * cuts the read-traffic dramatically.
  *
- * Used by B.7 hash reconcile in the initial baseline. Skipped in dryRun.
+ * Returned shape:
+ *   {
+ *     bySize:  Map<sizeNumber, absPath[]>,
+ *     claimed: Set<absPath>,            // paths already adopted, skipped on later lookups
+ *     lookupForAttachment: async (attachment) => absPath | null,
+ *   }
+ *
+ * `lookupForAttachment` consults `attachment.attachmentFileSize`. When
+ * the size is known, only candidates in that size bucket are hashed
+ * (cheap). When the size is null/undefined (rare — Zotero lazily
+ * populates this), falls through to the legacy "hash every candidate"
+ * path so we don't regress on items that haven't been opened in Zotero
+ * yet.
+ *
+ * Used by B.7 hash reconcile in the initial baseline + adopt-into-
+ * scope. Skipped in dryRun.
  */
 async function _buildDiskHashIndex(watchRoot) {
-  const index = new Map();
+  const bySize = new Map();
+  const claimed = new Set();
   let files = [];
   try { files = await scanFolderRecursive(watchRoot); }
   catch (e) {
-    Zotero.debug(`[WatchFolder] baseline B.7: hash-index scan failed: ${e?.message ?? e}`);
-    return index;
+    Zotero.debug(`[WatchFolder] baseline B.7: size-index scan failed: ${e?.message ?? e}`);
+    return _emptyDiskIndex();
   }
+  // Stat every disk file ONCE; bucket by size. No hashing at this stage.
   for (const fileInfo of files) {
     if (!fileInfo?.path) continue;
-    const hash = await getFileHash(fileInfo.path);
-    if (!hash) continue;
-    if (!index.has(hash)) index.set(hash, fileInfo.path);
+    let stat = null;
+    try { stat = await IOUtils.stat(fileInfo.path); } catch (_e) { /* skip unreadable */ }
+    const size = stat?.size;
+    if (typeof size !== 'number') continue;
+    let bucket = bySize.get(size);
+    if (!bucket) { bucket = []; bySize.set(size, bucket); }
+    bucket.push(fileInfo.path);
   }
-  Zotero.debug(`[WatchFolder] baseline B.7: hashed ${files.length} disk files, ${index.size} unique hashes`);
-  return index;
+  Zotero.debug(`[WatchFolder] baseline B.7: size-indexed ${files.length} disk files into ${bySize.size} size buckets`);
+
+  /**
+   * Find a disk file whose hash matches `attachment`'s content. Size
+   * fast-path: when `attachmentFileSize` is set, only hash candidates
+   * in the matching size bucket. When size is unknown, fall back to
+   * hashing every un-claimed candidate (legacy behavior). Returns the
+   * first matching absPath, marking it as claimed so a subsequent
+   * attachment with the same content doesn't double-adopt.
+   */
+  async function lookupForAttachment(attachment) {
+    const attHash = await _attachmentContentHashCached(attachment);
+    if (!attHash) return null;
+    const attSize = (typeof attachment?.attachmentFileSize === 'number')
+      ? attachment.attachmentFileSize
+      : null;
+    let candidates;
+    if (attSize != null) {
+      candidates = bySize.get(attSize) || [];
+    } else {
+      // No size hint — degrade to hashing every un-claimed candidate.
+      // This preserves the pre-fix behavior for unindexed attachments.
+      candidates = [];
+      for (const list of bySize.values()) candidates.push(...list);
+    }
+    for (const absPath of candidates) {
+      if (claimed.has(absPath)) continue;
+      let statHint = null;
+      try { statHint = await IOUtils.stat(absPath); } catch (_e) { /* fall through */ }
+      const diskHash = await _hashViaCache(absPath, statHint);
+      if (diskHash && diskHash === attHash) {
+        claimed.add(absPath);
+        return absPath;
+      }
+    }
+    return null;
+  }
+
+  return { bySize, claimed, lookupForAttachment };
+}
+
+function _emptyDiskIndex() {
+  return {
+    bySize: new Map(),
+    claimed: new Set(),
+    lookupForAttachment: async () => null,
+  };
 }
 
 /**
  * Best-effort content hash for a Zotero attachment. Reads the file at
- * the attachment's storage path via IOUtils — there's no shortcut from
- * Zotero's existing metadata to a SHA-256-of-first-1MB. Returns null
- * when the file is unavailable (not yet synced, missing, etc).
+ * the attachment's storage path via the hash cache (so a B.7 reconcile
+ * over many attachments doesn't re-hash unchanged Zotero storage
+ * files). Returns null when the file is unavailable (not yet synced,
+ * missing, etc).
  */
-async function _attachmentContentHash(attachment) {
+async function _attachmentContentHashCached(attachment) {
   if (!attachment || typeof attachment.getFilePathAsync !== 'function') return null;
   let srcPath = null;
   try { srcPath = await attachment.getFilePathAsync(); }
@@ -598,7 +703,9 @@ async function _attachmentContentHash(attachment) {
   try { exists = await IOUtils.exists(srcPath); }
   catch (_e) { return null; }
   if (!exists) return null;
-  return getFileHash(srcPath);
+  let statHint = null;
+  try { statHint = await IOUtils.stat(srcPath); } catch (_e) { /* fall through */ }
+  return _hashViaCache(srcPath, statHint);
 }
 
 /**

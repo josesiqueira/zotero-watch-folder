@@ -32,6 +32,33 @@ import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { collectionKeyToRelativePath } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
 
+// WP-C #2: optional hash cache (perf/wp-a). Resolved lazily via dynamic
+// import so this slice merges cleanly when WP-A is not yet present —
+// missing-module errors fall through to direct `getFileHash`.
+// TODO(perf-C2-integration): remove fallback once perf/wp-a lands.
+let _hashCacheResolved = false;
+let _hashCacheRef = null;
+async function _getHashCache() {
+  if (_hashCacheResolved) return _hashCacheRef;
+  _hashCacheResolved = true;
+  try {
+    const mod = await import('./_hashCache.mjs');
+    _hashCacheRef = mod?.hashCache ?? null;
+  } catch (_e) {
+    _hashCacheRef = null; // module not present yet
+  }
+  return _hashCacheRef;
+}
+
+/**
+ * Test seam — reset the lazy hash-cache reference so a test can re-mock
+ * `./_hashCache.mjs` between cases. Internal; not part of the public API.
+ */
+export function _resetHashCacheRef() {
+  _hashCacheResolved = false;
+  _hashCacheRef = null;
+}
+
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;
 
@@ -42,6 +69,19 @@ let _store = null;
  * @type {Map<string, Promise>}
  */
 const _locks = new Map();
+
+/**
+ * Concurrency cap for the per-child rewrite passes in `_moveFolder`
+ * (WP-C #1). Each child still acquires its own `attachment:<key>` lock,
+ * which guarantees per-attachment serialization; this cap merely limits
+ * the OUTER parallelism so a folder with thousands of tracked children
+ * doesn't queue thousands of microtasks at once. 8 strikes a reasonable
+ * balance: enough to overlap async tracking-store mutations without
+ * flooding the event loop. Different children acquire DIFFERENT locks
+ * so they can run truly in parallel; same-key children would serialize
+ * naturally on their shared lock chain.
+ */
+const CHILD_REWRITE_CONCURRENCY = 8;
 
 /**
  * Wire the executor's dependency on the tracking store. Called by the
@@ -78,6 +118,46 @@ function _withLock(key, fn) {
     if (_locks.get(key) === next) _locks.delete(key);
   }).catch(() => { /* swallow — caller already handled */ });
   return next;
+}
+
+/**
+ * Inline semaphore — run `worker(item)` against every item in `items`
+ * with at most `cap` invocations in flight at once. Resolves after every
+ * worker has settled (resolved or rejected). Errors are NOT propagated:
+ * each worker is responsible for its own error handling (the existing
+ * `_withLock`-wrapped rewrite blocks already swallow per-record errors
+ * by re-reading the live record under the lock and bailing if anything
+ * is amiss).
+ *
+ * Used by `_moveFolder` (WP-C #1) to overlap per-child rewrites without
+ * violating the per-attachment lock contract: each worker still acquires
+ * its own `attachment:<key>` lock and re-reads under it.
+ */
+async function _runWithConcurrency(items, cap, worker) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const effectiveCap = Math.max(1, Math.min(cap, items.length));
+  let cursor = 0;
+  const runners = [];
+  for (let i = 0; i < effectiveCap; i++) {
+    runners.push((async () => {
+      // Each runner pulls the next index until the queue is drained.
+      // Reading `cursor` synchronously between awaits is safe in single-
+      // threaded JS — the increment happens before any await inside the
+      // worker, so two runners can't claim the same index.
+      while (true) {
+        const idx = cursor++;
+        if (idx >= items.length) return;
+        try {
+          await worker(items[idx]);
+        } catch (e) {
+          // Per-record errors are swallowed at this layer — the worker
+          // is responsible for surfacing via warningSink or store state.
+          Zotero.logError(`[WatchFolder] mirrorExecutor _runWithConcurrency: ${e?.message ?? e}`);
+        }
+      }
+    })());
+  }
+  await Promise.all(runners);
 }
 
 /**
@@ -137,7 +217,26 @@ export async function canSafelyMove(record, absPath) {
     return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
   }
   if (!exists) return { ok: false, reason: 'missing-file' };
-  const currentHash = await getFileHash(absPath);
+  // WP-C #2: try the (path, size, mtime) hash cache before paying for a
+  // full SHA-256 read. The cache is keyed so an unchanged file hits
+  // O(1); an edited file (mtime advances) naturally misses and falls
+  // through to a fresh hash. Cache absent (module not yet merged) →
+  // fall through to direct `getFileHash`.
+  // TODO(perf-C2-integration): collapse to a plain import when WP-A lands.
+  let currentHash = null;
+  const cache = await _getHashCache();
+  if (cache && typeof cache.hashFile === 'function') {
+    let statHint = null;
+    try { statHint = await IOUtils.stat(absPath); } catch (_e) { /* fall through */ }
+    try {
+      currentHash = await cache.hashFile(absPath, statHint);
+    } catch (_e) {
+      currentHash = null; // cache failed → fall through to direct hash
+    }
+  }
+  if (!currentHash) {
+    currentHash = await getFileHash(absPath);
+  }
   if (!currentHash) return { ok: false, reason: 'hash-failed' };
   if (currentHash !== record.lastSyncedHash) {
     return {
@@ -317,18 +416,29 @@ async function _moveFolder(payload) {
       // subtree but whose own localPath does NOT (e.g. file lives in
       // collection B but its canonical is collection A which just got
       // renamed). Without pass 2 the canonical pointer would dangle.
+      //
+      // WP-C #1 perf: parallelize the OUTER loop with a concurrency cap
+      // (CHILD_REWRITE_CONCURRENCY). Per-attachment correctness is still
+      // guaranteed by the inner `attachment:<key>` lock + re-read under
+      // the lock — different children acquire DIFFERENT locks, so they
+      // can run in parallel without violating the per-key serialization
+      // contract.
       const prefix = oldRelativePath + '/';
       const files = _store.getAllOfType('file');
       const rewritten = new Set();
-      // Per-attachment lock around each rewrite (TODO Track A #4). A
-      // concurrent moveItem on the same key would otherwise read a
-      // partially-rewritten record. Acquire one lock at a time — never in
-      // parallel — to avoid lock-order issues with a follow-up moveItem.
+      // TODO(perf-C1): switch to getAllByAttachmentKey once perf/wp-b lands.
+
+      // Pass 1: rewrite localPath + canonicalLocalPath for records whose
+      // localPath sits under the moved subtree.
+      const pass1Targets = [];
       for (const f of files) {
         const matchesExact = f.localPath === oldRelativePath;
         const matchesNested = f.localPath.startsWith(prefix);
         if (!matchesExact && !matchesNested) continue;
         if (!f.zoteroAttachmentKey) continue; // skip: would collide on `attachment:undefined`
+        pass1Targets.push(f);
+      }
+      await _runWithConcurrency(pass1Targets, CHILD_REWRITE_CONCURRENCY, async (f) => {
         await _withLock(`attachment:${f.zoteroAttachmentKey}`, async () => {
           // Re-read under the lock — a concurrent moveItem completed between
           // the outer enumeration and the lock acquisition may have moved
@@ -353,9 +463,13 @@ async function _moveFolder(payload) {
           }));
           rewritten.add(live.zoteroAttachmentKey);
         });
-      }
+      });
+
       // Pass 2: canonicalLocalPath fixup for records whose localPath is
-      // OUTSIDE the moved subtree (multi-collection items).
+      // OUTSIDE the moved subtree (multi-collection items). Split into
+      // unlocked (no attachment key) and locked (has key) groups so the
+      // locked group can run in parallel under the same cap.
+      const pass2Locked = [];
       for (const f of _store.getAllOfType('file')) {
         if (rewritten.has(f.zoteroAttachmentKey)) continue;
         if (!f.zoteroAttachmentKey) {
@@ -365,6 +479,9 @@ async function _moveFolder(payload) {
           _store.update(f.localPath, { canonicalLocalPath: newCanonical });
           continue;
         }
+        pass2Locked.push(f);
+      }
+      await _runWithConcurrency(pass2Locked, CHILD_REWRITE_CONCURRENCY, async (f) => {
         await _withLock(`attachment:${f.zoteroAttachmentKey}`, async () => {
           const live = _store.getByAttachmentKey(f.zoteroAttachmentKey);
           if (!live) return;
@@ -372,7 +489,7 @@ async function _moveFolder(payload) {
           if (newCanonical === live.canonicalLocalPath) return;
           _store.update(live.localPath, { canonicalLocalPath: newCanonical });
         });
-      }
+      });
       try { await _store.save(); } catch (_e) { /* logged */ }
     }
     Zotero.debug(`[WatchFolder] mirrorExecutor: moveFolder ${oldRelativePath} → ${newRelativePath} ok`);
