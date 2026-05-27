@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   resolveSyncRoot,
   collectionKeyToRelativePath,
+  collectionKeyToRelativePathCached,
+  invalidateCanonicalPathCache,
   relativePathToCollection,
   isSpecialCollection,
   isUnsafeCollectionNameSegment,
@@ -450,5 +452,98 @@ describe('UT-206: relativePathToCollection refuses unsafe path segments', () => 
     const c = await relativePathToCollection('Methods/Subtopic', { createIfMissing: true });
     expect(c).not.toBe(null);
     expect(Zotero.logError).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-207 (WP-B / B4) ─────────────────────────────────────────────────────
+
+describe('UT-207: collectionKeyToRelativePathCached + invalidateCanonicalPathCache', () => {
+  beforeEach(() => {
+    invalidateCanonicalPathCache();
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'METHODS', name: 'Methods', libraryID: 1, parentID: 1 },
+      { id: 3, key: 'SUB', name: 'Subtopic', libraryID: 1, parentID: 2 },
+      { id: 4, key: 'OTHER', name: 'Other', libraryID: 1, parentID: null },
+    ]);
+  });
+
+  it('returns the same value as the uncached function on first call', async () => {
+    const cached = await collectionKeyToRelativePathCached('SUB');
+    const uncached = await collectionKeyToRelativePath('SUB');
+    expect(cached).toBe(uncached);
+    expect(cached).toBe('Methods/Subtopic');
+  });
+
+  it('second call hits the cache (no upstream collection lookup)', async () => {
+    // Pass libraryID explicitly so the cached path bypasses
+    // resolveSyncRoot — that lets us assert pure cache behaviour by
+    // wiping the registry afterwards.
+    await collectionKeyToRelativePathCached('SUB', 1);
+    // Now break the registry — if the cache is doing its job the
+    // second call still returns the prior result.
+    Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => null);
+    Zotero.Collections.get = vi.fn(() => null);
+    const second = await collectionKeyToRelativePathCached('SUB', 1);
+    expect(second).toBe('Methods/Subtopic');
+  });
+
+  it('invalidateCanonicalPathCache() forces a fresh lookup', async () => {
+    await collectionKeyToRelativePathCached('SUB');
+    invalidateCanonicalPathCache();
+    // Re-prime the registry with a renamed segment.
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'METHODS', name: 'RenamedMethods', libraryID: 1, parentID: 1 },
+      { id: 3, key: 'SUB', name: 'Subtopic', libraryID: 1, parentID: 2 },
+    ]);
+    const result = await collectionKeyToRelativePathCached('SUB');
+    expect(result).toBe('RenamedMethods/Subtopic');
+  });
+
+  it('does NOT cache negative results (null)', async () => {
+    // UNKNOWN doesn't exist → null. Cache must not memoize this.
+    expect(await collectionKeyToRelativePathCached('UNKNOWN')).toBe(null);
+    // Now add the missing collection. The next call must see it.
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 5, key: 'UNKNOWN', name: 'New', libraryID: 1, parentID: 1 },
+    ]);
+    expect(await collectionKeyToRelativePathCached('UNKNOWN')).toBe('New');
+  });
+
+  it('caches "" (the sync root itself) — positive result', async () => {
+    await collectionKeyToRelativePathCached('ROOT1', 1);
+    // Break the registry; cached value should survive.
+    Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => null);
+    expect(await collectionKeyToRelativePathCached('ROOT1', 1)).toBe('');
+  });
+
+  it('SyncRootMissingError propagates without caching', async () => {
+    resetPrefs({ syncRootCollectionKey: 'GONE', syncRootLibraryID: 1 });
+    makeCollectionRegistry([]);
+    await expect(collectionKeyToRelativePathCached('GONE')).rejects.toBeInstanceOf(SyncRootMissingError);
+  });
+
+  it('cache keys include libraryID — same collection key in two libraries does NOT collide', async () => {
+    // Library 1 has ROOT1/METHODS with name "Methods".
+    await collectionKeyToRelativePathCached('METHODS');
+    // Wipe registry and seed library 2 with the same collection key but
+    // a different name — explicit libraryID lookup should miss the
+    // library-1 cache entry and compute fresh.
+    resetPrefs({ syncRootCollectionKey: 'ROOT2', syncRootLibraryID: 2 });
+    makeCollectionRegistry([
+      { id: 10, key: 'ROOT2', name: 'OtherInbox', libraryID: 2, parentID: null },
+      { id: 11, key: 'METHODS', name: 'DifferentMethods', libraryID: 2, parentID: 10 },
+    ]);
+    const lib2 = await collectionKeyToRelativePathCached('METHODS', 2);
+    expect(lib2).toBe('DifferentMethods');
+  });
+
+  it('accepts an explicit libraryID and skips the resolveSyncRoot fallback for the lookup', async () => {
+    // Pre-populate the registry; pass libraryID directly.
+    const result = await collectionKeyToRelativePathCached('METHODS', 1);
+    expect(result).toBe('Methods');
   });
 });

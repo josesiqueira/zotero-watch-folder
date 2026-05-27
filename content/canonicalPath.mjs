@@ -64,6 +64,37 @@ export function isUnsafeCollectionNameSegment(name) {
 }
 
 /**
+ * WP-B / B4: module-level cache for `collectionKeyToRelativePathCached`.
+ *
+ * Keyed by `${libraryID}:${collectionKey}` → string. Stores positive
+ * lookups only — i.e. paths that resolved successfully under the sync
+ * root. A miss falls through to the uncached function, which handles
+ * `null` returns (collection not under sync root, unsafe segment, etc.)
+ * without polluting the cache.
+ *
+ * Invalidated wholesale via `invalidateCanonicalPathCache()`. The
+ * collection-watcher in WP-C will call this on every `collection`-type
+ * `modify`/`delete` notifier event, because:
+ *   - rename: a collection's name changes → its segment changes →
+ *     every descendant's relative path changes.
+ *   - move:   a collection's parentID changes → its descendants' paths
+ *     change too.
+ *   - delete: removed collection's path is no longer valid.
+ *
+ * Wholesale invalidation is simpler than tracking per-key descendants
+ * and the cache is cheap to rebuild on demand.
+ */
+const _relativePathCache = new Map();
+
+/**
+ * Clear the canonical-path memoization cache. Call on any
+ * collection-tree mutation (rename / move / delete). WP-B / B4.
+ */
+export function invalidateCanonicalPathCache() {
+  _relativePathCache.clear();
+}
+
+/**
  * Resolve the configured sync-root collection.
  *
  * @returns {Promise<{collection: object, libraryID: number}|null>}
@@ -146,6 +177,52 @@ export async function collectionKeyToRelativePath(collectionKey) {
   }
   // Walked off the top without finding sync root → not under it.
   return null;
+}
+
+/**
+ * Memoized variant of {@link collectionKeyToRelativePath} (WP-B / B4).
+ *
+ * Same contract as the uncached function — returns `""` for the sync
+ * root itself, the joined name segments for nested collections, and
+ * `null` when the collection isn't under the sync root.
+ *
+ * Behaviour vs uncached:
+ *   - Cache stores POSITIVE results only (`""` or `"Methods/Subtopic"`).
+ *     `null` lookups are NOT cached so a re-parented collection picks
+ *     up its new (in-scope) path on the next call.
+ *   - Cache key is `${libraryID}:${collectionKey}` so two libraries
+ *     can hold the same key without collision.
+ *   - `SyncRootMissingError` propagates exactly as in the uncached
+ *     function — the cache never swallows it.
+ *
+ * Callers that need to opt out (e.g. tests verifying live walk
+ * behaviour) can keep using `collectionKeyToRelativePath` directly.
+ *
+ * @param {string} collectionKey
+ * @param {number} [libraryID] - Optional explicit library; otherwise
+ *   resolved via `resolveSyncRoot`.
+ * @returns {Promise<string|null>}
+ */
+export async function collectionKeyToRelativePathCached(collectionKey, libraryID) {
+  // If the caller didn't pre-resolve libraryID, fall back to the sync
+  // root's library. Doing this lookup once up front means cached hits
+  // (the common case) skip an extra resolveSyncRoot call on subsequent
+  // requests for the same key.
+  let lib = libraryID;
+  if (lib == null) {
+    const syncRoot = await resolveSyncRoot();
+    if (!syncRoot) return null;
+    lib = syncRoot.libraryID;
+  }
+  const cacheKey = `${lib}:${collectionKey}`;
+  if (_relativePathCache.has(cacheKey)) {
+    return _relativePathCache.get(cacheKey);
+  }
+  const result = await collectionKeyToRelativePath(collectionKey);
+  if (result !== null) {
+    _relativePathCache.set(cacheKey, result);
+  }
+  return result;
 }
 
 /**

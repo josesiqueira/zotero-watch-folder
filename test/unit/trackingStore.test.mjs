@@ -615,3 +615,299 @@ describe('UT-112: getSuppressedCollections', () => {
     expect(got.map((r) => r.zoteroCollectionKey).sort()).toEqual(['B', 'C']);
   });
 });
+
+// ─── UT-114 (WP-B / B1) ─────────────────────────────────────────────────────
+
+describe('UT-114: tombstone indexes (WP-B / B1)', () => {
+  let store;
+  beforeEach(() => {
+    resetTrackingStore();
+    store = makeStore();
+  });
+
+  it('findTombstoneByHash uses the bucket index and returns the most recent recoverable', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'old.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'HX',
+      deletedAt: '2026-05-01T00:00:00Z',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'new.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'HX',
+      deletedAt: '2026-05-20T00:00:00Z',
+    }));
+    // Confirm the index map is populated (white-box: the optimization
+    // exists). Bucket-list length is 2 because both tombstones share HX.
+    expect(store._tombstonesByHash.get('HX')).toHaveLength(2);
+    const t = store.findTombstoneByHash('HX');
+    expect(t.zoteroAttachmentKey).toBe('AK2');
+  });
+
+  it('findTombstoneByAttachmentKey returns the first recoverable from the bucket', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    expect(store._tombstonesByAttachmentKey.get('AK1')).toHaveLength(1);
+    const t = store.findTombstoneByAttachmentKey('AK1');
+    expect(t.localPath).toBe('a.pdf');
+  });
+
+  it('removeTombstoneByAttachmentKey deletes the attachment-key bucket and updates hash buckets', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a-copy.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'H2',
+    }));
+    store.removeTombstoneByAttachmentKey('AK1');
+    expect(store._tombstonesByAttachmentKey.has('AK1')).toBe(false);
+    // AK2 survives
+    expect(store._tombstonesByAttachmentKey.get('AK2')).toHaveLength(1);
+    // H1 bucket now empty → deleted from index map entirely.
+    expect(store._tombstonesByHash.has('H1')).toBe(false);
+    // H2 survives.
+    expect(store._tombstonesByHash.get('H2')).toHaveLength(1);
+  });
+
+  it('removeTombstoneByAttachmentKey preserves hash bucket when other AKs share the hash', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'SHARED',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'SHARED',
+    }));
+    store.removeTombstoneByAttachmentKey('AK1');
+    const remaining = store._tombstonesByHash.get('SHARED');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].zoteroAttachmentKey).toBe('AK2');
+  });
+
+  it('load() rebuilds tombstone indexes', async () => {
+    const store2 = makeStore();
+    store2.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [],
+      collections: [],
+      tombstones: [
+        createTombstoneRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1' }),
+        createTombstoneRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'H2' }),
+      ],
+    });
+    await store2.load();
+    expect(store2.findTombstoneByHash('H1')?.zoteroAttachmentKey).toBe('AK1');
+    expect(store2.findTombstoneByAttachmentKey('AK2')?.originalHash).toBe('H2');
+  });
+
+  it('tombstones stay OUT of _byHash (live-record dedup invariant preserved)', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    // _byHash is the live-record-only index; tombstones must be absent.
+    expect(store._byHash.has('H1')).toBe(false);
+    // But the tombstone index DOES carry the hash.
+    expect(store._tombstonesByHash.has('H1')).toBe(true);
+  });
+});
+
+// ─── UT-115 (WP-B / B2) ─────────────────────────────────────────────────────
+
+describe('UT-115: getAllByAttachmentKey (canonical + shadows)', () => {
+  let store;
+  beforeEach(() => {
+    resetTrackingStore();
+    store = makeStore();
+  });
+
+  it('returns canonical + every shadow for an attachment key', () => {
+    // Canonical record (localPath === canonicalLocalPath).
+    store.add(createFileRecord({
+      localPath: 'Methods/paper.pdf',
+      canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'AK1',
+    }));
+    // Shadow: the user dropped a copy under a different folder.
+    store.add(createFileRecord({
+      localPath: 'Inbox/paper.pdf',
+      canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'AK1',
+    }));
+    // Unrelated record.
+    store.add(createFileRecord({
+      localPath: 'other.pdf',
+      zoteroAttachmentKey: 'AK2',
+    }));
+    const got = store.getAllByAttachmentKey('AK1');
+    expect(got).toHaveLength(2);
+    expect(got.map(r => r.localPath).sort()).toEqual([
+      'Inbox/paper.pdf',
+      'Methods/paper.pdf',
+    ]);
+  });
+
+  it('returns empty array for unknown / empty / falsy key', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    expect(store.getAllByAttachmentKey('UNKNOWN')).toEqual([]);
+    expect(store.getAllByAttachmentKey('')).toEqual([]);
+    expect(store.getAllByAttachmentKey(null)).toEqual([]);
+    expect(store.getAllByAttachmentKey(undefined)).toEqual([]);
+  });
+
+  it('returns a defensive copy (mutating the result does not affect the store)', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    const got = store.getAllByAttachmentKey('AK1');
+    got.length = 0;
+    // Subsequent call still returns the canonical-length list.
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(1);
+  });
+
+  it('legacy getByAttachmentKey is unchanged (still returns a single record)', () => {
+    // Adding two records with the same attachment key — getByAttachmentKey
+    // returns the most-recently-added record (the legacy single-record index).
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    store.add(createFileRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    const single = store.getByAttachmentKey('AK1');
+    expect(single).not.toBeNull();
+    // Most-recent wins for the legacy index (Map insertion order semantics).
+    expect(single.localPath).toBe('b.pdf');
+    // But getAllByAttachmentKey returns both.
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(2);
+  });
+
+  it('update() keeps the multi-record index in sync', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.add(createFileRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK1' }));
+    // Re-key one of them.
+    store.update('a.pdf', { zoteroAttachmentKey: 'AK_NEW' });
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(1);
+    expect(store.getAllByAttachmentKey('AK1')[0].localPath).toBe('b.pdf');
+    expect(store.getAllByAttachmentKey('AK_NEW')).toHaveLength(1);
+    expect(store.getAllByAttachmentKey('AK_NEW')[0].localPath).toBe('a.pdf');
+  });
+
+  it('remove() drops the record from the multi-record index too', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.add(createFileRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.remove('a.pdf');
+    const got = store.getAllByAttachmentKey('AK1');
+    expect(got).toHaveLength(1);
+    expect(got[0].localPath).toBe('b.pdf');
+  });
+
+  it('load() rebuilds the multi-record index from disk', async () => {
+    const store2 = makeStore();
+    store2.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [
+        createFileRecord({ localPath: 'canonical.pdf', zoteroAttachmentKey: 'AK1' }),
+        createFileRecord({ localPath: 'shadow.pdf', zoteroAttachmentKey: 'AK1' }),
+      ],
+      collections: [],
+      tombstones: [],
+    });
+    await store2.load();
+    expect(store2.getAllByAttachmentKey('AK1')).toHaveLength(2);
+  });
+});
+
+// ─── UT-116 (WP-B / B3) ─────────────────────────────────────────────────────
+
+describe('UT-116: debounced save (WP-B / B3)', () => {
+  beforeEach(() => {
+    resetTrackingStore();
+    globalThis.IOUtils.writeJSON.mockClear();
+  });
+
+  it('save() coalesces rapid calls into ONE write', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    store.add(createFileRecord({ localPath: 'b.pdf' }));
+    store.add(createFileRecord({ localPath: 'c.pdf' }));
+    // Three save() calls in rapid succession — all return the same
+    // pending promise. Only ONE writeJSON should fire.
+    const p1 = store.save();
+    const p2 = store.save();
+    const p3 = store.save();
+    await Promise.all([p1, p2, p3]);
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    expect(store.isDirty).toBe(false);
+  });
+
+  it('save() returns a promise that resolves AFTER the actual write', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    let writeResolve;
+    const writePromise = new Promise(r => { writeResolve = r; });
+    globalThis.IOUtils.writeJSON.mockImplementationOnce(async () => {
+      await writePromise; // hold the write until we say so
+    });
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    const savePromise = store.save();
+    // Give the debounce timer time to fire and start the write.
+    await new Promise(r => setTimeout(r, 80));
+    // The write started but hasn't finished yet, so savePromise hasn't resolved.
+    let resolved = false;
+    savePromise.then(() => { resolved = true; });
+    await new Promise(r => setTimeout(r, 10));
+    expect(resolved).toBe(false);
+    writeResolve();
+    await savePromise;
+    expect(resolved).toBe(true);
+  });
+
+  it('save() returns a promise that REJECTS when the write fails', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.writeJSON.mockRejectedValueOnce(new Error('disk full'));
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await expect(store.save()).rejects.toThrow('disk full');
+  });
+
+  it('flush() bypasses the debounce timer — writes immediately', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    // Schedule a debounced save, then flush() to bypass.
+    const savePromise = store.save();
+    // flush() should pre-empt the timer.
+    await store.flush();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    // The earlier save() promise resolves to the same write outcome.
+    await expect(savePromise).resolves.toBeUndefined();
+  });
+
+  it('saveNow() is an alias for flush()', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.saveNow();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it('save() is a no-op when the store is not dirty', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    await store.save();
+    expect(globalThis.IOUtils.writeJSON).not.toHaveBeenCalled();
+  });
+
+  it('destroy() rejects awaiters with a clear error', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    const savePromise = store.save();
+    store.destroy();
+    await expect(savePromise).rejects.toThrow(/destroyed/i);
+  });
+});

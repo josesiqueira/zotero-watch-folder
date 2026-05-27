@@ -200,9 +200,46 @@ export class TrackingStore {
     this._tombstones = [];
     this._byAttachmentKey = new Map();
     this._byHash = new Map();
+    // WP-B / B2: parallel index that returns ALL FileRecords for an
+    // attachment key (canonical + shadows produced by dedup-skip). Distinct
+    // from `_byAttachmentKey` (single record only — preserved for backwards
+    // compatibility with existing readers).
+    this._byAttachmentKeyAll = new Map();
+    // WP-B / B1: tombstone indexes. Keyed by originalHash and
+    // zoteroAttachmentKey respectively; values are arrays because multiple
+    // tombstones can share either key (different files happened to share
+    // content, or the same attachment was trashed → restored → trashed
+    // again before a save). Tombstones are intentionally NOT in `_byHash`
+    // (see CLAUDE.md invariant: `_byHash` is live syncing records only).
+    this._tombstonesByHash = new Map();
+    this._tombstonesByAttachmentKey = new Map();
     this.dataFile = null;
     this._dirty = false;
     this._initialized = false;
+    // WP-B / B3: debounced save plumbing. Multiple `save()` calls within
+    // a small window coalesce into one disk write so a busy scan cycle
+    // doesn't write the tracking file dozens of times per second.
+    //
+    //   _saveTimer       : NodeJS.Timeout|null
+    //   _pendingSave     : Promise|null — resolves when the next disk
+    //                      write completes. Callers awaiting `save()`
+    //                      observe the write outcome (including errors).
+    //   _resolvePending  : function to resolve _pendingSave.
+    //   _rejectPending   : function to reject _pendingSave.
+    this._saveTimer = null;
+    this._pendingSave = null;
+    this._resolvePending = null;
+    this._rejectPending = null;
+  }
+
+  /**
+   * Debounce delay for `save()` coalescing (milliseconds). 50ms is short
+   * enough that any human-driven workflow waits invisibly; long enough that
+   * a chatty scan cycle batches into one disk write.
+   * @private
+   */
+  get _saveDebounceMs() {
+    return 50;
   }
 
   /**
@@ -294,6 +331,24 @@ export class TrackingStore {
       return;
     }
     this._tombstones.push(record);
+    // WP-B / B1: keep tombstone indexes in sync incrementally so the next
+    // findTombstoneBy* call doesn't pay a full rebuild cost.
+    if (record.originalHash) {
+      let list = this._tombstonesByHash.get(record.originalHash);
+      if (!list) {
+        list = [];
+        this._tombstonesByHash.set(record.originalHash, list);
+      }
+      list.push(record);
+    }
+    if (record.zoteroAttachmentKey) {
+      let list = this._tombstonesByAttachmentKey.get(record.zoteroAttachmentKey);
+      if (!list) {
+        list = [];
+        this._tombstonesByAttachmentKey.set(record.zoteroAttachmentKey, list);
+      }
+      list.push(record);
+    }
     this._dirty = true;
   }
 
@@ -308,8 +363,23 @@ export class TrackingStore {
   _rebuildIndexes() {
     this._byAttachmentKey.clear();
     this._byHash.clear();
+    this._byAttachmentKeyAll.clear();
+    this._tombstonesByHash.clear();
+    this._tombstonesByAttachmentKey.clear();
     for (const rec of this._files.values()) {
-      if (rec.zoteroAttachmentKey) this._byAttachmentKey.set(rec.zoteroAttachmentKey, rec);
+      if (rec.zoteroAttachmentKey) {
+        // Legacy single-record index (unchanged contract: keeps the
+        // most-recently-inserted record per attachment key when duplicates
+        // exist — typical for canonical vs shadow records).
+        this._byAttachmentKey.set(rec.zoteroAttachmentKey, rec);
+        // WP-B / B2: parallel multi-record index returns canonical + shadows.
+        let list = this._byAttachmentKeyAll.get(rec.zoteroAttachmentKey);
+        if (!list) {
+          list = [];
+          this._byAttachmentKeyAll.set(rec.zoteroAttachmentKey, list);
+        }
+        list.push(rec);
+      }
       // Detached / suppressed / conflict-blocked records are intentionally
       // OMITTED from _byHash so the hash-dedup path in watchFolder can't
       // re-link a fresh import to a Zotero item the user explicitly
@@ -317,6 +387,26 @@ export class TrackingStore {
       // see them (the user may want to resolve via suppression UX).
       if (rec.lastSyncedHash && _isHashIndexable(rec.state)) {
         this._byHash.set(rec.lastSyncedHash, rec);
+      }
+    }
+    // WP-B / B1: tombstone indexes — separate maps so live-record hash
+    // dedup (`_byHash`) stays isolated from restore-path lookups.
+    for (const t of this._tombstones) {
+      if (t.originalHash) {
+        let list = this._tombstonesByHash.get(t.originalHash);
+        if (!list) {
+          list = [];
+          this._tombstonesByHash.set(t.originalHash, list);
+        }
+        list.push(t);
+      }
+      if (t.zoteroAttachmentKey) {
+        let list = this._tombstonesByAttachmentKey.get(t.zoteroAttachmentKey);
+        if (!list) {
+          list = [];
+          this._tombstonesByAttachmentKey.set(t.zoteroAttachmentKey, list);
+        }
+        list.push(t);
       }
     }
   }
@@ -399,6 +489,30 @@ export class TrackingStore {
     this._ensureInitialized();
     if (!attachmentKey) return null;
     return this._byAttachmentKey.get(attachmentKey) ?? null;
+  }
+
+  /**
+   * Return ALL FileRecords for an attachment key — canonical record plus
+   * any shadow records produced by dedup-skip (the user dropping a second
+   * copy of the same file under the watch root). WP-B / B2.
+   *
+   * Distinct from `getByAttachmentKey`, which returns a single record
+   * (whichever happens to be the most-recently-inserted under the
+   * legacy `_byAttachmentKey` map). Callers that need to operate on
+   * every record for a given attachment (e.g. `mirrorExecutor._moveFolder`
+   * rewriting all paths for an attachment when its parent folder moves)
+   * should use this instead of `getAllOfType('file').filter(...)`.
+   *
+   * @param {string} attachmentKey
+   * @returns {FileRecord[]} Empty array if no records / falsy key.
+   *   Returned array is a defensive copy — mutating it does not affect
+   *   the store's internal index.
+   */
+  getAllByAttachmentKey(attachmentKey) {
+    this._ensureInitialized();
+    if (!attachmentKey) return [];
+    const list = this._byAttachmentKeyAll.get(attachmentKey);
+    return list ? list.slice() : [];
   }
 
   /**
@@ -494,9 +608,14 @@ export class TrackingStore {
   findTombstoneByHash(hash) {
     this._ensureInitialized();
     if (!hash) return null;
+    // WP-B / B1: O(1) bucket lookup. Inside the bucket we still walk to
+    // pick the most-recent RECOVERABLE entry — buckets are tiny in practice
+    // (hash collisions across tombstones are rare) so a linear scan is fine.
+    const bucket = this._tombstonesByHash.get(hash);
+    if (!bucket) return null;
     let best = null;
-    for (const t of this._tombstones) {
-      if (t.originalHash === hash && t.state === STATE.RECOVERABLE) {
+    for (const t of bucket) {
+      if (t.state === STATE.RECOVERABLE) {
         if (!best || (t.deletedAt > best.deletedAt)) best = t;
       }
     }
@@ -514,10 +633,13 @@ export class TrackingStore {
   findTombstoneByAttachmentKey(attachmentKey) {
     this._ensureInitialized();
     if (!attachmentKey) return null;
-    for (const t of this._tombstones) {
-      if (t.zoteroAttachmentKey === attachmentKey && t.state === STATE.RECOVERABLE) {
-        return t;
-      }
+    // WP-B / B1: O(1) bucket lookup. First RECOVERABLE tombstone wins
+    // (same contract as before — order is insertion order, which is
+    // chronological because the array is append-only).
+    const bucket = this._tombstonesByAttachmentKey.get(attachmentKey);
+    if (!bucket) return null;
+    for (const t of bucket) {
+      if (t.state === STATE.RECOVERABLE) return t;
     }
     return null;
   }
@@ -533,13 +655,33 @@ export class TrackingStore {
     this._ensureInitialized();
     if (!attachmentKey) return 0;
     let removed = 0;
+    const removedHashes = new Set();
     for (let i = this._tombstones.length - 1; i >= 0; i--) {
-      if (this._tombstones[i].zoteroAttachmentKey === attachmentKey) {
+      const t = this._tombstones[i];
+      if (t.zoteroAttachmentKey === attachmentKey) {
+        if (t.originalHash) removedHashes.add(t.originalHash);
         this._tombstones.splice(i, 1);
         removed++;
       }
     }
-    if (removed > 0) this._dirty = true;
+    if (removed > 0) {
+      // WP-B / B1: keep tombstone indexes in sync. Drop the attachment-key
+      // bucket entirely (every entry shared the key being removed). For
+      // hash buckets, filter out the removed tombstones — other tombstones
+      // may share a hash and must survive.
+      this._tombstonesByAttachmentKey.delete(attachmentKey);
+      for (const hash of removedHashes) {
+        const list = this._tombstonesByHash.get(hash);
+        if (!list) continue;
+        const filtered = list.filter(t => t.zoteroAttachmentKey !== attachmentKey);
+        if (filtered.length === 0) {
+          this._tombstonesByHash.delete(hash);
+        } else {
+          this._tombstonesByHash.set(hash, filtered);
+        }
+      }
+      this._dirty = true;
+    }
     return removed;
   }
 
@@ -576,10 +718,107 @@ export class TrackingStore {
   // ─── Persistence ───────────────────────────────────────────────────────
 
   /**
-   * Persist to disk if dirty. No-op if nothing changed since last save.
+   * Persist to disk if dirty (DEBOUNCED — WP-B / B3). Multiple `save()`
+   * calls within {@link _saveDebounceMs} coalesce into a single disk
+   * write. The returned promise resolves (or rejects) when the actual
+   * write completes, so existing `await store.save()` callers still
+   * observe write errors as before.
+   *
+   * The first call schedules a timer and creates a deferred promise.
+   * Subsequent calls reset the timer (debounce: idle-trigger semantics)
+   * and return the same shared promise. When the timer fires, `_doSave`
+   * runs once and resolves the deferred for every awaiting caller.
+   *
+   * For shutdown paths or anywhere a synchronous write is required,
+   * see {@link flush} (alias: {@link saveNow}).
+   *
+   * @returns {Promise<void>}
    */
-  async save() {
+  save() {
     this._ensureInitialized();
+    if (!this.dataFile) return Promise.resolve();
+    // If a save is already pending, just (re)schedule the timer and
+    // hand back the same promise. The first caller created it; later
+    // callers share it.
+    if (!this._pendingSave) {
+      this._pendingSave = new Promise((resolve, reject) => {
+        this._resolvePending = resolve;
+        this._rejectPending = reject;
+      });
+    }
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+    }
+    this._saveTimer = setTimeout(() => {
+      // _flushPending performs the actual write and settles the
+      // deferred promise. Callers awaiting `save()` await this.
+      this._flushPending();
+    }, this._saveDebounceMs);
+    return this._pendingSave;
+  }
+
+  /**
+   * Persist unconditionally and synchronously (no debounce). Used by
+   * shutdown paths where we'd rather over-write the file than risk
+   * losing a recently-touched record that didn't flip the dirty flag.
+   *
+   * Cancels any pending debounce timer so a stale save doesn't fire
+   * after we've already written.
+   *
+   * @returns {Promise<void>}
+   */
+  async flush() {
+    this._dirty = true;
+    // Cancel and inherit the pending promise so callers awaiting an
+    // earlier `save()` also observe this write's outcome.
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (!this._pendingSave) {
+      this._pendingSave = new Promise((resolve, reject) => {
+        this._resolvePending = resolve;
+        this._rejectPending = reject;
+      });
+    }
+    const promise = this._pendingSave;
+    this._flushPending();
+    await promise;
+  }
+
+  /** Alias for {@link flush}. */
+  async saveNow() {
+    return this.flush();
+  }
+
+  /**
+   * Internal: perform the actual write and settle the deferred promise.
+   * Should not be called directly — use `save()` (debounced) or `flush()`
+   * (immediate).
+   * @private
+   */
+  _flushPending() {
+    const resolve = this._resolvePending;
+    const reject = this._rejectPending;
+    // Detach the deferred before the write so a save() call MADE DURING
+    // the write registers a NEW deferred, not this one.
+    this._pendingSave = null;
+    this._resolvePending = null;
+    this._rejectPending = null;
+    this._saveTimer = null;
+    // _doSave returns a promise; chain the deferred to its outcome.
+    this._doSave().then(
+      (val) => { if (resolve) resolve(val); },
+      (err) => { if (reject) reject(err); },
+    );
+  }
+
+  /**
+   * Internal: the actual `writeJSON` call. Same behaviour as the pre-B3
+   * `save()` — no-op when not dirty, error logged + rethrown on failure.
+   * @private
+   */
+  async _doSave() {
     if (!this._dirty) return;
     if (!this.dataFile) return;
     try {
@@ -597,16 +836,6 @@ export class TrackingStore {
       Zotero.logError(`[WatchFolder] TrackingStore.save: ${e?.message ?? e}`);
       throw e;
     }
-  }
-
-  /**
-   * Persist unconditionally (used by shutdown paths where we'd rather over-
-   * write the file than risk losing a recently-touched record that didn't
-   * flip the dirty flag due to a bug).
-   */
-  async flush() {
-    this._dirty = true;
-    await this.save();
   }
 
   /**
@@ -671,11 +900,26 @@ export class TrackingStore {
   }
 
   destroy() {
+    // WP-B / B3: cancel any pending debounce timer so a stale save
+    // doesn't fire after the store is gone. Reject any awaiters.
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this._rejectPending) {
+      try { this._rejectPending(new Error('TrackingStore destroyed')); } catch (_e) { /* ignore */ }
+    }
+    this._pendingSave = null;
+    this._resolvePending = null;
+    this._rejectPending = null;
     this._files.clear();
     this._collections.clear();
     this._tombstones.length = 0;
     this._byAttachmentKey.clear();
     this._byHash.clear();
+    this._byAttachmentKeyAll.clear();
+    this._tombstonesByHash.clear();
+    this._tombstonesByAttachmentKey.clear();
     this._initialized = false;
     this._dirty = false;
   }
