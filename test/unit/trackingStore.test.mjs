@@ -712,3 +712,110 @@ describe('UT-114: tombstone indexes (WP-B / B1)', () => {
     expect(store._tombstonesByHash.has('H1')).toBe(true);
   });
 });
+
+// ─── UT-115 (WP-B / B2) ─────────────────────────────────────────────────────
+
+describe('UT-115: getAllByAttachmentKey (canonical + shadows)', () => {
+  let store;
+  beforeEach(() => {
+    resetTrackingStore();
+    store = makeStore();
+  });
+
+  it('returns canonical + every shadow for an attachment key', () => {
+    // Canonical record (localPath === canonicalLocalPath).
+    store.add(createFileRecord({
+      localPath: 'Methods/paper.pdf',
+      canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'AK1',
+    }));
+    // Shadow: the user dropped a copy under a different folder.
+    store.add(createFileRecord({
+      localPath: 'Inbox/paper.pdf',
+      canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'AK1',
+    }));
+    // Unrelated record.
+    store.add(createFileRecord({
+      localPath: 'other.pdf',
+      zoteroAttachmentKey: 'AK2',
+    }));
+    const got = store.getAllByAttachmentKey('AK1');
+    expect(got).toHaveLength(2);
+    expect(got.map(r => r.localPath).sort()).toEqual([
+      'Inbox/paper.pdf',
+      'Methods/paper.pdf',
+    ]);
+  });
+
+  it('returns empty array for unknown / empty / falsy key', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    expect(store.getAllByAttachmentKey('UNKNOWN')).toEqual([]);
+    expect(store.getAllByAttachmentKey('')).toEqual([]);
+    expect(store.getAllByAttachmentKey(null)).toEqual([]);
+    expect(store.getAllByAttachmentKey(undefined)).toEqual([]);
+  });
+
+  it('returns a defensive copy (mutating the result does not affect the store)', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    const got = store.getAllByAttachmentKey('AK1');
+    got.length = 0;
+    // Subsequent call still returns the canonical-length list.
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(1);
+  });
+
+  it('legacy getByAttachmentKey is unchanged (still returns a single record)', () => {
+    // Adding two records with the same attachment key — getByAttachmentKey
+    // returns the most-recently-added record (the legacy single-record index).
+    store.add(createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    store.add(createFileRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    const single = store.getByAttachmentKey('AK1');
+    expect(single).not.toBeNull();
+    // Most-recent wins for the legacy index (Map insertion order semantics).
+    expect(single.localPath).toBe('b.pdf');
+    // But getAllByAttachmentKey returns both.
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(2);
+  });
+
+  it('update() keeps the multi-record index in sync', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.add(createFileRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK1' }));
+    // Re-key one of them.
+    store.update('a.pdf', { zoteroAttachmentKey: 'AK_NEW' });
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(1);
+    expect(store.getAllByAttachmentKey('AK1')[0].localPath).toBe('b.pdf');
+    expect(store.getAllByAttachmentKey('AK_NEW')).toHaveLength(1);
+    expect(store.getAllByAttachmentKey('AK_NEW')[0].localPath).toBe('a.pdf');
+  });
+
+  it('remove() drops the record from the multi-record index too', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.add(createFileRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK1' }));
+    store.remove('a.pdf');
+    const got = store.getAllByAttachmentKey('AK1');
+    expect(got).toHaveLength(1);
+    expect(got[0].localPath).toBe('b.pdf');
+  });
+
+  it('load() rebuilds the multi-record index from disk', async () => {
+    const store2 = makeStore();
+    store2.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [
+        createFileRecord({ localPath: 'canonical.pdf', zoteroAttachmentKey: 'AK1' }),
+        createFileRecord({ localPath: 'shadow.pdf', zoteroAttachmentKey: 'AK1' }),
+      ],
+      collections: [],
+      tombstones: [],
+    });
+    await store2.load();
+    expect(store2.getAllByAttachmentKey('AK1')).toHaveLength(2);
+  });
+});

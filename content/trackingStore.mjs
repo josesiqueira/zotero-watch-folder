@@ -468,6 +468,30 @@ export class TrackingStore {
   }
 
   /**
+   * Return ALL FileRecords for an attachment key — canonical record plus
+   * any shadow records produced by dedup-skip (the user dropping a second
+   * copy of the same file under the watch root). WP-B / B2.
+   *
+   * Distinct from `getByAttachmentKey`, which returns a single record
+   * (whichever happens to be the most-recently-inserted under the
+   * legacy `_byAttachmentKey` map). Callers that need to operate on
+   * every record for a given attachment (e.g. `mirrorExecutor._moveFolder`
+   * rewriting all paths for an attachment when its parent folder moves)
+   * should use this instead of `getAllOfType('file').filter(...)`.
+   *
+   * @param {string} attachmentKey
+   * @returns {FileRecord[]} Empty array if no records / falsy key.
+   *   Returned array is a defensive copy — mutating it does not affect
+   *   the store's internal index.
+   */
+  getAllByAttachmentKey(attachmentKey) {
+    this._ensureInitialized();
+    if (!attachmentKey) return [];
+    const list = this._byAttachmentKeyAll.get(attachmentKey);
+    return list ? list.slice() : [];
+  }
+
+  /**
    * Find a live file record by content hash. Tombstones are NOT returned
    * here (use `getRecoverableTombstones` for those) so callers can't
    * accidentally treat a deleted item as a live duplicate.
