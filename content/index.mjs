@@ -576,10 +576,15 @@ export const hooks = {
             Zotero.logError(`Zotero Watch Folder: Duplicate detector shutdown error - ${error.message}`);
         }
 
-        // WP-B3 integration: flush any pending debounced trackingStore
-        // writes before we exit, otherwise a 50ms-window write can be
-        // lost on plugin unload. Safe to call even if the store was
-        // never used (no-op for an empty/uninitialized singleton).
+        // WP-B3 belt-and-suspenders: each shutdown step above already
+        // awaits its own store.flush() where it touches tracking
+        // (watchFolderService.destroy() does), but any code that
+        // schedules a debounced save during shutdown and doesn't await
+        // it (notifier handler still in flight, async cleanup race)
+        // would leak across plugin unload. Final flush() on the
+        // singleton catches those. No-op when the store was never
+        // initialized (uninitialised → dataFile null → _doSave
+        // short-circuits).
         try {
             const store = getTrackingStore();
             if (store && typeof store.flush === 'function') {

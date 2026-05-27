@@ -262,9 +262,19 @@ export class WatchFolderService {
       this._notifierID = null;
     }
 
-    // Save and close tracking store
+    // Flush + close tracking store. `flush()` writes immediately
+    // (no debounce wait), so destroy returns as soon as the bytes
+    // are on disk rather than after the 50ms `save()` debounce
+    // window. The pre-B3 code used `save()` which was synchronous;
+    // post-B3 `save()` debounces, so shutdown paths must use
+    // `flush()` to preserve the original semantics.
     if (this._trackingStore) {
-      await this._trackingStore.save();
+      if (typeof this._trackingStore.flush === 'function') {
+        await this._trackingStore.flush();
+      } else {
+        // Older mocks / pre-B3 stores: fall back to save().
+        await this._trackingStore.save();
+      }
       this._trackingStore = null;
     }
 

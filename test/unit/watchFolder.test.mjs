@@ -407,6 +407,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
       add: vi.fn(),
       update: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
       hasPath: vi.fn(() => false),
     };
 
@@ -581,6 +582,7 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
       }),
       hasPath: vi.fn((p) => files.has(p)),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
   }
 
@@ -830,6 +832,7 @@ describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
       }),
       hasPath: vi.fn((p) => files.has(p)),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
   }
 
@@ -985,6 +988,7 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
       }),
       update: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
 
@@ -1086,6 +1090,7 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
       }),
       removeByAttachmentKey: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
     service._moveToOSTrash = vi.fn(async () => {});
@@ -1381,6 +1386,7 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
       }),
       removeByAttachmentKey: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
     service._moveToOSTrash = vi.fn(async () => {});
@@ -1502,6 +1508,7 @@ describe('UT-092: _handleZoteroRestore — RST.1 + RST.6', () => {
       }),
       add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
 
@@ -1649,6 +1656,7 @@ describe('UT-093: _handleZoteroRestore — RST.2 (parent expansion) + RST.4 (sel
       }),
       add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
 
@@ -1794,6 +1802,7 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
       removeByAttachmentKey: vi.fn(),
       add: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
     service._moveToPluginTrash = vi.fn(async () => '.zotero-watch-trash/x.pdf');
@@ -1923,6 +1932,7 @@ describe('UT-095: RST.5 re-attach under living parent', () => {
       add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
       hasPath: vi.fn(() => false),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
       // _processNewFile pre-tombstone code paths use these — return
       // benign defaults so we reach the tombstone block.
       getAllOfType: vi.fn((t) => t === 'tombstone' ? tombstones.slice() : (t === 'file' ? files.slice() : [])),
@@ -2072,6 +2082,7 @@ describe('UT-094: _handleExternalDeletions bulk guard (Mode 3)', () => {
       remove: vi.fn(),
       removeByAttachmentKey: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
     };
     service._trackingStore = store;
     service._showExternalDeletionPopup = vi.fn();
@@ -2175,6 +2186,7 @@ describe('UT-A1: _handleExternalDeletions consults the module-level hash cache',
       add: vi.fn(),
       update: vi.fn(),
       save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
       hasPath: vi.fn(() => false),
     };
 
@@ -2248,5 +2260,46 @@ describe('UT-A1: _handleExternalDeletions consults the module-level hash cache',
 
     const callsAfterCycle2 = getFileHashMock.mock.calls.length;
     expect(callsAfterCycle2).toBeGreaterThan(callsAfterCycle1);
+  });
+});
+
+// ─── UT-056: destroy() commits the tracking store synchronously ──────────
+
+describe('UT-056: WatchFolderService.destroy uses flush() for shutdown writes', () => {
+  let service;
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'sourcePath') return '/watch';
+      return undefined;
+    });
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+  });
+
+  it('calls flush() on shutdown to skip the 50ms save() debounce window', async () => {
+    const store = {
+      save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
+    };
+    service._trackingStore = store;
+    service._initialized = true;
+    await service.destroy();
+    expect(store.flush).toHaveBeenCalledTimes(1);
+    expect(store.save).not.toHaveBeenCalled();
+    expect(service._trackingStore).toBeNull();
+  });
+
+  it('falls back to save() when flush() is unavailable (pre-B3 store / older mock)', async () => {
+    const store = {
+      save: vi.fn(async () => {}),
+      // No flush — simulates an older mock or pre-B3 store.
+    };
+    service._trackingStore = store;
+    service._initialized = true;
+    await service.destroy();
+    expect(store.save).toHaveBeenCalledTimes(1);
+    expect(service._trackingStore).toBeNull();
   });
 });
