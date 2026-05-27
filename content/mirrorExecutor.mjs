@@ -394,7 +394,9 @@ async function _moveFolder(payload) {
       const prefix = oldRelativePath + '/';
       const files = _store.getAllOfType('file');
       const rewritten = new Set();
-      // TODO(perf-C1): switch to getAllByAttachmentKey once perf/wp-b lands.
+      // (The earlier TODO suggesting getAllByAttachmentKey here was
+      // misplaced — this filter is path-prefix based, not key based.
+      // O(n) scan is unavoidable without a per-prefix index.)
 
       // Pass 1: rewrite localPath + canonicalLocalPath for records whose
       // localPath sits under the moved subtree.

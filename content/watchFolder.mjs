@@ -1453,11 +1453,12 @@ export class WatchFolderService {
 
     // 2. Per attachment, gather all records and split canonical vs shadows.
     //    Decide whether the canonical file is actually on disk and
-    //    eligible for deletion.
+    //    eligible for deletion. Uses the WP-B2 `getAllByAttachmentKey`
+    //    index for O(1) lookup per key instead of O(n) filter — turns
+    //    the loop from O(n × m) into O(m).
     const plans = [];
-    const allFiles = this._trackingStore.getAllOfType('file');
     for (const key of attachmentKeys) {
-      const records = allFiles.filter(r => r.zoteroAttachmentKey === key);
+      const records = this._trackingStore.getAllByAttachmentKey(key);
       if (records.length === 0) continue;
       const canonical = records.find(r => r.localPath === r.canonicalLocalPath) || records[0];
       const shadows = records.filter(r => r !== canonical);
@@ -2168,10 +2169,11 @@ export class WatchFolderService {
       // the shadow tracking; leave Zotero alone.
       const isShadow = record.localPath !== record.canonicalLocalPath;
       if (isShadow) {
-        const canonical = this._trackingStore.getAllOfType('file').find(
-          r => r.zoteroAttachmentKey === record.zoteroAttachmentKey
-               && r.localPath === r.canonicalLocalPath
-        );
+        // WP-B2: O(1) lookup of sibling records by attachment key, then
+        // pick the canonical one. Was an O(n) filter over getAllOfType.
+        const canonical = this._trackingStore
+          .getAllByAttachmentKey(record.zoteroAttachmentKey)
+          .find(r => r.localPath === r.canonicalLocalPath);
         if (canonical) {
           const canonAbs = this._resolveTrackedAbs(canonical.localPath, watchPath);
           const canonExists = await IOUtils.exists(canonAbs).catch(() => false);

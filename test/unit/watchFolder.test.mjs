@@ -969,6 +969,7 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
     store = {
       _records: records,
       getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getAllByAttachmentKey: vi.fn((k) => records.filter(r => r.zoteroAttachmentKey === k)),
       getByAttachmentKey: vi.fn((k) => records.find(r => r.zoteroAttachmentKey === k) ?? null),
       remove: vi.fn((path) => {
         const idx = records.findIndex(r => r.localPath === path);
@@ -1076,6 +1077,7 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     store = {
       _records: records,
       getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getAllByAttachmentKey: vi.fn((k) => records.filter(r => r.zoteroAttachmentKey === k)),
       remove: vi.fn((path) => {
         const idx = records.findIndex(r => r.localPath === path);
         if (idx === -1) return false;
@@ -1369,6 +1371,7 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
     store = {
       _records: records,
       getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getAllByAttachmentKey: vi.fn((k) => records.filter(r => r.zoteroAttachmentKey === k)),
       add: vi.fn((r) => { if (r.type === 'tombstone') tombstones.push(r); }),
       remove: vi.fn((path) => {
         const idx = records.findIndex(r => r.localPath === path);
@@ -1781,6 +1784,7 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
     store = {
       _records: records,
       getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getAllByAttachmentKey: vi.fn((k) => records.filter(r => r.zoteroAttachmentKey === k)),
       remove: vi.fn((path) => {
         const i = records.findIndex(r => r.localPath === path);
         if (i === -1) return false;
@@ -2059,6 +2063,7 @@ describe('UT-094: _handleExternalDeletions bulk guard (Mode 3)', () => {
     store = {
       _records: records,
       getAllOfType: vi.fn((t) => t === 'file' ? records.slice() : []),
+      getAllByAttachmentKey: vi.fn((k) => records.filter(r => r.zoteroAttachmentKey === k)),
       getByAttachmentKey: vi.fn((k) => records.find(r => r.zoteroAttachmentKey === k) ?? null),
       update: vi.fn((path, updates) => {
         const r = records.find(x => x.localPath === path);
