@@ -48,7 +48,7 @@ suite already covers.
       during an external-deletion modal is the real value. 3 new
       unit tests in `test/unit/bulkGuard.test.mjs`.
 
-- [~] **Phase E `test/mcp/MODE2.md` runbook live pass.** Mostly done
+- [~] **Phase E `.private/mcp-runbooks/MODE2.md` runbook live pass.** Mostly done
       during the 2026-05-25c run: BASE.1, MEM.1, REN.1, SUPP.1
       (with safety-net auto-clear), CONF.1, WARN.1, plus a new
       RecognizePDF-import sanity case all passed live against the
@@ -96,7 +96,7 @@ Pull these into a track when you want a v2.5+ milestone:
   current detector treats as non-symlinks. Low risk on a single-
   user system; worth a sweep before exposing the plugin to
   multi-user environments.
-- **`docs/CODEBASE_OVERVIEW.md` refresh.** Partially stale from
+- **`.private/docs/CODEBASE_OVERVIEW.md` refresh.** Partially stale from
   the v1 era. `CLAUDE.md` is the current source of truth for
   module layout + invariants — the overview doc should either be
   rewritten or removed in favor of CLAUDE.md.
@@ -134,10 +134,10 @@ When working with the live Zotero MCP bridge:
 - `CLAUDE.md` — project layout, invariants, "don't touch without
   understanding" notes. **Source of truth.** Read this BEFORE
   editing anything bigger than a comment.
-- `updates_22_05_26.md` — the v2 sync-model spec. Source of truth
+- `.private/legacy/updates_22_05_26.md` — the v2 sync-model spec. Source of truth
   for behavior (restore matrix RST.1–RST.6, suppression rule,
   mode definitions).
-- `behavior_updates.md` — inclusion/exclusion case template (mostly
+- `.private/legacy/behavior_updates.md` — inclusion/exclusion case template (mostly
   stub); the canonical "every behavior in one place" reference
   lives at `test-cases.html` now.
 - `index.html`, `test-plan.html`, `test-cases.html` — three user-
@@ -145,13 +145,13 @@ When working with the live Zotero MCP bridge:
   no JS, no build step. Served via GitHub Pages at
   https://josesiqueira.github.io/zotero-watch-folder/.
 - `test/README.md` — three test layers (unit / mcp / integration).
-- `test/mcp/INDEX.md` — per-runbook status table.
-- `test/mcp/MODE2.md` — Mode 2 runbook, with the 2026-05-25c run
+- `.private/mcp-runbooks/INDEX.md` — per-runbook status table.
+- `.private/mcp-runbooks/MODE2.md` — Mode 2 runbook, with the 2026-05-25c run
   notes covering the v2.3 post-fix live pass.
-- `test/mcp/MODE3.md` — Mode 3 runbook with three live-pass runs
+- `.private/mcp-runbooks/MODE3.md` — Mode 3 runbook with three live-pass runs
   (2026-05-25, 25b, 25c) covering the cascading-trash, restore,
   and parent-trash work.
-- `docs/CODEBASE_OVERVIEW.md` — long-form module tour. **Partially
+- `.private/docs/CODEBASE_OVERVIEW.md` — long-form module tour. **Partially
   stale** from the v1 era; CLAUDE.md is the current state.
 
 ---
@@ -260,7 +260,7 @@ When working with the live Zotero MCP bridge:
     in v2).
   - `warningSink.clear()` contract documented (listeners survive
     Clear).
-  - `test/mcp/MODE3.md` runbook written + two live passes.
+  - `.private/mcp-runbooks/MODE3.md` runbook written + two live passes.
 
 - **v2.1.0-alpha.1** — Mode 2 end-to-end (Phase A1–A6 event pipeline,
   Phase B suppression resolver, Phase C install-time baseline,

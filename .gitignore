@@ -29,6 +29,12 @@ npm-debug.log*
 # tests. Each developer keeps their own set; we don't want them in git.
 test_pdfs/
 
+# Private / historical content: legacy design notes, MCP runbooks,
+# test PDFs, stale XPI artifacts. Kept locally for the maintainer's
+# reference but not shipped with the public repo. See
+# .private/README.md for what's in there.
+.private/
+
 # Per-machine MCP server config (Claude Code's @introfini/mcp-server-zotero-dev
 # wiring). The server itself is npx-installed; this file just records which
 # command runs locally, so it varies per environment.

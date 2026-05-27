@@ -90,9 +90,16 @@ Source-of-truth docs:
 
 - `CLAUDE.md` — module layout, invariants, "don't touch without understanding" notes. **Read this before editing anything bigger than a comment.**
 - `TODO.md` — current status, release inventory, open work, bigger directions.
-- `updates_22_05_26.md` — v2 sync-model spec (restore matrix, suppression rules, mode definitions).
-- `test/README.md` — three test layers (unit / mcp / integration).
-- `test/mcp/INDEX.md` — per-runbook status table.
+- `test/README.md` — overview of the test layers (currently: unit suite).
+
+Internal / historical notes (maintainer-only, kept locally in `.private/`,
+not in the public repo):
+
+- `.private/docs/` — design history (`ARCHITECTURE.md`,
+  `CODEBASE_OVERVIEW.md`, `PHASE*_DESIGN.md`, etc.).
+- `.private/legacy/updates_22_05_26.md` — v2 sync-model spec.
+- `.private/mcp-runbooks/INDEX.md` — MCP-driven verification runbooks
+  used for live testing against Zotero.
 
 Useful entry points:
 

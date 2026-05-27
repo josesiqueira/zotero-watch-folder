@@ -8,7 +8,7 @@ Plugin ID: `watch-folder@zotero-plugin.org`. Version lives in `package.json` AND
 
 ## v2 status — read this before editing
 
-The codebase has completed the v2 rewrite from the library-root-scoped model to a **sync-root-scoped, mode-based** model. Spec: `updates_22_05_26.md`. Long-form tour of current state: `docs/CODEBASE_OVERVIEW.md`.
+The codebase has completed the v2 rewrite from the library-root-scoped model to a **sync-root-scoped, mode-based** model. Spec: `.private/legacy/updates_22_05_26.md` (maintainer-only). Long-form tour of current state: `.private/docs/CODEBASE_OVERVIEW.md`.
 
 **v2.0 (shipped as `v2.0.0-alpha.1`) — Mode 1 functional end-to-end:**
 - **Phase A** (`bfdf3ba`) — sync-root concept, mode enum, v2 tracking schema, identity by Zotero attachment KEY (not numeric itemID), `canonicalPath.mjs`, hash-invariant fix (`HASH_CHUNK_SIZE` single export).
@@ -134,12 +134,16 @@ All three are hand-authored single-file HTML (embedded CSS, no JS, no build step
 - `prefs.js` — **29 default preference keys** under `extensions.zotero.watchFolder.*` (added `baselineCompletedForRoot` in v2.1). `diskDeleteOnTrash` v2.2 values: `"ask"` (default) | `"plugin_trash"` | `"os_trash"` | `"permanent"` | `"never"`.
 - `build/{bundle,build,package,release-upload}.mjs` — release pipeline.
 - `test/unit/*.test.mjs` + `test/setup/geckoMocks.js` — Vitest, currently **569 passing across 20 files**. v2.1 added: collectionWatcher / folderEventDetector / itemMembershipHandler / mirrorExecutor / mirrorExecutor_warnings / itemAddHandler / warningSink / suppressionResolver / baseline. v2.2 added: bulkGuard, plus UT-090 cascading-trash + `_handleZoteroTrash` v2, UT-091 `_moveToPluginTrash` + `'plugin_trash'` + tombstone, UT-092 `_handleZoteroRestore` + RST.6, UT-093 RST.2/RST.4 parent-expand, UT-094 bulk-delete guard for `_handleZoteroTrash` + `_handleExternalDeletions`, UT-095 RST.5 re-attach, UT-107 tombstone queries on trackingStore, UT-110/111 bulkGuard, UT-419/420 deleteFolder Mode 3 + bulk-delete protection, UT-830/831 restore-folder UX. The v1-schema UT-050/UT-051 placeholder describe.skip blocks were removed in the v2.2 cleanup.
-- `test/mcp/` — MCP runbooks against a live Zotero. Entry: `test/mcp/INDEX.md`. `MODE2.md` runbook pending (Phase E). A `.claude/skills/zotero-mcp-warmup/` skill triggers permission prompts for the 15 read-only Zotero MCP tools so they can be approved on PC before going mobile (mobile doesn't render the prompts — GH #35637).
-- `test_pdfs/` — local PDF fixtures for manual / MCP runs (gitignored content, present locally).
-- `docs/` — `ARCHITECTURE.md` (Zotero 8 platform notes), `CODEBASE_OVERVIEW.md` (long-form per-module tour with file:line refs), `MODULE_DEPENDENCIES.md`, `PHASE{1,2,3}_DESIGN.md`.
-- `updates_22_05_26.md` — v2 sync-model spec. **Source of truth for new behavior.**
-- `behavior_updates.md` — case-template spec (`INCLUSION` / `EXCLUSION` matrices). Mostly stub; expand here as cases are pinned down.
 - `tools/hooks/commit-msg` — strips AI co-author trailers. Install with `git config core.hooksPath tools/hooks` (per-clone).
+- `.private/` — **gitignored, maintainer-only** historical and internal content. Not shipped in the public repo. See `.private/README.md` for the layout. Notable references from this file:
+  - `.private/docs/CODEBASE_OVERVIEW.md` — long-form per-module tour with file:line refs.
+  - `.private/docs/ARCHITECTURE.md` — Zotero 8/9 platform notes.
+  - `.private/docs/MODULE_DEPENDENCIES.md`, `.private/docs/PHASE{1,2,3}_DESIGN.md`.
+  - `.private/docs/optimization_plan.md` — v2.5.0 perf-pass retrospective.
+  - `.private/legacy/updates_22_05_26.md` — v2 sync-model spec, **source of truth for new behavior**.
+  - `.private/legacy/behavior_updates.md` — INCLUSION / EXCLUSION case-template stub.
+  - `.private/mcp-runbooks/INDEX.md` — MCP-driven verification runbooks against a live Zotero. A `.claude/skills/zotero-mcp-warmup/` skill triggers permission prompts for the 15 read-only Zotero MCP tools so they can be approved on PC before going mobile (mobile doesn't render the prompts — GH #35637).
+  - `.private/test-fixtures/test_pdfs/` — local PDF fixtures for manual / MCP runs.
 - `index.html` — user-facing landing page (single-file, embedded CSS, no JS).
 - `test-plan.html` — user-story walkthrough (5 chapters: setup / day-to-day / something off / changing setup / second device).
 - `test-cases.html` — two-column inclusion/exclusion behavior spec (20 + 23 cases). The canonical "every behavior of the plugin in one place" reference.
@@ -208,12 +212,12 @@ If you change `manifest.json` version, also bump `package.json`. Those two are t
 Three layers — see [`test/README.md`](./test/README.md) for the overview.
 
 - **`test/unit/`** — Vitest, **569 passing across 20 files** (zero skipped after the v2.2 cleanup; UT-512 added 2026-05-25 for the RecognizePDF reparenting guard). `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, `crypto.subtle`. New test file: `test/unit/<module>.test.mjs` — import the SUT from `../../content/<module>.mjs`, mock deps per-file with `vi.mock(...)`, reset in `beforeEach`.
-- **`test/mcp/`** — MCP runbooks Claude executes against a live Zotero via the bridge. Entry point: [`test/mcp/INDEX.md`](./test/mcp/INDEX.md). Replaces the old manual `TEST_PLAN.md` checklist for day-to-day work. Run **SMOKE.md S.1–S.7** before tagging a release.
+- **`.private/mcp-runbooks/`** — MCP runbooks Claude executes against a live Zotero via the bridge (maintainer-only, gitignored). Entry point: `.private/mcp-runbooks/INDEX.md`. Run **SMOKE.md S.1–S.7** before tagging a release.
 - Zero unit coverage on `bulkOperations.mjs`, `metadataRetriever.mjs`, `index.mjs` — gaps are intentional, not invitations to skip.
 
 ## Open issues / known bugs
 
-Living lists: `updates_22_05_26.md` (v2 spec), `TODO.md`, `test/mcp/INDEX.md` notes from the latest run.
+Living lists: `.private/legacy/updates_22_05_26.md` (v2 spec), `TODO.md`, `.private/mcp-runbooks/INDEX.md` notes from the latest run.
 
 - **Resolver save() rollback for FS mutations** — Track A added rollback for tracking-store save failures across all 11 suppression-resolver handlers. For TRASH / MOVE_OUTSIDE the FS mutation is NOT reversible (file is already trashed/moved); only the tracking-store mutations roll back. Documented inline; not a bug, but worth knowing when investigating "I trashed it, then save failed, where's my file" reports.
 
@@ -239,7 +243,7 @@ Living lists: `updates_22_05_26.md` (v2 spec), `TODO.md`, `test/mcp/INDEX.md` no
 
 The MCP server is wired in `.mcp.json`. Tool names are prefixed `mcp___introfini_mcp-server-zotero-dev__` (omitted in runbooks for readability).
 
-**Canonical verification surface:** the MCP runbooks in [`test/mcp/`](./test/mcp/INDEX.md). Start at `INDEX.md`, pick the relevant phase file, execute. **SMOKE.md S.1–S.7** is the pre-release checklist.
+**Canonical verification surface:** the MCP runbooks in `.private/mcp-runbooks/` (maintainer-only). Start at `INDEX.md`, pick the relevant phase file, execute. **SMOKE.md S.1–S.7** is the pre-release checklist.
 
 **What's reachable via `zotero_execute_js`:** the bundle is an esbuild IIFE assigned to `Zotero.WatchFolder`. Only the entry point's exports are visible, which means **only `Zotero.WatchFolder.hooks` exists** — the `WatchFolderService` instance is module-private. Inspect live state via DB queries, prefs, and logs instead.
 
