@@ -106,12 +106,16 @@ follow-up commit when the time is right.
    `_handleExternalDeletions` cascading-trash guard (was O(n)
    per shadow, now O(1) per shadow). Stale TODO removed.
 
-2. **`hooks.shutdown` ordering vs trackingStore.flush().** Currently
-   flush() runs AFTER all services stop. If a service's `stop()`
-   schedules a debounced write that lands after we already
-   resolved, the flush won't catch it. Acceptable today because
-   services are synchronous in their final state writes, but worth
-   a hardening pass if a real lost-write is observed.
+2. ~~**`hooks.shutdown` ordering vs trackingStore.flush().**~~
+   **Resolved 2026-05-28 (`da2cc4f`).** `WatchFolderService.destroy()`
+   now calls `flush()` instead of `save()` — `save()` debounces
+   50 ms post-WP-B3, so `destroy()` previously waited the full
+   debounce window even when its mutations were already done.
+   `flush()` writes immediately. The final
+   `getTrackingStore().flush()` at the end of `onShutdown` stays
+   as a safety net for any debounced write a still-in-flight
+   notifier handler might schedule during shutdown. 2 new
+   unit tests (UT-056).
 
 3. **Live MCP verification on Zotero 9.0.4** — `test/mcp/SMOKE.md`
    S.1–S.7 plus `MODE3.md` bulk-move + bulk-trash scenarios. Unit
