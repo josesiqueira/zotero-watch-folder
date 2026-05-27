@@ -42,7 +42,7 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
   };
 });
 
-import { execute, canSafelyMove, init, reset, _getStore } from '../../content/mirrorExecutor.mjs';
+import { execute, canSafelyMove, init, reset, _getStore, _resetHashCacheRef } from '../../content/mirrorExecutor.mjs';
 import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from '../../content/trackingStore.mjs';
 import { getFileHash, getPref } from '../../content/utils.mjs';
 import { collectionKeyToRelativePath } from '../../content/canonicalPath.mjs';
@@ -1171,6 +1171,55 @@ describe('UT-420: _deleteFolder bulk-delete protection (Mode 3)', () => {
     } finally {
       Services.prompt = originalPrompt;
     }
+  });
+});
+
+// ─── UT-422 (WP-C #2 — canSafelyMove consults the hash cache) ───────────
+
+describe('UT-422: canSafelyMove hash cache integration (WP-C #2)', () => {
+  // The hash cache is a separate slice (perf/wp-a). When the module is
+  // not yet present in the source tree, the dynamic import in
+  // mirrorExecutor fails and `canSafelyMove` falls back to direct
+  // `getFileHash`. These tests cover both paths.
+
+  beforeEach(() => {
+    _resetHashCacheRef();
+  });
+
+  it('falls back to getFileHash when _hashCache.mjs is not present (current state)', async () => {
+    // The fallback path is what the current source tree exercises since
+    // perf/wp-a hasn't merged. `getFileHash` returns 'fakehash' (mocked),
+    // matching the record's lastSyncedHash → gate ok.
+    const record = {
+      lastSyncedHash: 'fakehash',
+      localPath: 'x.pdf',
+      canonicalLocalPath: 'x.pdf',
+    };
+    IOUtils.exists.mockResolvedValue(true);
+    const gate = await canSafelyMove(record, '/watch/x.pdf');
+    expect(gate.ok).toBe(true);
+    expect(getFileHash).toHaveBeenCalledWith('/watch/x.pdf');
+  });
+
+  it('returns hash-drifted when fallback hash differs from record', async () => {
+    const record = { lastSyncedHash: 'oldhash', localPath: 'x.pdf', canonicalLocalPath: 'x.pdf' };
+    IOUtils.exists.mockResolvedValue(true);
+    getFileHash.mockResolvedValueOnce('newhash');
+    const gate = await canSafelyMove(record, '/watch/x.pdf');
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe('hash-drifted');
+    expect(gate.currentHash).toBe('newhash');
+    expect(gate.recordedHash).toBe('oldhash');
+  });
+
+  it('returns missing-file before hashing (no fallback call) when file is gone', async () => {
+    const record = { lastSyncedHash: 'h', localPath: 'x.pdf', canonicalLocalPath: 'x.pdf' };
+    IOUtils.exists.mockResolvedValue(false);
+    getFileHash.mockClear();
+    const gate = await canSafelyMove(record, '/watch/x.pdf');
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe('missing-file');
+    expect(getFileHash).not.toHaveBeenCalled();
   });
 });
 

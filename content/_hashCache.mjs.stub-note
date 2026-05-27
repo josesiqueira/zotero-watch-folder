@@ -1,0 +1,23 @@
+_hashCache.mjs (created by Work Package A — perf/wp-a worktree)
+
+Expected import shape:
+
+    import { hashCache } from './_hashCache.mjs';
+
+    // hashCache.hashFile(absPath, statHint?) -> Promise<string|null>
+    //   - statHint: { size, lastModified } if already computed; otherwise the
+    //     cache stats the file itself
+    //   - Returns the SHA-256 hex digest, cached by (absPath, size, mtime)
+    //   - Cache miss falls through to utils.getFileHash()
+
+Consumers in WP-C (this worktree):
+
+  - content/mirrorExecutor.mjs   `canSafelyMove` (item C2)
+  - content/baseline.mjs         `_buildDiskHashIndex` + per-attachment
+                                 size-bucketed lookup (item C3)
+
+Both sites use a try/catch fallback that calls `getFileHash` directly when
+the cache module is not yet present, so each slice merges independently.
+After WP-A lands and `_hashCache.mjs` exists, the TODO(perf-C2-integration)
+and TODO(perf-C3-integration) markers can be removed and the fallback
+collapsed to a plain top-level import.
