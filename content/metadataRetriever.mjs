@@ -19,6 +19,14 @@ export class MetadataRetriever {
   constructor() {
     /** @type {Array<{itemID: number, onComplete: Function|null}>} */
     this._queue = [];
+    /**
+     * WP-B / B6: parallel Set keyed by itemID, kept in sync with `_queue`.
+     * `queueItem` does an O(1) membership check before pushing, replacing
+     * the prior `_queue.some(...)` linear scan. `_processQueue` removes
+     * from both on drain. Ordering of `_queue` is preserved.
+     * @type {Set<number>}
+     */
+    this._queuedIDs = new Set();
     /** @type {number} Current number of concurrent operations */
     this._processing = 0;
     /** @type {number} Maximum concurrent metadata requests */
@@ -110,14 +118,16 @@ export class MetadataRetriever {
    * @param {Function} [onComplete] - Callback(success, itemID) called when done
    */
   queueItem(itemID, onComplete = null) {
-    // Avoid duplicates in queue
-    const exists = this._queue.some(q => q.itemID === itemID);
-    if (exists) {
+    // WP-B / B6: O(1) dedup via parallel Set instead of linear array
+    // scan. On a large queue (e.g. a bulk import burst) the prior
+    // `_queue.some(...)` would re-scan every enqueue.
+    if (this._queuedIDs.has(itemID)) {
       Zotero.debug(`[WatchFolder] Item ${itemID} already in queue, skipping`);
       return;
     }
 
     this._queue.push({ itemID, onComplete });
+    this._queuedIDs.add(itemID);
     Zotero.debug(`[WatchFolder] Queued item ${itemID} for metadata retrieval (queue length: ${this._queue.length})`);
     // Fire-and-forget kick; catch so an unhandled rejection doesn't get
     // swallowed silently (bug #14 in the v2.1 punchlist).
@@ -147,6 +157,8 @@ export class MetadataRetriever {
     if (this._queue.length === 0) return;
 
     const { itemID, onComplete } = this._queue.shift();
+    // WP-B / B6: keep the Set in sync as items leave the queue.
+    this._queuedIDs.delete(itemID);
     this._processing++;
 
     Zotero.debug(`[WatchFolder] Processing metadata for item ${itemID} (${this._processing}/${this._maxConcurrent} active)`);
@@ -393,6 +405,8 @@ export class MetadataRetriever {
   clearQueue() {
     const cleared = this._queue.length;
     this._queue = [];
+    // WP-B / B6: keep the dedup Set in sync.
+    this._queuedIDs.clear();
     Zotero.debug(`[WatchFolder] Cleared ${cleared} items from metadata queue`);
   }
 
