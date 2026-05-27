@@ -1,10 +1,22 @@
 # Zotero Watch Folder
 
+> [!WARNING]
+> **Back up your watch folder and your Zotero library before using this plugin.**
+>
+> This plugin can **rename, move, and (in Mode 3) delete files on disk** to keep your watch folder in sync with Zotero. In Mode 2 and Mode 3 it also creates and renames **Zotero collections** to mirror the folder structure. If you point it at a folder full of papers you care about, copy that folder somewhere safe first.
+>
+> Specifically before enabling:
+> - Make a copy of your watch folder (`cp -r`, rsync, your cloud sync's snapshot — any of these).
+> - Make sure Zotero's "Sync" tab is up to date OR export a backup of your library (`File → Export Library… → Zotero RDF`).
+> - Start in **Mode 1 (Import only)**. Get comfortable with how it imports your files before switching to mirror modes.
+>
+> The recoverable trash (`.zotero-watch-trash/` under your watch folder, used in Mode 3) catches most accidents, but better safe than sorry.
+
 A Zotero plugin that watches a folder on your computer and keeps it in sync with your Zotero library. Drop a PDF in the folder and it imports into Zotero with metadata and a properly-templated filename. Optionally, your Zotero collection tree is mirrored as folders on disk, in either or both directions, with a recoverable trash for safe-delete syncs.
 
 Compatible with **Zotero 7, 8, and 9** (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
 
-**Current release:** [v2.4.1](https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.4.1) (stable).
+**Current release:** [v2.5.0](https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.5.0) (stable).
 
 ## Three sync modes
 
