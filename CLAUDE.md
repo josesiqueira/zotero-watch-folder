@@ -93,7 +93,7 @@ Things to refresh on a checkpoint (index.html):
 - Modes section (`#modes`) — what each mode does in the current bundle.
 - Features grid (`#features`) — only list capabilities that work end-to-end.
 - Configure table (`#configure`) — pref keys + defaults + behavior, mirrored from `prefs.js`.
-- Roadmap list (`#roadmap`) — move items between Done / Next / Future as TODO.md evolves.
+- Roadmap list (`#roadmap`) — move items between Done / Next / Future as the project evolves.
 - Footer "Last updated" date.
 
 Things to refresh on a checkpoint (test-plan.html):
@@ -219,7 +219,7 @@ Three layers — see [`test/README.md`](./test/README.md) for the overview.
 
 ## Open issues / known bugs
 
-Living lists: `.private/legacy/updates_22_05_26.md` (v2 spec), `TODO.md`, `.private/mcp-runbooks/INDEX.md` notes from the latest run.
+Living lists: `.private/legacy/updates_22_05_26.md` (v2 spec) and `.private/mcp-runbooks/INDEX.md` notes from the latest run. Historical TODO context lives at `.private/legacy/TODO_done_may_2026.md`.
 
 - **Resolver save() rollback for FS mutations** — Track A added rollback for tracking-store save failures across all 11 suppression-resolver handlers. For TRASH / MOVE_OUTSIDE the FS mutation is NOT reversible (file is already trashed/moved); only the tracking-store mutations roll back. Documented inline; not a bug, but worth knowing when investigating "I trashed it, then save failed, where's my file" reports.
 

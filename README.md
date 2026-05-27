@@ -89,7 +89,6 @@ npm run package  # zip dist/ into the .xpi + write update.json with sha256
 Source-of-truth docs:
 
 - `CLAUDE.md` — module layout, invariants, "don't touch without understanding" notes. **Read this before editing anything bigger than a comment.**
-- `TODO.md` — current status, release inventory, open work, bigger directions.
 - `test/README.md` — overview of the test layers (currently: unit suite).
 
 Internal / historical notes (maintainer-only, kept locally in `.private/`,
