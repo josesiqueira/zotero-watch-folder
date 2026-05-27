@@ -5,6 +5,7 @@
  */
 
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
+import { hashFile as _hashFileCached } from './_hashCache.mjs';
 import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, createTombstoneRecord, STATE } from './trackingStore.mjs';
@@ -671,11 +672,26 @@ export class WatchFolderService {
                   parentKey = existing.parentItem?.key ?? null;
                 } else {
                   // Parent item — walk children to find the matching attachment.
+                  // WP-A4 (perf): batch the attachment fetch (array form of
+                  // Zotero.Items.getAsync), then iterate with cached hashes.
+                  // Path + hash still need per-item awaits because we break
+                  // on first match, but the cache (WP-A1) makes the hash
+                  // step itself near-free when re-scanning the same files.
                   parentKey = existing.key;
                   const attIDs = (typeof existing.getAttachments === 'function')
                     ? (existing.getAttachments() || []) : [];
-                  for (const aid of attIDs) {
-                    const att = Zotero.Items.get(aid);
+                  let atts = [];
+                  if (attIDs.length > 0) {
+                    try {
+                      const fetched = await Zotero.Items.getAsync(attIDs);
+                      atts = Array.isArray(fetched) ? fetched : [];
+                    } catch (_e) { atts = []; }
+                    if (atts.length === 0) {
+                      // Fallback: per-id sync (legacy Zotero.Items.get).
+                      atts = attIDs.map(aid => Zotero.Items.get(aid));
+                    }
+                  }
+                  for (const att of atts) {
                     if (!att || !att.isAttachment || !att.isAttachment()) continue;
                     let attPath = null;
                     try { attPath = await att.getFilePathAsync(); }
@@ -688,7 +704,7 @@ export class WatchFolderService {
                   // sync pending), use the first attachment if there's
                   // exactly one. Otherwise we can't safely pick.
                   if (!attachment && attIDs.length === 1) {
-                    const sole = Zotero.Items.get(attIDs[0]);
+                    const sole = atts[0] ?? Zotero.Items.get(attIDs[0]);
                     if (sole?.isAttachment?.()) attachment = sole;
                   }
                 }
@@ -1061,7 +1077,11 @@ export class WatchFolderService {
     // every scan and trigger spurious "no tracked file hashes — skip" log.
     const onDiskDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
     for (const fileInfo of scannedFiles) {
-      const rel = relativePath(fileInfo.path, watchPath);
+      // WP-A2 (perf): prefer the scanner-provided relativePath when present
+      // (avoids recomputing from absPath + watchPath each iteration). Falls
+      // back to the legacy compute for callers that didn't pass new-shape
+      // entries.
+      const rel = fileInfo.relativePath ?? relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop(); // drop filename
@@ -1080,17 +1100,17 @@ export class WatchFolderService {
     // descendant update and won't need a per-child rename.
     missing.sort((a, b) => a._absLocalPath.split('/').length - b._absLocalPath.split('/').length);
 
-    const hashCache = new Map();
-    const hashOf = async (p) => {
-      if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
-      return hashCache.get(p);
-    };
+    // WP-A1 (perf): module-level (path, size, mtime) LRU cache — survives
+    // across scan cycles, so a re-scan with unchanged disk contents hits
+    // the cache instead of re-hashing every candidate. See _hashCache.mjs.
+    const hashOf = async (p) => _hashFileCached(p);
 
     // Index scanned files by their absolute ancestor dirs so candidate
     // matching can do O(1) tail lookups against the absolute-path schema.
     const scannedByAbsDir = new Map(); // absDir → [{absPath}, …]
     for (const fileInfo of scannedFiles) {
-      const rel = relativePath(fileInfo.path, watchPath);
+      // WP-A2 (perf): use scanner-provided relativePath when available.
+      const rel = fileInfo.relativePath ?? relativePath(fileInfo.path, watchPath);
       if (rel == null || rel === '') continue;
       const parts = rel.split('/');
       parts.pop();
@@ -2004,11 +2024,10 @@ export class WatchFolderService {
       const candidates = allFiles
         .map(f => f.path)
         .filter(p => !trackedPaths.has(p) && !this._processingFiles.has(p));
-      const hashCache = new Map();
-      const hashOf = async (p) => {
-        if (!hashCache.has(p)) hashCache.set(p, await getFileHash(p));
-        return hashCache.get(p);
-      };
+      // WP-A1 (perf): module-level (path, size, mtime) LRU cache — replaces
+      // the per-invocation Map. Files with unchanged size + mtime hit the
+      // cache instead of re-reading the full file every scan cycle.
+      const hashOf = async (p) => _hashFileCached(p);
 
       for (const record of missing) {
         if (!record.lastSyncedHash) { trulyMissing.push(record); continue; }

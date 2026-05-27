@@ -5,7 +5,7 @@
  * Uses IOUtils for all file system operations (Zotero 8 / Firefox 115+).
  */
 
-import { isAllowedFileType, delay } from './utils.mjs';
+import { isAllowedFileType, delay, relativePath as _relPath } from './utils.mjs';
 
 /**
  * Directory names the recursive scanner skips entirely. These are reserved
@@ -68,9 +68,18 @@ export function __test_setSymlinkDetector(fn) {
 }
 
 /**
- * Scan a folder and return list of files matching allowed types
+ * Scan a folder and return list of files matching allowed types.
+ *
+ * Return shape (WP-A2): each entry carries `{ path, size, mtime,
+ * isSymlink, relativePath }`. `isSymlink` is always `false` because
+ * symlinked entries are skipped before they reach the result (kept on
+ * the shape so consumers can branch on it without re-querying). The
+ * `relativePath` is relative to `folderPath` (forward-slash joined, no
+ * leading slash), populated so consumers can avoid recomputing it from
+ * `path` and the root.
+ *
  * @param {string} folderPath - Path to scan
- * @returns {Promise<Array<{path: string, mtime: number, size: number}>>}
+ * @returns {Promise<Array<{path: string, mtime: number, size: number, isSymlink: boolean, relativePath: string}>>}
  */
 export async function scanFolder(folderPath) {
     const files = [];
@@ -104,13 +113,14 @@ export async function scanFolder(folderPath) {
                 // Security: refuse to follow symlinks. IOUtils.stat dereferences
                 // them so the result would look like an ordinary file/dir, and
                 // a symlink pointing OUTSIDE the watch root would route the
-                // scanner into arbitrary filesystem locations.
+                // scanner into arbitrary filesystem locations. Done BEFORE
+                // stat so we never observe the target's metadata.
                 if (_isSymlink(childPath)) {
                     Zotero.debug(`[Watch Folder] scanFolder: skipping symlink ${childPath}`);
                     continue;
                 }
 
-                // Get file info
+                // Single stat per surviving entry — WP-A2 fold.
                 const info = await IOUtils.stat(childPath);
 
                 // Skip directories - only process files
@@ -123,11 +133,13 @@ export async function scanFolder(folderPath) {
                     continue;
                 }
 
-                // Add file info to results
+                // Add file info to results (WP-A2 shape: + isSymlink + relativePath).
                 files.push({
                     path: childPath,
                     mtime: info.lastModified,
-                    size: info.size
+                    size: info.size,
+                    isSymlink: false,
+                    relativePath: _relPath(childPath, folderPath) ?? '',
                 });
             } catch (fileError) {
                 // Log but continue scanning other files
@@ -152,17 +164,28 @@ export async function scanFolder(folderPath) {
 }
 
 /**
- * Recursively scan a folder and return list of files matching allowed types
+ * Recursively scan a folder and return list of files matching allowed types.
+ *
+ * Return shape (WP-A2): each entry carries `{ path, size, mtime,
+ * isSymlink, relativePath }`. `relativePath` is forward-slash joined,
+ * with no leading slash, relative to the *original* top-level
+ * `folderPath`. The recursion threads `_rootPath` so deeper levels
+ * stay anchored to the watch root, not the current sub-folder.
+ *
  * @param {string} folderPath - Path to scan
  * @param {number} [maxDepth=10] - Maximum recursion depth to prevent infinite loops
- * @returns {Promise<Array<{path: string, mtime: number, size: number}>>}
+ * @param {string} [_rootPath=folderPath] - INTERNAL: root anchor for relativePath
+ * @returns {Promise<Array<{path: string, mtime: number, size: number, isSymlink: boolean, relativePath: string}>>}
  */
-export async function scanFolderRecursive(folderPath, maxDepth = 10) {
+export async function scanFolderRecursive(folderPath, maxDepth = 10, _rootPath = null) {
     const files = [];
 
     if (!folderPath || maxDepth < 0) {
         return files;
     }
+
+    // First-call default: anchor relativePath at the top-level folder.
+    const rootPath = _rootPath ?? folderPath;
 
     try {
         const exists = await IOUtils.exists(folderPath);
@@ -192,6 +215,7 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
                     continue;
                 }
 
+                // Single stat per surviving entry — WP-A2 fold.
                 const info = await IOUtils.stat(childPath);
 
                 if (info.type === 'directory') {
@@ -200,8 +224,10 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
                         Zotero.debug(`[Watch Folder] scanFolderRecursive: Skipping reserved folder '${dirName}': ${childPath}`);
                         continue;
                     }
-                    // Recursively scan subdirectories
-                    const subFiles = await scanFolderRecursive(childPath, maxDepth - 1);
+                    // Recursively scan subdirectories — thread rootPath so
+                    // deeper levels still produce relativePaths anchored at
+                    // the original top-level folder.
+                    const subFiles = await scanFolderRecursive(childPath, maxDepth - 1, rootPath);
                     files.push(...subFiles);
                 } else {
                     // Process file
@@ -209,7 +235,9 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
                         files.push({
                             path: childPath,
                             mtime: info.lastModified,
-                            size: info.size
+                            size: info.size,
+                            isSymlink: false,
+                            relativePath: _relPath(childPath, rootPath) ?? '',
                         });
                     }
                 }
