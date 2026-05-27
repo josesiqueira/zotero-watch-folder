@@ -1,12 +1,11 @@
 # Zotero Watch Folder — TODO
 
-**Status:** **`v2.3.2`** stable. Builds on `2.3.1` (security hardening)
-with the trashed-sync-root hardening — closing the live-finding from the
-2026-05-26 Zotero 9 verification pass: a trashed sync-root collection now
-pauses sync cleanly instead of silently misclassifying every import as
-out-of-scope-suppressed. Unit-test-covered (**555 passing across 20 files**,
-zero skipped) AND live-MCP-validated on both Zotero 8.0.4 and Zotero 9.0.4.
-**Compatible with Zotero 7, 8, 9.**
+**Status:** **`v2.4.0`** (minor — new UI feature). Lands the C1 full setup
+wizard as a single XHTML window with Back / Next / Cancel / Enable navigation.
+Builds on `2.3.2` (no behavior change to the import / sync / restore pipelines —
+this is a setup-time UX upgrade). Unit-test-covered (**555 passing across 20
+files**, zero skipped). Modal-sequence fallback preserved for any environment
+where `openDialog` fails. **Compatible with Zotero 7, 8, 9.**
 
 ---
 
@@ -25,18 +24,15 @@ below when you have time, or pick a new feature direction.
       been run end-to-end on a live Zotero against the post-v2.2
       bundle. Lower priority than MODE3 since Mode 2 is older and
       stable.
-- [~] **C1 full setup wizard.** Updated 2026-05-25: the existing
-      `runSetupWizard` modal-sequence (welcome → watch folder →
-      sync root → mode → confirm) now offers all three modes
-      (mode3 was missing pre-2026-05-25) with richer per-mode
-      safety descriptions, and the confirm step surfaces a
-      mode-specific safety note (e.g. plugin-trash path + bulk
-      confirm for mode3). A full multi-step XHTML pane rewrite
-      (with back-navigation, single-window state) is intentionally
-      not done — the modal sequence covers the same functional
-      surface and is well-tested via the prefs "Re-run setup
-      wizard…" path. Re-open this task if a real XHTML pane is
-      needed for UX.
+- [x] ~~**C1 full setup wizard.**~~ **Done in v2.4.0 (2026-05-27)** —
+      single-pane XHTML window at `content/setupWizard.xhtml` opened
+      via `window.openDialog` from `runSetupWizard`. Four steps in
+      one window with Back / Next / Cancel / Enable navigation, per-
+      step validation, indented collection list, mode-specific safety
+      note in the confirm step. The pre-v2.4 modal sequence remains
+      as a fallback if the chrome window fails to open. Both paths
+      converge on `_commitWizardResult` to write prefs + start
+      services.
 - [x] ~~**DEL.2 shadow-guard record lifecycle quirk**~~ — **Fixed
       2026-05-25.** Root cause was deeper than the live finding read:
       every freshly-imported file ended up `out-of-scope-suppressed`

@@ -101,7 +101,29 @@ async function onEnabledChanged() {
 export async function runSetupWizard(window) {
     if (!Services || !Services.prompt) return false;
 
-    // ─── Step 1: welcome ──────────────────────────────────────────
+    // v2.4: prefer the single-pane XHTML wizard. Falls back to the modal
+    // sequence below if the chrome window can't open for any reason (chrome
+    // not registered, embedding context, etc.). Both paths converge on the
+    // same `_commitWizardResult` to write prefs + start services.
+    const xhtmlResult = await _runSetupWizardXHTML(window).catch((e) => {
+        try { Zotero.logError(`[WatchFolder] XHTML wizard failed, falling back to modal sequence: ${e?.message ?? e}`); } catch (_) {}
+        return null; // null → fall through to the modal sequence
+    });
+    if (xhtmlResult && xhtmlResult.opened) {
+        if (xhtmlResult.canceled) return false;
+        await _commitWizardResult({
+            watchFolder: xhtmlResult.watchFolder,
+            syncRootKey: xhtmlResult.syncRootKey,
+            syncRootLibraryID: xhtmlResult.syncRootLibraryID,
+            modeKey: xhtmlResult.mode,
+            modeLabel: _modeLabelFor(xhtmlResult.mode),
+            syncRootLabel: xhtmlResult.syncRootLabel,
+        });
+        return true;
+    }
+
+    // ─── Modal-sequence fallback (pre-v2.4 path) ─────────────────
+    // ─── Step 1: welcome ─────────────────────────────────────────
     const welcomeFlags =
           Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
         | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
@@ -158,22 +180,112 @@ export async function runSetupWizard(window) {
     );
     if (confirm !== 0) return false;
 
-    // ─── Commit prefs + start services ───────────────────────────
+    await _commitWizardResult({
+        watchFolder,
+        syncRootKey: syncRootChoice.key,
+        syncRootLibraryID: syncRootChoice.libraryID,
+        modeKey: modeChoice.key,
+        modeLabel: modeChoice.label,
+        syncRootLabel: syncRootChoice.label,
+    });
+    return true;
+}
+
+/**
+ * Open the single-pane XHTML wizard window. Returns:
+ *   { opened: false }                       — couldn't open (caller falls back)
+ *   { opened: true, canceled: true }        — user cancelled
+ *   { opened: true, canceled: false, ... }  — user clicked Enable; payload
+ *                                             includes watchFolder, syncRootKey,
+ *                                             syncRootLibraryID, syncRootLabel, mode.
+ *
+ * @param {Window} parentWindow
+ * @returns {Promise<{opened: boolean, canceled?: boolean, watchFolder?: string,
+ *   syncRootKey?: string, syncRootLibraryID?: number, syncRootLabel?: string,
+ *   mode?: string}>}
+ * @private
+ */
+async function _runSetupWizardXHTML(parentWindow) {
+    if (!parentWindow || typeof parentWindow.openDialog !== 'function') {
+        return { opened: false };
+    }
+    return await new Promise((resolve) => {
+        let resolved = false;
+        const args = {
+            onResult: (payload) => {
+                if (resolved) return;
+                resolved = true;
+                if (!payload || payload.canceled) {
+                    resolve({ opened: true, canceled: true });
+                    return;
+                }
+                resolve({
+                    opened: true,
+                    canceled: false,
+                    watchFolder: payload.watchFolder,
+                    syncRootKey: payload.syncRootKey,
+                    syncRootLibraryID: payload.syncRootLibraryID,
+                    syncRootLabel: payload.syncRootLabel,
+                    mode: payload.mode,
+                });
+            },
+        };
+        try {
+            // `modal,dependent` keeps it on top of the main Zotero window;
+            // `centerscreen` self-explanatory; `resizable` lets the collection
+            // list grow on small screens.
+            parentWindow.openDialog(
+                'chrome://zotero-watch-folder/content/setupWizard.xhtml',
+                'watchFolderSetup',
+                'chrome,centerscreen,resizable,modal,dependent',
+                args,
+            );
+            // If the dialog closed without calling onResult (e.g., load
+            // error), resolve as not-opened so the modal-sequence fallback
+            // runs. The XHTML's unload handler ALSO emits a canceled result
+            // — whichever fires first wins via the `resolved` guard.
+            setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    resolve({ opened: false });
+                }
+            }, 250);
+        } catch (e) {
+            if (!resolved) {
+                resolved = true;
+                resolve({ opened: false });
+            }
+            try { Zotero.logError(`[WatchFolder] openDialog setupWizard.xhtml failed: ${e?.message ?? e}`); } catch (_) {}
+        }
+    });
+}
+
+/**
+ * Common commit path for both the XHTML wizard and the modal-sequence
+ * fallback. Writes the 6 prefs + starts services.
+ * @private
+ */
+async function _commitWizardResult({ watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel }) {
     setPref("sourcePath", watchFolder);
-    setPref("syncRootCollectionKey", syncRootChoice.key);
-    setPref("syncRootLibraryID", syncRootChoice.libraryID);
-    setPref("mode", modeChoice.key);
+    setPref("syncRootCollectionKey", syncRootKey);
+    setPref("syncRootLibraryID", syncRootLibraryID);
+    setPref("mode", modeKey);
     setPref("setupCompleted", true);
     setPref("enabled", true);
-
     try {
         if (watchFolderService) await watchFolderService.startWatching();
         if (syncCoordinator) await syncCoordinator.start();
     } catch (e) {
         Zotero.logError(`[WatchFolder] runSetupWizard: failed to start services - ${e.message}`);
     }
-    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} root=${syncRootChoice.key} mode=${modeChoice.key})`);
-    return true;
+    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} root=${syncRootKey} label=${syncRootLabel} mode=${modeKey}/${modeLabel})`);
+}
+
+function _modeLabelFor(modeKey) {
+    if (modeKey === 'mode1') return 'Mode 1 — Import only (safest; no two-way sync)';
+    if (modeKey === 'mode2') return 'Mode 2 — Mirror without delete (two-way; deletes are warn-only)';
+    if (modeKey === 'mode3') return 'Mode 3 — Mirror with safe delete (two-way; recoverable trash + bulk confirm)';
+    return modeKey;
 }
 
 async function _wizardPickWatchFolder(window) {

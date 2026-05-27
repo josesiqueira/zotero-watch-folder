@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<!--
+  Watch Folder Setup Wizard — single-pane XHTML window (C1, v2.4 / 2026-05-27).
+  Replaces the v2.2/2.3 modal-sequence wizard with one window that hosts all
+  four steps + Back/Next navigation + a final confirm with mode-specific safety
+  notes.
+
+  Loaded via `window.openDialog('chrome://zotero-watch-folder/content/setupWizard.xhtml',
+  'watchFolderSetup', 'chrome,centerscreen,resizable,modal', args)` from
+  `content/index.mjs::runSetupWizard`.
+-->
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+  <title>Watch Folder — Setup</title>
+  <meta charset="utf-8"/>
+  <link rel="stylesheet" href="chrome://global/skin/global.css"/>
+  <script src="chrome://zotero-watch-folder/content/setupWizard.js"/>
+  <style type="text/css">
+    body {
+      font-family: -moz-default-font, system-ui, sans-serif;
+      margin: 0;
+      min-width: 520px;
+      max-width: 640px;
+      color: var(--text-color, #14110f);
+      background: var(--in-content-page-background, #f4efe7);
+    }
+    .wizard { padding: 24px 28px 20px; }
+    .wizard-header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      margin-bottom: 18px;
+      border-bottom: 1px solid rgba(20,17,15,.12);
+      padding-bottom: 12px;
+    }
+    .wizard-header h1 {
+      font-size: 18px; font-weight: 600; margin: 0;
+      letter-spacing: -0.01em;
+    }
+    .wizard-header .step-indicator {
+      font-size: 11px;
+      font-family: monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: rgba(20,17,15,.55);
+    }
+    .step { display: none }
+    .step[data-active="1"] { display: block }
+    .step h2 {
+      font-size: 16px; font-weight: 600; margin: 0 0 8px;
+    }
+    .step .lede {
+      font-size: 13px; line-height: 1.5;
+      color: rgba(20,17,15,.78);
+      margin: 0 0 18px;
+      max-width: 60ch;
+    }
+    .field {
+      display: flex; gap: 8px; align-items: center;
+      margin-bottom: 12px;
+    }
+    .field input[type="text"] {
+      flex: 1;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      border: 1px solid rgba(20,17,15,.18);
+      border-radius: 3px;
+      background: #fff;
+    }
+    .field button {
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      border-radius: 3px;
+    }
+
+    .coll-list {
+      width: 100%;
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid rgba(20,17,15,.18);
+      border-radius: 3px;
+      background: #fff;
+      margin-bottom: 8px;
+    }
+    .coll-row {
+      padding: 4px 10px;
+      font-size: 13px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(20,17,15,.04);
+    }
+    .coll-row:last-child { border-bottom: 0 }
+    .coll-row:hover { background: rgba(196,69,54,.08) }
+    .coll-row[data-selected="1"] {
+      background: rgba(196,69,54,.18);
+      font-weight: 600;
+    }
+    .coll-row .depth { color: rgba(20,17,15,.45); font-family: monospace }
+
+    fieldset.modes {
+      border: 1px solid rgba(20,17,15,.12);
+      border-radius: 4px;
+      padding: 12px 16px;
+      margin: 0 0 8px;
+    }
+    fieldset.modes legend { padding: 0 6px; font-weight: 600; font-size: 13px }
+    .mode-option {
+      display: block;
+      margin: 10px 0;
+      cursor: pointer;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+    }
+    .mode-option:hover { background: rgba(20,17,15,.04) }
+    .mode-option input[type="radio"] { vertical-align: middle; margin-right: 8px }
+    .mode-option .mode-title {
+      font-weight: 600; font-size: 13.5px;
+    }
+    .mode-option .mode-desc {
+      display: block;
+      font-size: 12px;
+      color: rgba(20,17,15,.72);
+      margin-top: 4px;
+      margin-left: 24px;
+      line-height: 1.45;
+    }
+
+    dl.summary {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 6px 12px;
+      margin: 0 0 16px;
+      font-size: 13px;
+    }
+    dl.summary dt {
+      font-family: monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(20,17,15,.55);
+      padding-top: 3px;
+    }
+    dl.summary dd { margin: 0; word-break: break-all }
+
+    .safety-note {
+      padding: 10px 12px;
+      background: rgba(176,124,30,.10);
+      border-left: 3px solid #b07c1e;
+      font-size: 12.5px;
+      line-height: 1.5;
+      border-radius: 0 4px 4px 0;
+      margin: 0;
+    }
+    .safety-note.m3 {
+      background: rgba(196,69,54,.08);
+      border-left-color: #c44536;
+    }
+    .safety-note.m1 {
+      background: rgba(59,110,58,.10);
+      border-left-color: #3b6e3a;
+    }
+
+    .wizard-footer {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px;
+      margin-top: 24px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(20,17,15,.12);
+    }
+    .wizard-footer .spacer { flex: 1 }
+    .wizard-footer button {
+      padding: 7px 18px;
+      font-size: 13px;
+      border-radius: 3px;
+      cursor: pointer;
+      min-width: 90px;
+    }
+    .wizard-footer button.primary {
+      font-weight: 600;
+    }
+    .wizard-footer button[hidden] { display: none }
+
+    .error {
+      color: #c44536;
+      font-size: 12px;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="wizard">
+
+  <div class="wizard-header">
+    <h1>Watch Folder Setup</h1>
+    <div class="step-indicator">Step <span id="step-num">1</span> of 4</div>
+  </div>
+
+  <!-- ============ Step 1: pick watch folder ============ -->
+  <div class="step" id="step-folder" data-step="1" data-active="1">
+    <h2>1. Pick the folder to watch</h2>
+    <p class="lede">
+      Choose the folder on your computer where you'll be dropping PDFs.
+      New files added here will be imported into Zotero automatically.
+      A good choice is your downloads folder or a dedicated "Papers" folder.
+    </p>
+    <div class="field">
+      <input id="folder-path" type="text" readonly="readonly" placeholder="(no folder selected)" />
+      <button id="folder-browse">Browse…</button>
+    </div>
+    <div class="error" id="folder-error"></div>
+  </div>
+
+  <!-- ============ Step 2: pick sync root collection ============ -->
+  <div class="step" id="step-collection" data-step="2">
+    <h2>2. Pick the Zotero collection</h2>
+    <p class="lede">
+      Imported items will land in this collection. If you create
+      subfolders inside your watch folder, matching subcollections
+      will appear under this one.
+    </p>
+    <div class="coll-list" id="coll-list"></div>
+    <div class="error" id="coll-error"></div>
+  </div>
+
+  <!-- ============ Step 3: pick mode ============ -->
+  <div class="step" id="step-mode" data-step="3">
+    <h2>3. Pick a sync mode</h2>
+    <p class="lede">
+      How aggressively should Zotero and your folder stay in sync?
+      You can change this later from the preferences pane.
+    </p>
+    <fieldset class="modes">
+      <legend>Sync mode</legend>
+
+      <label class="mode-option">
+        <input type="radio" name="mode" value="mode1" checked="checked"/>
+        <span class="mode-title">Mode 1 — Import only</span>
+        <span class="mode-desc">Files dropped into your folder are imported into Zotero. Renames and deletes don't propagate in either direction. <b>Safest mode</b> — recommended for trying out the plugin.</span>
+      </label>
+
+      <label class="mode-option">
+        <input type="radio" name="mode" value="mode2"/>
+        <span class="mode-title">Mode 2 — Mirror without delete</span>
+        <span class="mode-desc">Two-way sync of collections and items: rename a collection in Zotero, the folder renames on disk; move an item between collections, the file moves on disk. Destructive operations (deletes) are <b>warn-only</b>.</span>
+      </label>
+
+      <label class="mode-option">
+        <input type="radio" name="mode" value="mode3"/>
+        <span class="mode-title">Mode 3 — Mirror with safe delete</span>
+        <span class="mode-desc">Full two-way sync including deletes. Files trashed by either side go to a recoverable <code>.zotero-watch-trash/</code> directory under your watch root. Any operation affecting &gt;10 files or &gt;20% of your tree prompts for confirmation.</span>
+      </label>
+    </fieldset>
+  </div>
+
+  <!-- ============ Step 4: confirm ============ -->
+  <div class="step" id="step-confirm" data-step="4">
+    <h2>4. Confirm</h2>
+    <p class="lede">
+      Review your choices. After "Enable", the plugin will start watching
+      on the next scan cycle (default every 5 seconds).
+    </p>
+    <dl class="summary">
+      <dt>Watch folder</dt><dd id="sum-folder">—</dd>
+      <dt>Sync root</dt><dd id="sum-coll">—</dd>
+      <dt>Mode</dt><dd id="sum-mode">—</dd>
+    </dl>
+    <p class="safety-note" id="safety-note">—</p>
+  </div>
+
+  <div class="wizard-footer">
+    <button id="btn-cancel">Cancel</button>
+    <div class="spacer"/>
+    <button id="btn-back" hidden="hidden">Back</button>
+    <button id="btn-next" class="primary">Next</button>
+    <button id="btn-enable" class="primary" hidden="hidden">Enable</button>
+  </div>
+
+</div>
+
+</body>
+</html>
