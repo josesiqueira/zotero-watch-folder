@@ -94,10 +94,17 @@ designing the next parallel pass.
 These are NOT release-blocking for `v2.5.0`. Each is a small
 follow-up commit when the time is right.
 
-1. **B2 consumer adoption in `mirrorExecutor._moveFolder`.** Line
-   ~397: `// TODO(perf-C1): switch to getAllByAttachmentKey once
-   perf/wp-b lands.` The method now exists on `main`; the swap is
-   ~5 LOC. C deliberately deferred it to keep the slice merge-clean.
+1. ~~**B2 consumer adoption in `mirrorExecutor._moveFolder`.**~~
+   **Resolved 2026-05-28 (`a1c6991`)**, but in a different place
+   than the original TODO suggested. The TODO pointed at
+   `mirrorExecutor._moveFolder`, but on re-inspection that filter
+   is path-prefix based (`f.localPath.startsWith(prefix)`), not
+   key based — `getAllByAttachmentKey` doesn't fit. The actual
+   B2 consumers are two `getAllOfType('file').filter(r => r.zoteroAttachmentKey === ...)`
+   sites in `content/watchFolder.mjs`:
+   `_handleZoteroTrash` (was O(n × m), now O(m)) and
+   `_handleExternalDeletions` cascading-trash guard (was O(n)
+   per shadow, now O(1) per shadow). Stale TODO removed.
 
 2. **`hooks.shutdown` ordering vs trackingStore.flush().** Currently
    flush() runs AFTER all services stop. If a service's `stop()`
