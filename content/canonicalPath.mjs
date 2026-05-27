@@ -35,6 +35,35 @@ export class SyncRootMissingError extends Error {
 }
 
 /**
+ * Path-traversal defense (security finding 2026-05-27 audit, MEDIUM).
+ *
+ * Collection names come from Zotero, which lets the user rename a collection
+ * to literally anything — including `..`, `.`, `/etc`, `..\windows`, or names
+ * containing NUL. When the plugin composes a relative path by walking parent
+ * pointers and joining segments with `/`, an unsanitized name can escape the
+ * watch root once the relative path is resolved against `sourcePath` via
+ * `PathUtils.join` (which doesn't itself reject `..`).
+ *
+ * A segment is considered unsafe when ANY of:
+ *   - it isn't a string,
+ *   - it is empty (after trim),
+ *   - it equals `.` or `..` (after trim),
+ *   - it contains `/` or `\` (would split into multiple segments downstream),
+ *   - it contains a NUL byte.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isUnsafeCollectionNameSegment(name) {
+  if (typeof name !== 'string') return true;
+  const trimmed = name.trim();
+  if (trimmed === '' || trimmed === '.' || trimmed === '..') return true;
+  if (name.indexOf('/') !== -1 || name.indexOf('\\') !== -1) return true;
+  if (name.indexOf('\0') !== -1) return true;
+  return false;
+}
+
+/**
  * Resolve the configured sync-root collection.
  *
  * @returns {Promise<{collection: object, libraryID: number}|null>}
@@ -83,6 +112,20 @@ export async function collectionKeyToRelativePath(collectionKey) {
     if (cursor.key === syncRoot.collection.key) {
       return segments.reverse().join('/');
     }
+    // Path-traversal defense: refuse to compose a relative path if any
+    // segment in the chain is unsafe. The caller treats `null` as
+    // "not under sync root" — same effect as if the collection were
+    // outside the sync root entirely. The user must rename the
+    // offending collection in Zotero before the plugin will sync it.
+    if (isUnsafeCollectionNameSegment(cursor.name)) {
+      try {
+        Zotero.logError(
+          `[WatchFolder] canonicalPath: refusing unsafe collection name segment ${JSON.stringify(cursor.name)} `
+          + `in chain for ${target.key}; treating as out-of-scope`
+        );
+      } catch (_e) { /* logError unavailable in some test contexts */ }
+      return null;
+    }
     segments.push(cursor.name);
     if (!cursor.parentID) break;
     cursor = Zotero.Collections.get(cursor.parentID);
@@ -114,6 +157,21 @@ export async function relativePathToCollection(relativePathStr, { createIfMissin
 
   const segments = relativePathStr.split('/').filter(s => s.trim() !== '');
   if (segments.length === 0) return syncRoot.collection;
+
+  // Path-traversal defense: refuse any segment that would escape the
+  // sync root on disk. A `..` or `/`-bearing segment here would never
+  // round-trip safely through PathUtils.join under the watch root.
+  for (const seg of segments) {
+    if (isUnsafeCollectionNameSegment(seg)) {
+      try {
+        Zotero.logError(
+          `[WatchFolder] canonicalPath: refusing unsafe relative-path segment `
+          + `${JSON.stringify(seg)} in ${JSON.stringify(relativePathStr)}`
+        );
+      } catch (_e) { /* logError unavailable */ }
+      return null;
+    }
+  }
 
   const libraryID = syncRoot.libraryID;
   let parent = syncRoot.collection;

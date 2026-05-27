@@ -22,6 +22,52 @@ import { isAllowedFileType, delay } from './utils.mjs';
 export const SKIP_DIRNAMES = Object.freeze(new Set(['imported', '.zotero-watch-trash']));
 
 /**
+ * Symlink detection (security finding 2026-05-27 audit, MEDIUM).
+ *
+ * `IOUtils.stat()` dereferences symlinks — its `type` field reflects the
+ * TARGET, so an `inbox/escape -> /etc` symlink looks like a regular dir
+ * to the scanner and recursion would walk into `/etc`. nsIFile.isSymlink()
+ * is the canonical Mozilla way to detect a symlink without following it.
+ *
+ * Exposed as `__test_setSymlinkDetector` so unit tests can swap the
+ * detection without juggling Components.classes mocks.
+ *
+ * @param {string} absPath
+ * @returns {boolean}
+ */
+let _isSymlink = function _defaultIsSymlink(absPath) {
+  try {
+    const file = Components.classes['@mozilla.org/file/local;1']
+      .createInstance(Components.interfaces.nsIFile);
+    file.initWithPath(absPath);
+    return !!file.isSymlink && file.isSymlink();
+  } catch (_e) {
+    // If we can't tell, err on the side of NOT skipping — false negatives
+    // here just mean Zotero continues with the file as if it were normal,
+    // which is the pre-fix behavior. False positives (skipping a real
+    // file) would be worse for usability.
+    return false;
+  }
+};
+
+/** Test seam: replace the symlink detector. Pass null to restore default. */
+export function __test_setSymlinkDetector(fn) {
+  if (fn === null || typeof fn === 'undefined') {
+    _isSymlink = function _defaultIsSymlink(absPath) {
+      try {
+        const file = Components.classes['@mozilla.org/file/local;1']
+          .createInstance(Components.interfaces.nsIFile);
+        file.initWithPath(absPath);
+        return !!file.isSymlink && file.isSymlink();
+      } catch (_e) { return false; }
+    };
+    return;
+  }
+  if (typeof fn !== 'function') throw new TypeError('expected function');
+  _isSymlink = fn;
+}
+
+/**
  * Scan a folder and return list of files matching allowed types
  * @param {string} folderPath - Path to scan
  * @returns {Promise<Array<{path: string, mtime: number, size: number}>>}
@@ -55,6 +101,15 @@ export async function scanFolder(folderPath) {
 
         for (const childPath of children) {
             try {
+                // Security: refuse to follow symlinks. IOUtils.stat dereferences
+                // them so the result would look like an ordinary file/dir, and
+                // a symlink pointing OUTSIDE the watch root would route the
+                // scanner into arbitrary filesystem locations.
+                if (_isSymlink(childPath)) {
+                    Zotero.debug(`[Watch Folder] scanFolder: skipping symlink ${childPath}`);
+                    continue;
+                }
+
                 // Get file info
                 const info = await IOUtils.stat(childPath);
 
@@ -126,6 +181,17 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10) {
 
         for (const childPath of children) {
             try {
+                // Security: refuse to follow symlinks at any depth. Without
+                // this check, a symlink anywhere under the watch root could
+                // redirect the recursion into arbitrary filesystem locations
+                // (e.g. /etc, $HOME, another user's directory) — every file
+                // found there would then be imported into the user's Zotero
+                // library. See audit 2026-05-27.
+                if (_isSymlink(childPath)) {
+                    Zotero.debug(`[Watch Folder] scanFolderRecursive: skipping symlink ${childPath}`);
+                    continue;
+                }
+
                 const info = await IOUtils.stat(childPath);
 
                 if (info.type === 'directory') {

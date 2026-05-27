@@ -15,6 +15,7 @@ import {
   collectionKeyToRelativePath,
   relativePathToCollection,
   isSpecialCollection,
+  isUnsafeCollectionNameSegment,
   chooseCanonicalCollection,
   SyncRootMissingError,
 } from '../../content/canonicalPath.mjs';
@@ -308,5 +309,120 @@ describe('UT-205: chooseCanonicalCollection', () => {
     const item = makeItem([2, 99]);
     const c = await chooseCanonicalCollection(item, root);
     expect(c.key).toBe('METHODS'); // virt is filtered out
+  });
+});
+
+// ─── UT-206 — path-traversal defense (security audit 2026-05-27) ──────────
+
+describe('UT-206: isUnsafeCollectionNameSegment', () => {
+  it('rejects empty / whitespace-only segments', () => {
+    expect(isUnsafeCollectionNameSegment('')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('   ')).toBe(true);
+  });
+
+  it('rejects `.` and `..`', () => {
+    expect(isUnsafeCollectionNameSegment('.')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('..')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('  .  ')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('  ..  ')).toBe(true);
+  });
+
+  it('rejects path-separator-bearing segments', () => {
+    expect(isUnsafeCollectionNameSegment('foo/bar')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('foo\\bar')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('/etc')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('..\\windows')).toBe(true);
+  });
+
+  it('rejects NUL bytes', () => {
+    expect(isUnsafeCollectionNameSegment('foo bar')).toBe(true);
+  });
+
+  it('rejects non-string values', () => {
+    expect(isUnsafeCollectionNameSegment(null)).toBe(true);
+    expect(isUnsafeCollectionNameSegment(undefined)).toBe(true);
+    expect(isUnsafeCollectionNameSegment(42)).toBe(true);
+    expect(isUnsafeCollectionNameSegment({})).toBe(true);
+  });
+
+  it('accepts ordinary names — spaces, dots, unicode, dashes', () => {
+    expect(isUnsafeCollectionNameSegment('Methods')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('A.B')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('A B C')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('étude — papers')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('2024-research')).toBe(false);
+    // Trailing dot/space — annoying on Windows but not a traversal vector
+    // per se; accepted here. (Filesystem layer normalizes these.)
+    expect(isUnsafeCollectionNameSegment('foo.')).toBe(false);
+  });
+});
+
+describe('UT-206: collectionKeyToRelativePath refuses unsafe segments in the chain', () => {
+  beforeEach(() => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+  });
+
+  it('returns null when an ancestor name is `..`', async () => {
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'EVIL',  name: '..',    libraryID: 1, parentID: 1 },
+      { id: 3, key: 'CHILD', name: 'paper', libraryID: 1, parentID: 2 },
+    ]);
+    expect(await collectionKeyToRelativePath('CHILD')).toBe(null);
+    expect(Zotero.logError).toHaveBeenCalled();
+  });
+
+  it('returns null when a name contains a path separator', async () => {
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'EVIL',  name: 'foo/bar', libraryID: 1, parentID: 1 },
+    ]);
+    expect(await collectionKeyToRelativePath('EVIL')).toBe(null);
+  });
+
+  it('returns null when a name contains a backslash', async () => {
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'EVIL',  name: '..\\windows', libraryID: 1, parentID: 1 },
+    ]);
+    expect(await collectionKeyToRelativePath('EVIL')).toBe(null);
+  });
+
+  it('accepts legitimate nested names without complaint', async () => {
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'A',     name: 'Methods', libraryID: 1, parentID: 1 },
+      { id: 3, key: 'B',     name: 'Subtopic', libraryID: 1, parentID: 2 },
+    ]);
+    expect(await collectionKeyToRelativePath('B')).toBe('Methods/Subtopic');
+    expect(Zotero.logError).not.toHaveBeenCalled();
+  });
+});
+
+describe('UT-206: relativePathToCollection refuses unsafe path segments', () => {
+  beforeEach(() => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+    ]);
+  });
+
+  it('returns null when the requested path contains `..`', async () => {
+    expect(await relativePathToCollection('Methods/../escape', { createIfMissing: true })).toBe(null);
+    expect(Zotero.logError).toHaveBeenCalled();
+  });
+
+  it('returns null when the requested path contains `.`', async () => {
+    expect(await relativePathToCollection('./escape', { createIfMissing: true })).toBe(null);
+  });
+
+  it('returns null when a segment contains backslash (Windows path injection)', async () => {
+    expect(await relativePathToCollection('Methods/..\\..\\etc', { createIfMissing: true })).toBe(null);
+  });
+
+  it('accepts ordinary nested paths', async () => {
+    const c = await relativePathToCollection('Methods/Subtopic', { createIfMissing: true });
+    expect(c).not.toBe(null);
+    expect(Zotero.logError).not.toHaveBeenCalled();
   });
 });

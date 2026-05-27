@@ -17,7 +17,12 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { hasFileChanged } from '../../content/fileScanner.mjs';
+import {
+  hasFileChanged,
+  scanFolder,
+  scanFolderRecursive,
+  __test_setSymlinkDetector,
+} from '../../content/fileScanner.mjs';
 import { isSupportedFileType, filterSupportedFiles } from '../../content/fileImporter.mjs';
 
 // ─── UT-037: hasFileChanged ──────────────────────────────────────────────────
@@ -100,3 +105,106 @@ describe('filterSupportedFiles', () => {
 //
 // UT-041 (CollectionWatcher) removed — collectionWatcher.mjs deleted in
 // Phase E. v2.1 will rebuild a sync-root-aware replacement.
+
+// ─── UT-042 — symlink defense (security audit 2026-05-27) ─────────────────
+
+describe('UT-042: scanner refuses to follow symlinks', () => {
+  // NB: do NOT call vi.clearAllMocks here — it resets implementations of the
+  // geckoMocks.js IOUtils stubs to () => undefined, which makes scanFolder
+  // think nothing exists. Each test sets the specific IOUtils stubs it needs.
+  beforeEach(() => {
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      // Top-level path is a dir, child .pdf paths are regular files.
+      if (p === '/watch' || /^\/watch\/[^./]+$/.test(p)) {
+        return { type: 'directory', size: 0, lastModified: 0 };
+      }
+      return { type: 'regular', size: 100, lastModified: 0 };
+    });
+    // utils.isAllowedFileType reads fileTypes via getPref → Zotero.Prefs.get.
+    // The default geckoMocks Prefs.get returns its fallback arg, which
+    // utils.getPref doesn't pass — net effect is `undefined`. Re-pin
+    // explicitly so the fallback to 'pdf' kicks in inside isAllowedFileType.
+    globalThis.Zotero.Prefs.get = vi.fn(() => undefined);
+  });
+
+  it('scanFolder skips symlinked children', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async () => [
+      '/watch/real.pdf',
+      '/watch/evil.pdf', // we'll claim this is a symlink
+    ]);
+    __test_setSymlinkDetector((p) => p === '/watch/evil.pdf');
+
+    const files = await scanFolder('/watch');
+
+    expect(files.map(f => f.path)).toEqual(['/watch/real.pdf']);
+    __test_setSymlinkDetector(null); // restore default for other tests
+  });
+
+  it('scanFolderRecursive skips symlinked directories (no recursion into them)', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async (p) => {
+      if (p === '/watch') return ['/watch/safe', '/watch/evil-link'];
+      if (p === '/watch/safe') return ['/watch/safe/paper.pdf'];
+      // If the scanner DID recurse into /watch/evil-link, the test would
+      // observe a getChildren call for it. We assert that doesn't happen
+      // by leaving this path with a sentinel that would surface as junk.
+      if (p === '/watch/evil-link') return ['/watch/evil-link/escaped.pdf'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      if (p.endsWith('.pdf')) return { type: 'regular', size: 100, lastModified: 0 };
+      return { type: 'directory', size: 0, lastModified: 0 };
+    });
+
+    __test_setSymlinkDetector((p) => p === '/watch/evil-link');
+
+    const files = await scanFolderRecursive('/watch');
+    const paths = files.map(f => f.path);
+
+    expect(paths).toContain('/watch/safe/paper.pdf');
+    expect(paths).not.toContain('/watch/evil-link/escaped.pdf');
+    __test_setSymlinkDetector(null);
+  });
+
+  it('scanFolderRecursive skips symlinked FILES too', async () => {
+    globalThis.IOUtils.getChildren = vi.fn(async () => [
+      '/watch/real.pdf',
+      '/watch/symlinked.pdf',
+    ]);
+    __test_setSymlinkDetector((p) => p === '/watch/symlinked.pdf');
+
+    const files = await scanFolderRecursive('/watch');
+    const paths = files.map(f => f.path);
+
+    expect(paths).toEqual(['/watch/real.pdf']);
+    __test_setSymlinkDetector(null);
+  });
+
+  it('default detector handles missing nsIFile gracefully (returns false → no skip)', async () => {
+    // The default detector relies on Components.classes; if the call
+    // throws (e.g. on a stripped-down environment), it must not crash.
+    // It should return false so the file is processed as normal.
+    globalThis.IOUtils.getChildren = vi.fn(async () => ['/watch/a.pdf']);
+    // Force Components access to throw
+    const savedClasses = globalThis.Components.classes;
+    globalThis.Components.classes = new Proxy({}, {
+      get() { throw new Error('Components.classes unavailable'); }
+    });
+    __test_setSymlinkDetector(null); // use default
+
+    const files = await scanFolder('/watch');
+    expect(files.map(f => f.path)).toEqual(['/watch/a.pdf']);
+
+    globalThis.Components.classes = savedClasses;
+  });
+
+  it('test-seam restoration: passing null restores default', () => {
+    __test_setSymlinkDetector(() => true); // override
+    __test_setSymlinkDetector(null);       // restore
+    // No throw, no crash — the next scan uses the default detector again.
+  });
+
+  it('test-seam validation: passing non-function throws', () => {
+    expect(() => __test_setSymlinkDetector(42)).toThrow();
+  });
+});

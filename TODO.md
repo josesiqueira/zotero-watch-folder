@@ -1,13 +1,12 @@
 # Zotero Watch Folder — TODO
 
-**Status:** **`v2.3.0`** stable cut (no alpha). Builds on `v2.2.0-alpha.1`
-plus the RecognizePDF reparenting + parent-trash fixes from 2026-05-25 /
-2026-05-26 and live-verified on Zotero 9.0.4. All three modes functional
-end-to-end: Mode 1 (import only), Mode 2 (mirror without delete), Mode 3
-(mirror with safe delete). Unit-test-covered (**532 passing across 20
-files**, zero skipped) AND live-MCP-validated on both Zotero 8.0.4
-(MODE3 runs 2026-05-25 / b / c, MODE2 run 2026-05-25c) and Zotero
-9.0.4 (verification 2026-05-26). **Compatible with Zotero 7, 8, 9.**
+**Status:** **`v2.3.1`** stable (security hardening). Builds on `2.3.0` with
+two MEDIUM-severity fixes from the 2026-05-27 security audit: path-traversal
+defense against unsafe Zotero collection names, and symlink-skip in the
+recursive scanner. Unit-test-covered (**552 passing across 20 files**,
+zero skipped) AND live-MCP-validated on both Zotero 8.0.4 (MODE3 runs
+2026-05-25 / b / c, MODE2 run 2026-05-25c) and Zotero 9.0.4 (verification
+2026-05-26). **Compatible with Zotero 7, 8, 9.**
 
 ---
 
