@@ -435,36 +435,71 @@
     }
 
     /**
-     * Open one of the bundled HTML user-docs. Pages live in
-     * dist/content/docs/ (copied at build time from the repo root by
-     * build/build.mjs). Served via chrome:// — Zotero.launchURL refuses
-     * chrome scheme for safety, so we use Zotero.openInViewer (or fall
-     * back to opening a chrome window).
+     * Open one of the bundled HTML user-docs in the user's default
+     * browser. Strategy:
+     *   1. Extract all three pages from the chrome:// resource (inside
+     *      the JAR'd XPI) to a real filesystem path under Zotero's
+     *      data dir on first use. Overwrites every session so plugin
+     *      updates bring fresh docs along.
+     *   2. Hand the resulting `file://` URL to Zotero.launchURL, which
+     *      routes through the OS external-protocol handler and opens
+     *      in the user's default browser (Firefox, Chrome, etc).
+     *
+     * Why not Zotero.openInViewer (which DID accept the chrome URL):
+     * the basicViewer intercepts every in-page link click and prompts
+     * "Open in external application?" before doing anything — and the
+     * follow-through is unreliable. Cross-page navigation between
+     * index.html / test-plan.html / test-cases.html breaks. The OS
+     * default browser handles all of this natively.
+     *
+     * Why not Zotero.launchURL on chrome:// directly: launchURL only
+     * accepts http/https/file/mailto for safety. chrome:// is rejected.
      */
-    function openDocs(which) {
+    async function _ensureDocsExtracted() {
+        const destDir = PathUtils.join(Zotero.DataDirectory.dir, 'watch-folder-docs');
+        await IOUtils.makeDirectory(destDir, { ignoreExisting: true });
+        const pages = ['index.html', 'test-plan.html', 'test-cases.html'];
+        for (const page of pages) {
+            const src = `chrome://zotero-watch-folder/content/docs/${page}`;
+            const dest = PathUtils.join(destDir, page);
+            try {
+                const r = await fetch(src);
+                if (!r.ok) continue;
+                const text = await r.text();
+                await IOUtils.writeUTF8(dest, text);
+            } catch (e) {
+                Zotero.debug(`[Watch Folder] Could not extract ${page}: ${e?.message ?? e}`);
+            }
+        }
+        return destDir;
+    }
+
+    async function openDocs(which) {
         const map = {
             'index': 'index.html',
             'test-plan': 'test-plan.html',
             'test-cases': 'test-cases.html',
         };
-        const file = map[which];
-        if (!file) return;
-        const url = `chrome://zotero-watch-folder/content/docs/${file}`;
-        // Preferred path: Zotero's internal viewer (accepts chrome URLs).
+        const fileName = map[which];
+        if (!fileName) return;
         try {
-            if (typeof Zotero.openInViewer === 'function') {
-                Zotero.openInViewer(url);
-                return;
-            }
-        } catch (_e) { /* fall through to openDialog */ }
-        // Fallback: open the chrome URL in a new top-level chrome window.
-        try {
-            window.openDialog(url, 'watch-folder-docs-' + which,
-                'chrome,centerscreen,resizable,width=980,height=800');
-            return;
+            const destDir = await _ensureDocsExtracted();
+            const localPath = PathUtils.join(destDir, fileName);
+            // nsIFile.launch() asks the OS to open the file with its
+            // default handler — for .html that's the user's default
+            // browser (Firefox, Chrome, etc), not Zotero's basicViewer.
+            // We tried Zotero.launchURL(file://...) but it refuses
+            // file scheme. We tried Zotero.openInViewer(chrome://...)
+            // but its basicViewer prompts on every link click and
+            // doesn't follow cross-page navigation. nsIFile.launch is
+            // the cross-platform Mozilla primitive that just works.
+            const nsIFile = Components.classes['@mozilla.org/file/local;1']
+                .createInstance(Components.interfaces.nsIFile);
+            nsIFile.initWithPath(localPath);
+            nsIFile.launch();
         } catch (e) {
             Services.prompt.alert(window, 'Watch Folder',
-                `Could not open documentation (${e?.message ?? e}).\n\nURL: ${url}`);
+                `Could not open documentation: ${e?.message ?? e}`);
         }
     }
 
