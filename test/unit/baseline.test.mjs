@@ -435,6 +435,117 @@ describe('UT-912: B.7 hash-based reconcile', () => {
   });
 });
 
+// ─── UT-913 (WP-C #3 — B.7 size pre-filter) ───────────────────────────────
+
+describe('UT-913: B.7 size pre-filter (WP-C #3)', () => {
+  it('skips hashing disk candidates whose size differs from attachmentFileSize', async () => {
+    // The attachment knows its size (Zotero exposes attachmentFileSize
+    // as a sync property on imported-file attachments). Disk has a
+    // file of a DIFFERENT size — the size pre-filter must reject it
+    // BEFORE paying for a hash read.
+    const att = {
+      id: 700, key: 'ATT1',
+      attachmentFilename: 'paper.pdf',
+      attachmentFileSize: 12345,
+      isAttachment: () => true,
+      parentItemID: null,
+      getCollections: () => [],
+      getFilePathAsync: vi.fn(async () => '/zotero-storage/ABC/paper.pdf'),
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    IOUtils.exists.mockImplementation(async (p) => p === '/zotero-storage/ABC/paper.pdf');
+    scanFolderRecursive.mockResolvedValue([
+      { path: '/watch/big-different.pdf', name: 'big-different.pdf' },
+    ]);
+    // IOUtils.stat returns size=99999 for the disk file (not 12345).
+    IOUtils.stat = vi.fn(async () => ({ type: 'regular', size: 99999, lastModified: 1700000000000 }));
+    // Hash function shouldn't be called on the disk file at all due to
+    // the size pre-filter. We track every getFileHash call to confirm
+    // — only the Zotero-storage hash should run (for the actual copy).
+    getFileHash.mockClear();
+    getFileHash.mockImplementation(async (p) => p);
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.reconciles).toBe(0);
+    // The disk file (different size) was NEVER hashed.
+    expect(getFileHash).not.toHaveBeenCalledWith('/watch/big-different.pdf');
+    // Falls through to copy from Zotero storage.
+    expect(IOUtils.copy).toHaveBeenCalledWith('/zotero-storage/ABC/paper.pdf', '/watch/Methods/paper.pdf');
+  });
+
+  it('adopts when disk size matches attachmentFileSize AND hash matches', async () => {
+    const att = {
+      id: 700, key: 'ATT1',
+      attachmentFilename: 'paper.pdf',
+      attachmentFileSize: 4096,
+      isAttachment: () => true,
+      parentItemID: null,
+      getCollections: () => [],
+      getFilePathAsync: vi.fn(async () => '/zotero-storage/ABC/paper.pdf'),
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    IOUtils.exists.mockImplementation(async (p) => {
+      if (p === '/watch/elsewhere/paper.pdf') return true;
+      if (p === '/zotero-storage/ABC/paper.pdf') return true;
+      return false;
+    });
+    scanFolderRecursive.mockResolvedValue([
+      { path: '/watch/elsewhere/paper.pdf', name: 'paper.pdf' },
+    ]);
+    // Default IOUtils.stat returns size=4096 (matches attachmentFileSize).
+    // Both Zotero and disk hash to SAMEHASH.
+    getFileHash.mockResolvedValue('SAMEHASH');
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.reconciles).toBe(1);
+    expect(IOUtils.copy).not.toHaveBeenCalled();
+    const rec = store.getByAttachmentKey('ATT1');
+    expect(rec.localPath).toBe('elsewhere/paper.pdf');
+  });
+
+  it('falls back to hashing all candidates when attachmentFileSize is null/undefined', async () => {
+    // Legacy behavior: an attachment without a populated
+    // attachmentFileSize still goes through the original hash-every-
+    // candidate path. Documents the no-regression contract.
+    const att = {
+      id: 700, key: 'ATT1',
+      attachmentFilename: 'paper.pdf',
+      // attachmentFileSize intentionally omitted
+      isAttachment: () => true,
+      parentItemID: null,
+      getCollections: () => [],
+      getFilePathAsync: vi.fn(async () => '/zotero-storage/ABC/paper.pdf'),
+    };
+    SYNC_ROOT.collection.getChildItems = () => [att];
+    chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
+    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+
+    IOUtils.exists.mockImplementation(async (p) => {
+      if (p === '/watch/x.pdf') return true;
+      if (p === '/zotero-storage/ABC/paper.pdf') return true;
+      return false;
+    });
+    scanFolderRecursive.mockResolvedValue([{ path: '/watch/x.pdf', name: 'x.pdf' }]);
+    getFileHash.mockResolvedValue('SAMEHASH');
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    // Still reconciles because the legacy hash-all-candidates path runs.
+    expect(result.reconciles).toBe(1);
+  });
+});
+
 // ─── UT-911 ────────────────────────────────────────────────────────────────
 
 describe('UT-911: special collections are skipped during enumeration', () => {
