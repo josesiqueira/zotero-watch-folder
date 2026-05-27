@@ -200,6 +200,19 @@ export class TrackingStore {
     this._tombstones = [];
     this._byAttachmentKey = new Map();
     this._byHash = new Map();
+    // WP-B / B2: parallel index that returns ALL FileRecords for an
+    // attachment key (canonical + shadows produced by dedup-skip). Distinct
+    // from `_byAttachmentKey` (single record only — preserved for backwards
+    // compatibility with existing readers).
+    this._byAttachmentKeyAll = new Map();
+    // WP-B / B1: tombstone indexes. Keyed by originalHash and
+    // zoteroAttachmentKey respectively; values are arrays because multiple
+    // tombstones can share either key (different files happened to share
+    // content, or the same attachment was trashed → restored → trashed
+    // again before a save). Tombstones are intentionally NOT in `_byHash`
+    // (see CLAUDE.md invariant: `_byHash` is live syncing records only).
+    this._tombstonesByHash = new Map();
+    this._tombstonesByAttachmentKey = new Map();
     this.dataFile = null;
     this._dirty = false;
     this._initialized = false;
@@ -294,6 +307,24 @@ export class TrackingStore {
       return;
     }
     this._tombstones.push(record);
+    // WP-B / B1: keep tombstone indexes in sync incrementally so the next
+    // findTombstoneBy* call doesn't pay a full rebuild cost.
+    if (record.originalHash) {
+      let list = this._tombstonesByHash.get(record.originalHash);
+      if (!list) {
+        list = [];
+        this._tombstonesByHash.set(record.originalHash, list);
+      }
+      list.push(record);
+    }
+    if (record.zoteroAttachmentKey) {
+      let list = this._tombstonesByAttachmentKey.get(record.zoteroAttachmentKey);
+      if (!list) {
+        list = [];
+        this._tombstonesByAttachmentKey.set(record.zoteroAttachmentKey, list);
+      }
+      list.push(record);
+    }
     this._dirty = true;
   }
 
@@ -308,8 +339,23 @@ export class TrackingStore {
   _rebuildIndexes() {
     this._byAttachmentKey.clear();
     this._byHash.clear();
+    this._byAttachmentKeyAll.clear();
+    this._tombstonesByHash.clear();
+    this._tombstonesByAttachmentKey.clear();
     for (const rec of this._files.values()) {
-      if (rec.zoteroAttachmentKey) this._byAttachmentKey.set(rec.zoteroAttachmentKey, rec);
+      if (rec.zoteroAttachmentKey) {
+        // Legacy single-record index (unchanged contract: keeps the
+        // most-recently-inserted record per attachment key when duplicates
+        // exist — typical for canonical vs shadow records).
+        this._byAttachmentKey.set(rec.zoteroAttachmentKey, rec);
+        // WP-B / B2: parallel multi-record index returns canonical + shadows.
+        let list = this._byAttachmentKeyAll.get(rec.zoteroAttachmentKey);
+        if (!list) {
+          list = [];
+          this._byAttachmentKeyAll.set(rec.zoteroAttachmentKey, list);
+        }
+        list.push(rec);
+      }
       // Detached / suppressed / conflict-blocked records are intentionally
       // OMITTED from _byHash so the hash-dedup path in watchFolder can't
       // re-link a fresh import to a Zotero item the user explicitly
@@ -317,6 +363,26 @@ export class TrackingStore {
       // see them (the user may want to resolve via suppression UX).
       if (rec.lastSyncedHash && _isHashIndexable(rec.state)) {
         this._byHash.set(rec.lastSyncedHash, rec);
+      }
+    }
+    // WP-B / B1: tombstone indexes — separate maps so live-record hash
+    // dedup (`_byHash`) stays isolated from restore-path lookups.
+    for (const t of this._tombstones) {
+      if (t.originalHash) {
+        let list = this._tombstonesByHash.get(t.originalHash);
+        if (!list) {
+          list = [];
+          this._tombstonesByHash.set(t.originalHash, list);
+        }
+        list.push(t);
+      }
+      if (t.zoteroAttachmentKey) {
+        let list = this._tombstonesByAttachmentKey.get(t.zoteroAttachmentKey);
+        if (!list) {
+          list = [];
+          this._tombstonesByAttachmentKey.set(t.zoteroAttachmentKey, list);
+        }
+        list.push(t);
       }
     }
   }
@@ -494,9 +560,14 @@ export class TrackingStore {
   findTombstoneByHash(hash) {
     this._ensureInitialized();
     if (!hash) return null;
+    // WP-B / B1: O(1) bucket lookup. Inside the bucket we still walk to
+    // pick the most-recent RECOVERABLE entry — buckets are tiny in practice
+    // (hash collisions across tombstones are rare) so a linear scan is fine.
+    const bucket = this._tombstonesByHash.get(hash);
+    if (!bucket) return null;
     let best = null;
-    for (const t of this._tombstones) {
-      if (t.originalHash === hash && t.state === STATE.RECOVERABLE) {
+    for (const t of bucket) {
+      if (t.state === STATE.RECOVERABLE) {
         if (!best || (t.deletedAt > best.deletedAt)) best = t;
       }
     }
@@ -514,10 +585,13 @@ export class TrackingStore {
   findTombstoneByAttachmentKey(attachmentKey) {
     this._ensureInitialized();
     if (!attachmentKey) return null;
-    for (const t of this._tombstones) {
-      if (t.zoteroAttachmentKey === attachmentKey && t.state === STATE.RECOVERABLE) {
-        return t;
-      }
+    // WP-B / B1: O(1) bucket lookup. First RECOVERABLE tombstone wins
+    // (same contract as before — order is insertion order, which is
+    // chronological because the array is append-only).
+    const bucket = this._tombstonesByAttachmentKey.get(attachmentKey);
+    if (!bucket) return null;
+    for (const t of bucket) {
+      if (t.state === STATE.RECOVERABLE) return t;
     }
     return null;
   }
@@ -533,13 +607,33 @@ export class TrackingStore {
     this._ensureInitialized();
     if (!attachmentKey) return 0;
     let removed = 0;
+    const removedHashes = new Set();
     for (let i = this._tombstones.length - 1; i >= 0; i--) {
-      if (this._tombstones[i].zoteroAttachmentKey === attachmentKey) {
+      const t = this._tombstones[i];
+      if (t.zoteroAttachmentKey === attachmentKey) {
+        if (t.originalHash) removedHashes.add(t.originalHash);
         this._tombstones.splice(i, 1);
         removed++;
       }
     }
-    if (removed > 0) this._dirty = true;
+    if (removed > 0) {
+      // WP-B / B1: keep tombstone indexes in sync. Drop the attachment-key
+      // bucket entirely (every entry shared the key being removed). For
+      // hash buckets, filter out the removed tombstones — other tombstones
+      // may share a hash and must survive.
+      this._tombstonesByAttachmentKey.delete(attachmentKey);
+      for (const hash of removedHashes) {
+        const list = this._tombstonesByHash.get(hash);
+        if (!list) continue;
+        const filtered = list.filter(t => t.zoteroAttachmentKey !== attachmentKey);
+        if (filtered.length === 0) {
+          this._tombstonesByHash.delete(hash);
+        } else {
+          this._tombstonesByHash.set(hash, filtered);
+        }
+      }
+      this._dirty = true;
+    }
     return removed;
   }
 
@@ -676,6 +770,9 @@ export class TrackingStore {
     this._tombstones.length = 0;
     this._byAttachmentKey.clear();
     this._byHash.clear();
+    this._byAttachmentKeyAll.clear();
+    this._tombstonesByHash.clear();
+    this._tombstonesByAttachmentKey.clear();
     this._initialized = false;
     this._dirty = false;
   }

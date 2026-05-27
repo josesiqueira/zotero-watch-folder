@@ -615,3 +615,100 @@ describe('UT-112: getSuppressedCollections', () => {
     expect(got.map((r) => r.zoteroCollectionKey).sort()).toEqual(['B', 'C']);
   });
 });
+
+// ─── UT-114 (WP-B / B1) ─────────────────────────────────────────────────────
+
+describe('UT-114: tombstone indexes (WP-B / B1)', () => {
+  let store;
+  beforeEach(() => {
+    resetTrackingStore();
+    store = makeStore();
+  });
+
+  it('findTombstoneByHash uses the bucket index and returns the most recent recoverable', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'old.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'HX',
+      deletedAt: '2026-05-01T00:00:00Z',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'new.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'HX',
+      deletedAt: '2026-05-20T00:00:00Z',
+    }));
+    // Confirm the index map is populated (white-box: the optimization
+    // exists). Bucket-list length is 2 because both tombstones share HX.
+    expect(store._tombstonesByHash.get('HX')).toHaveLength(2);
+    const t = store.findTombstoneByHash('HX');
+    expect(t.zoteroAttachmentKey).toBe('AK2');
+  });
+
+  it('findTombstoneByAttachmentKey returns the first recoverable from the bucket', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1',
+    }));
+    expect(store._tombstonesByAttachmentKey.get('AK1')).toHaveLength(1);
+    const t = store.findTombstoneByAttachmentKey('AK1');
+    expect(t.localPath).toBe('a.pdf');
+  });
+
+  it('removeTombstoneByAttachmentKey deletes the attachment-key bucket and updates hash buckets', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a-copy.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'H2',
+    }));
+    store.removeTombstoneByAttachmentKey('AK1');
+    expect(store._tombstonesByAttachmentKey.has('AK1')).toBe(false);
+    // AK2 survives
+    expect(store._tombstonesByAttachmentKey.get('AK2')).toHaveLength(1);
+    // H1 bucket now empty → deleted from index map entirely.
+    expect(store._tombstonesByHash.has('H1')).toBe(false);
+    // H2 survives.
+    expect(store._tombstonesByHash.get('H2')).toHaveLength(1);
+  });
+
+  it('removeTombstoneByAttachmentKey preserves hash bucket when other AKs share the hash', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'SHARED',
+    }));
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'SHARED',
+    }));
+    store.removeTombstoneByAttachmentKey('AK1');
+    const remaining = store._tombstonesByHash.get('SHARED');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].zoteroAttachmentKey).toBe('AK2');
+  });
+
+  it('load() rebuilds tombstone indexes', async () => {
+    const store2 = makeStore();
+    store2.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [],
+      collections: [],
+      tombstones: [
+        createTombstoneRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1' }),
+        createTombstoneRecord({ localPath: 'b.pdf', zoteroAttachmentKey: 'AK2', originalHash: 'H2' }),
+      ],
+    });
+    await store2.load();
+    expect(store2.findTombstoneByHash('H1')?.zoteroAttachmentKey).toBe('AK1');
+    expect(store2.findTombstoneByAttachmentKey('AK2')?.originalHash).toBe('H2');
+  });
+
+  it('tombstones stay OUT of _byHash (live-record dedup invariant preserved)', () => {
+    store.addTombstone(createTombstoneRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'AK1', originalHash: 'H1',
+    }));
+    // _byHash is the live-record-only index; tombstones must be absent.
+    expect(store._byHash.has('H1')).toBe(false);
+    // But the tombstone index DOES carry the hash.
+    expect(store._tombstonesByHash.has('H1')).toBe(true);
+  });
+});
