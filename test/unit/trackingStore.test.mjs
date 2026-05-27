@@ -465,6 +465,39 @@ describe('UT-109: TrackingStore — persistence', () => {
     expect(store.size).toBe(0);
     expect(globalThis.IOUtils.readJSON).not.toHaveBeenCalled();
   });
+
+  // ── Proto-pollution hygiene (security audit 2026-05-27) ──────────────
+  it('load() strips __proto__ from persisted records before insertion', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.exists.mockResolvedValueOnce(true);
+    // Build a record with a own-property `__proto__` (mimics what JSON.parse
+    // of a malicious tracking file would produce per ES2018+ spec).
+    const polluted = createFileRecord({ localPath: 'a.pdf', lastSyncedHash: 'H1', zoteroAttachmentKey: 'AK1' });
+    Object.defineProperty(polluted, '__proto__', {
+      value: { polluted: 'YES' },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    globalThis.IOUtils.readJSON.mockResolvedValueOnce({
+      version: 2,
+      lastSaved: '2026-01-01T00:00:00.000Z',
+      files: [polluted],
+      collections: [],
+      tombstones: [],
+    });
+    await store.load();
+    const rec = store.getByLocalPath('a.pdf');
+    expect(rec).toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(rec, '__proto__')).toBe(false);
+    // And the real record fields are preserved
+    expect(rec.lastSyncedHash).toBe('H1');
+    expect(rec.zoteroAttachmentKey).toBe('AK1');
+    // Object.prototype not polluted
+    const fresh = {};
+    expect(fresh.polluted).toBeUndefined();
+  });
 });
 
 // ─── UT-110 ────────────────────────────────────────────────────────────────

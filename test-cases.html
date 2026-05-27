@@ -629,7 +629,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <h4>Trashed sync-root collection — sync pauses cleanly</h4>
         <p class="when">The sync-root collection itself has been moved to Zotero's trash.</p>
         <p class="then"><code>resolveSyncRoot()</code> detects the trashed collection and throws <code>SyncRootMissingError</code> with a clear message: "Sync-root collection X is in Zotero's trash — pausing sync. Restore the collection from Zotero's Bin to resume." Existing catch sites pause sync; no destructive operations run. New imports do not arrive.</p>
-        <p class="note">Restoring the sync-root collection from Zotero's Bin → right-click → Restore brings everything back into scope on the next scan. Hardened in v2.4.0 — pre-fix, this state silently classified every import as out-of-scope-suppressed.</p>
+        <p class="note">Restoring the sync-root collection from Zotero's Bin → right-click → Restore brings everything back into scope on the next scan. Hardened in v2.4.1 — pre-fix, this state silently classified every import as out-of-scope-suppressed.</p>
       </div>
 
       <div class="case">
@@ -695,7 +695,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.4.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-26</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.4.1 · Covers Zotero 7, 8, 9 · Last updated 2026-05-26</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

@@ -12,6 +12,7 @@ import {
   delay,
   relativePath,
   HASH_CHUNK_SIZE,
+  sanitizeUntrustedKeys,
 } from '../../content/utils.mjs';
 
 // ─── UT-001 ──────────────────────────────────────────────────────────────────
@@ -223,5 +224,69 @@ describe('UT-006: HASH_CHUNK_SIZE export', () => {
 
   it('is a named export', () => {
     expect(typeof HASH_CHUNK_SIZE).toBe('number');
+  });
+});
+
+// ─── UT-007 — sanitizeUntrustedKeys (security audit 2026-05-27) ──────────
+
+describe('UT-007: sanitizeUntrustedKeys', () => {
+  it('strips __proto__ own property from a top-level object', () => {
+    const malicious = JSON.parse('{"safe":"yes","__proto__":{"polluted":true}}');
+    expect(Object.prototype.hasOwnProperty.call(malicious, '__proto__')).toBe(true);
+    sanitizeUntrustedKeys(malicious);
+    expect(Object.prototype.hasOwnProperty.call(malicious, '__proto__')).toBe(false);
+    expect(malicious.safe).toBe('yes');
+  });
+
+  it('strips constructor and prototype own properties', () => {
+    const obj = {};
+    Object.defineProperty(obj, 'constructor', { value: 'evil', enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(obj, 'prototype', { value: 'evil', enumerable: true, configurable: true, writable: true });
+    sanitizeUntrustedKeys(obj);
+    expect(Object.prototype.hasOwnProperty.call(obj, 'constructor')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(obj, 'prototype')).toBe(false);
+  });
+
+  it('recurses into nested object values', () => {
+    const obj = JSON.parse('{"a":{"b":{"__proto__":{"polluted":true},"c":1}}}');
+    sanitizeUntrustedKeys(obj);
+    expect(Object.prototype.hasOwnProperty.call(obj.a.b, '__proto__')).toBe(false);
+    expect(obj.a.b.c).toBe(1);
+  });
+
+  it('recurses into array elements', () => {
+    const arr = JSON.parse('[{"__proto__":{"x":1}},{"ok":true}]');
+    sanitizeUntrustedKeys(arr);
+    expect(Object.prototype.hasOwnProperty.call(arr[0], '__proto__')).toBe(false);
+    expect(arr[1].ok).toBe(true);
+  });
+
+  it('leaves clean objects untouched (deep equality preserved)', () => {
+    const obj = { a: 1, b: { c: [1, 2, 3], d: 'hello' } };
+    const before = JSON.stringify(obj);
+    sanitizeUntrustedKeys(obj);
+    expect(JSON.stringify(obj)).toBe(before);
+  });
+
+  it('is a no-op on primitives and null', () => {
+    expect(sanitizeUntrustedKeys(null)).toBe(null);
+    expect(sanitizeUntrustedKeys(undefined)).toBe(undefined);
+    expect(sanitizeUntrustedKeys(42)).toBe(42);
+    expect(sanitizeUntrustedKeys('hello')).toBe('hello');
+    expect(sanitizeUntrustedKeys(true)).toBe(true);
+  });
+
+  it('mutates in place AND returns the same reference (for chaining)', () => {
+    const obj = JSON.parse('{"__proto__":{"polluted":true},"safe":1}');
+    const result = sanitizeUntrustedKeys(obj);
+    expect(result).toBe(obj);
+  });
+
+  it('does not affect Object.prototype after sanitizing a polluting source', () => {
+    const obj = JSON.parse('{"__proto__":{"polluted":"yes"}}');
+    sanitizeUntrustedKeys(obj);
+    // After sanitize, instantiate a clean object and confirm no pollution.
+    const fresh = {};
+    expect(fresh.polluted).toBeUndefined();
   });
 });

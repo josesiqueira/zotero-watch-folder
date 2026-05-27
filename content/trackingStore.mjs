@@ -16,6 +16,8 @@
  * @module trackingStore
  */
 
+import { sanitizeUntrustedKeys } from './utils.mjs';
+
 const TRACKING_FILENAME = 'zotero-watch-folder-tracking-v2.json';
 const SCHEMA_VERSION = 2;
 
@@ -631,16 +633,23 @@ export class TrackingStore {
         this._dirty = false;
         return;
       }
+      // Proto-pollution hygiene (security audit 2026-05-27): strip
+      // __proto__/constructor/prototype keys from every persisted record
+      // before they enter the in-memory store. Downstream `Object.assign(
+      // rec, updates)` sites would otherwise be a vector if a malicious
+      // local actor crafted the tracking JSON.
       for (const rec of (data.files ?? [])) {
-        if (rec?.localPath && rec.type === 'file') this._files.set(rec.localPath, rec);
+        if (rec?.localPath && rec.type === 'file') {
+          this._files.set(rec.localPath, sanitizeUntrustedKeys(rec));
+        }
       }
       for (const rec of (data.collections ?? [])) {
         if (rec?.zoteroCollectionKey && rec.type === 'collection') {
-          this._collections.set(rec.zoteroCollectionKey, rec);
+          this._collections.set(rec.zoteroCollectionKey, sanitizeUntrustedKeys(rec));
         }
       }
       for (const rec of (data.tombstones ?? [])) {
-        if (rec?.type === 'tombstone') this._tombstones.push(rec);
+        if (rec?.type === 'tombstone') this._tombstones.push(sanitizeUntrustedKeys(rec));
       }
       this._rebuildIndexes();
       this._dirty = false;

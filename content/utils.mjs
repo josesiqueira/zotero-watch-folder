@@ -37,6 +37,43 @@ export function getPref(key) {
 }
 
 /**
+ * Prototype-pollution hygiene (security audit 2026-05-27, LOW).
+ *
+ * Strip `__proto__`, `constructor`, `prototype` own properties from `obj`
+ * (and recursively from nested objects/arrays). Applied at JSON-load
+ * boundaries — `trackingStore.load` and `smartRules` rule parsing — so
+ * a maliciously-crafted persisted file can't pollute Object.prototype via
+ * downstream `Object.assign(rec, source)` operations.
+ *
+ * Returns the same object reference (mutates in place + returns it) so
+ * callers can chain.
+ *
+ * @template T
+ * @param {T} obj
+ * @returns {T}
+ */
+export function sanitizeUntrustedKeys(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    for (const v of obj) sanitizeUntrustedKeys(v);
+    return obj;
+  }
+  // Use Object.prototype.hasOwnProperty via .call to dodge any shadowed
+  // `.hasOwnProperty` on the parsed object itself.
+  const has = Object.prototype.hasOwnProperty;
+  for (const danger of ['__proto__', 'constructor', 'prototype']) {
+    if (has.call(obj, danger)) {
+      try { delete obj[danger]; } catch (_e) { /* sealed/frozen — fine */ }
+    }
+  }
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v !== null && typeof v === 'object') sanitizeUntrustedKeys(v);
+  }
+  return obj;
+}
+
+/**
  * Set a preference value
  * @param {string} key - Preference key (without prefix)
  * @param {*} value - Value to set

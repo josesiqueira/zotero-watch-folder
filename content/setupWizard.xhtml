@@ -17,14 +17,19 @@
   <link rel="stylesheet" href="chrome://global/skin/global.css"/>
   <script src="chrome://zotero-watch-folder/content/setupWizard.js"/>
   <style type="text/css">
+    /* Pin every color explicitly. Don't fall back to CSS variables —
+       chrome://global/skin/global.css ships dark-theme defaults on many
+       Linux desktops (Cinnamon included), which made headings render
+       white-on-cream pre-2026-05-27 (clipboard-screenshot bug report). */
     body {
       font-family: -moz-default-font, system-ui, sans-serif;
       margin: 0;
       min-width: 520px;
       max-width: 640px;
-      color: var(--text-color, #14110f);
-      background: var(--in-content-page-background, #f4efe7);
+      color: #14110f;
+      background: #f4efe7;
     }
+    .wizard, .wizard * { color: #14110f }
     .wizard { padding: 24px 28px 20px; }
     .wizard-header {
       display: flex; align-items: baseline; justify-content: space-between;
@@ -35,22 +40,24 @@
     .wizard-header h1 {
       font-size: 18px; font-weight: 600; margin: 0;
       letter-spacing: -0.01em;
+      color: #14110f;
     }
     .wizard-header .step-indicator {
       font-size: 11px;
       font-family: monospace;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: rgba(20,17,15,.55);
+      color: #6b625a;
     }
     .step { display: none }
     .step[data-active="1"] { display: block }
     .step h2 {
       font-size: 16px; font-weight: 600; margin: 0 0 8px;
+      color: #14110f;
     }
     .step .lede {
       font-size: 13px; line-height: 1.5;
-      color: rgba(20,17,15,.78);
+      color: #2c2520;
       margin: 0 0 18px;
       max-width: 60ch;
     }
@@ -66,12 +73,28 @@
       border: 1px solid rgba(20,17,15,.18);
       border-radius: 3px;
       background: #fff;
+      color: #14110f;
     }
-    .field button {
+    .field button, .wizard-footer button {
       padding: 6px 14px;
       cursor: pointer;
       font-size: 13px;
       border-radius: 3px;
+      color: #14110f;
+      background: #fff;
+      border: 1px solid rgba(20,17,15,.25);
+    }
+    .field button:hover, .wizard-footer button:hover {
+      background: #ebe3d4;
+    }
+    .wizard-footer button.primary {
+      background: #14110f;
+      color: #f4efe7;
+      border-color: #14110f;
+      font-weight: 600;
+    }
+    .wizard-footer button.primary:hover {
+      background: #2a2521;
     }
 
     .coll-list {
@@ -169,16 +192,7 @@
       border-top: 1px solid rgba(20,17,15,.12);
     }
     .wizard-footer .spacer { flex: 1 }
-    .wizard-footer button {
-      padding: 7px 18px;
-      font-size: 13px;
-      border-radius: 3px;
-      cursor: pointer;
-      min-width: 90px;
-    }
-    .wizard-footer button.primary {
-      font-weight: 600;
-    }
+    .wizard-footer button { min-width: 90px; padding: 7px 18px }
     .wizard-footer button[hidden] { display: none }
 
     .error {

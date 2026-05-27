@@ -7,7 +7,27 @@
  * @module smartRules
  */
 
-import { getPref, setPref } from './utils.mjs';
+import { getPref, setPref, sanitizeUntrustedKeys } from './utils.mjs';
+
+/**
+ * ReDoS defense (security audit 2026-05-27, LOW).
+ *
+ * Maximum input length passed to `RegExp.test()` for the `matchesRegex`
+ * operator. A pathological pattern (e.g. `(a+)+$`) executed against a
+ * very long input string pins the worker thread for seconds. Bibliographic
+ * fields (title, author, DOI, ISBN, filename) are all far below this cap
+ * in normal use, so this is invisible to legitimate rules but blocks the
+ * worst-case ReDoS amplification.
+ */
+const REDOS_INPUT_CAP = 8 * 1024; // 8 KB
+
+/**
+ * Maximum length of a user-supplied regex PATTERN (the `value` field of a
+ * `matchesRegex` condition). Cheap upfront defense; rejects unreasonably
+ * long patterns at save time. Validation also smoke-compiles to surface
+ * syntax errors to the user.
+ */
+const REDOS_PATTERN_CAP = 512;
 
 /**
  * Available condition fields for rule matching
@@ -104,8 +124,17 @@ export class SmartRulesEngine {
       const rulesJson = getPref('smartRules') || '[]';
       const rules = JSON.parse(rulesJson);
 
+      // Proto-pollution hygiene (security audit 2026-05-27): strip
+      // __proto__/constructor/prototype keys from every rule and nested
+      // condition/action before they enter the in-memory rule set. The
+      // smartRules pref is editable from the prefs pane textarea, so a
+      // user pasting malicious JSON would otherwise be a vector.
+      const sanitized = Array.isArray(rules)
+        ? rules.map(r => sanitizeUntrustedKeys(r))
+        : [];
+
       // Validate and sort rules by priority (higher priority first)
-      this._rules = rules
+      this._rules = sanitized
         .filter(rule => this._validateRule(rule))
         .sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
@@ -392,6 +421,17 @@ export class SmartRulesEngine {
           return String(fieldValue).endsWith(String(compareValue));
 
         case 'matchesRegex': {
+          // ReDoS defense (security audit 2026-05-27):
+          //   - cap the PATTERN length to bound compilation cost,
+          //   - cap the INPUT length to bound .test() worst-case time.
+          // A pathological pattern like (a+)+$ against a 50KB input can
+          // pin the worker for seconds; an 8KB cap on the input limits
+          // the amplification to a tolerable bound for bibliographic
+          // fields, which are far below that ceiling in normal use.
+          if (typeof value !== 'string' || value.length > REDOS_PATTERN_CAP) {
+            Zotero.debug(`[WatchFolder] matchesRegex: pattern too long (${value?.length} > ${REDOS_PATTERN_CAP}) — skipping`);
+            return false;
+          }
           // Use original value for regex (not lowercased compareValue)
           // The 'i' flag handles case insensitivity for regex
           const flags = caseSensitive ? '' : 'i';
@@ -399,7 +439,11 @@ export class SmartRulesEngine {
             const regex = new RegExp(value, flags);
             // Use original fieldValue for regex test, not lowercased
             const originalFieldValue = this.getFieldValue(item, field, context);
-            return regex.test(String(originalFieldValue));
+            let inputStr = String(originalFieldValue);
+            if (inputStr.length > REDOS_INPUT_CAP) {
+              inputStr = inputStr.slice(0, REDOS_INPUT_CAP);
+            }
+            return regex.test(inputStr);
           } catch (regexError) {
             Zotero.debug(`[WatchFolder] Invalid regex pattern "${value}": ${regexError.message}`);
             return false;

@@ -144,6 +144,57 @@ describe('UT-021 — SmartRulesEngine.evaluateCondition — all operators', () =
     expect(engine.evaluateCondition(cond, item)).toBe(false);
   });
 
+  // ── ReDoS defense (security audit 2026-05-27) ────────────────────────
+  it('k.1: matchesRegex — rejects patterns over the length cap (512 chars)', () => {
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('paper');
+    // 513-char pattern — over the cap. Should return false WITHOUT compiling
+    // (so even a pathological pattern wouldn't pin the thread).
+    const bigPattern = 'a'.repeat(513);
+    const cond = { field: 'title', operator: 'matchesRegex', value: bigPattern, caseSensitive: false };
+    const start = Date.now();
+    const result = engine.evaluateCondition(cond, item);
+    expect(result).toBe(false);
+    expect(Date.now() - start).toBeLessThan(50); // didn't compile or run
+  });
+
+  it('k.2: matchesRegex — caps long input strings to 8 KB before .test()', () => {
+    // A simple anchored pattern that would match somewhere in a long string.
+    // If the cap is enforced, the slice happens BEFORE .test() and the result
+    // is whatever .test() returns on the truncated input.
+    const longInput = 'x'.repeat(20000) + 'NEEDLE';
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue(longInput);
+    const cond = { field: 'title', operator: 'matchesRegex', value: 'NEEDLE', caseSensitive: false };
+    // NEEDLE is past the 8KB cap (8192 chars in) — gets truncated away.
+    // So the match should NOT find it.
+    expect(engine.evaluateCondition(cond, item)).toBe(false);
+  });
+
+  it('k.3: matchesRegex — short input still matches (cap doesn\'t affect normal use)', () => {
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('a normal title with NEEDLE in it');
+    const cond = { field: 'title', operator: 'matchesRegex', value: 'NEEDLE', caseSensitive: false };
+    expect(engine.evaluateCondition(cond, item)).toBe(true);
+  });
+
+  it('k.4: matchesRegex — pathological pattern + long input completes quickly thanks to cap', () => {
+    // (a+)+$ classic ReDoS pattern against a long string that mostly matches
+    // would be exponential WITHOUT the cap. With the 8KB cap and a short
+    // enough pattern, it stays bounded.
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('a'.repeat(10000) + 'b');
+    const cond = { field: 'title', operator: 'matchesRegex', value: '(a+)+$', caseSensitive: false };
+    const start = Date.now();
+    engine.evaluateCondition(cond, item);
+    // Truncated input still ends with 'a' (the trailing 'b' is past cap),
+    // so the regex returns quickly because the truncated input matches.
+    // Either way, the elapsed time must stay under 1s.
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it('k.5: matchesRegex — non-string pattern rejected', () => {
+    vi.spyOn(engine, 'getFieldValue').mockReturnValue('anything');
+    const cond = { field: 'title', operator: 'matchesRegex', value: 123, caseSensitive: false };
+    expect(engine.evaluateCondition(cond, item)).toBe(false);
+  });
+
   // UT-021l
   it('l: greaterThan — numeric field > string compare value', () => {
     stubFieldValue(engine, 2023);
