@@ -536,3 +536,106 @@ describe('UT-512: Zotero reparenting guard on remove', () => {
     });
   });
 });
+
+// ─── UT-513 (WP-C #4 — per-collection batching) ───────────────────────────
+
+describe('UT-513: handleCollectionItemEvent groups composite IDs by collection (WP-C #4)', () => {
+  it('resolves collectionKeyToRelativePath ONCE per collection across many items', async () => {
+    // 5 items added to the same collection in one batch → the
+    // per-collection scope-gate resolver runs ONCE, not 5 times.
+    const collection = { id: 200, key: 'SUB1' };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockImplementation((id) => makeItem({
+      key: `ITEM${id}`,
+      isAttachment: true,
+      collectionIDs: [200],
+    }));
+
+    const records = [];
+    for (let i = 0; i < 5; i++) {
+      records.push({
+        zoteroAttachmentKey: `ITEM${300 + i}`,
+        canonicalCollectionKey: null,
+        collectionMembershipKeys: [],
+        canonicalLocalPath: `p${i}.pdf`,
+      });
+    }
+    const store = makeStore(records);
+
+    const compositeIDs = [];
+    for (let i = 0; i < 5; i++) compositeIDs.push(`200-${300 + i}`);
+    await handleCollectionItemEvent('add', compositeIDs, {}, makeCoordinator(store));
+
+    // 5 items dispatched but only 1 call to collectionKeyToRelativePath
+    // for the collection-scope gate (chooseCanonicalCollection may call
+    // it from the recompute path; that's a different code path).
+    const scopeCalls = collectionKeyToRelativePath.mock.calls.filter(
+      ([key]) => key === 'SUB1',
+    );
+    // At least 1 (we ran the scope gate). The legacy implementation ran
+    // it 5 times (one per item) — batching collapses to a single check.
+    expect(scopeCalls.length).toBe(1);
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(5);
+  });
+
+  it('resolves each DIFFERENT collection in the batch separately', async () => {
+    const collA = { id: 200, key: 'A' };
+    const collB = { id: 300, key: 'B' };
+    Zotero.Collections.get.mockImplementation((id) => (id === 200 ? collA : (id === 300 ? collB : null)));
+    Zotero.Items.get.mockImplementation((id) => makeItem({
+      key: `ITEM${id}`,
+      isAttachment: true,
+      collectionIDs: [id === 400 ? 200 : 300],
+    }));
+    const store = makeStore([
+      { zoteroAttachmentKey: 'ITEM400', collectionMembershipKeys: [], canonicalLocalPath: 'a.pdf' },
+      { zoteroAttachmentKey: 'ITEM500', collectionMembershipKeys: [], canonicalLocalPath: 'b.pdf' },
+    ]);
+
+    await handleCollectionItemEvent(
+      'add',
+      ['200-400', '300-500'],
+      {},
+      makeCoordinator(store),
+    );
+
+    // One scope-gate call per UNIQUE collection.
+    const scopeCalls = collectionKeyToRelativePath.mock.calls.filter(
+      ([key]) => key === 'A' || key === 'B',
+    );
+    expect(scopeCalls.length).toBe(2);
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the RecognizePDF reparenting guard across batched events', async () => {
+    // Same scenario as UT-512 but routed through the new batching
+    // path. Each per-item handler call still runs the guard.
+    const collection = { id: 200, key: 'SUB1' };
+    Zotero.Collections.get.mockReturnValue(collection);
+    const parent = {
+      key: 'PARENT1',
+      isAttachment: () => false,
+      getCollections: () => [200], // parent still in the collection
+    };
+    const attachment = {
+      key: 'ATT1',
+      isAttachment: () => true,
+      parentItem: parent,
+      getCollections: () => [],
+    };
+    Zotero.Items.get.mockReturnValue(attachment);
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'SUB1',
+        collectionMembershipKeys: ['SUB1'],
+        canonicalLocalPath: 'paper.pdf',
+      },
+    ]);
+
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    // Guard fired → no executor call at all.
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});

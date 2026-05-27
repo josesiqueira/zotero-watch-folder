@@ -61,36 +61,59 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
   }
   if (!syncRoot) return;
 
+  // WP-C #4: group composite ids by collection so per-collection
+  // resolution (collection lookup + collectionKeyToRelativePath +
+  // scope-gate) runs ONCE per collection rather than once per item.
+  // The RecognizePDF reparenting guard in `_handleRemove` still runs
+  // per-item — batching only shares the constant overhead, not the
+  // per-item decision.
+  const byCollection = new Map();
   for (const compositeID of compositeIDs) {
+    const parsed = _parseCompositeID(compositeID);
+    if (!parsed) continue;
+    const { collectionID, itemID } = parsed;
+    let bucket = byCollection.get(collectionID);
+    if (!bucket) { bucket = []; byCollection.set(collectionID, bucket); }
+    bucket.push({ itemID, compositeID });
+  }
+
+  for (const [collectionID, entries] of byCollection.entries()) {
+    let collection;
     try {
-      const parsed = _parseCompositeID(compositeID);
-      if (!parsed) continue;
-      const { collectionID, itemID } = parsed;
+      collection = Zotero.Collections.get(collectionID);
+    } catch (_e) { continue; }
+    if (!collection) continue;
 
-      const collection = Zotero.Collections.get(collectionID);
-      if (!collection) continue;
-
-      // Sync-root scope gate — events on collections outside the configured
-      // sync root are dropped.
-      const collectionRelPath = await collectionKeyToRelativePath(collection.key);
-      if (collectionRelPath === null) continue;
-
-      const item = Zotero.Items.get(itemID);
-      if (!item) continue;
-
-      const attachmentKeys = _resolveAttachmentKeys(item);
-      if (attachmentKeys.length === 0) continue;
-
-      for (const attachmentKey of attachmentKeys) {
-        const record = store.getByAttachmentKey(attachmentKey);
-        if (event === 'add') {
-          await _handleAdd({ record, attachmentKey, collection, item, syncRoot });
-        } else {
-          await _handleRemove({ record, attachmentKey, collection, item, syncRoot, store });
-        }
-      }
+    // Sync-root scope gate — events on collections outside the configured
+    // sync root are dropped. Resolved ONCE for the group.
+    let collectionRelPath = null;
+    try {
+      collectionRelPath = await collectionKeyToRelativePath(collection.key);
     } catch (e) {
-      Zotero.logError(`[WatchFolder] itemMembershipHandler ${event}/${compositeID}: ${e?.message ?? e}`);
+      Zotero.logError(`[WatchFolder] itemMembershipHandler collectionKeyToRelativePath: ${e?.message ?? e}`);
+      continue;
+    }
+    if (collectionRelPath === null) continue;
+
+    for (const { itemID, compositeID } of entries) {
+      try {
+        const item = Zotero.Items.get(itemID);
+        if (!item) continue;
+
+        const attachmentKeys = _resolveAttachmentKeys(item);
+        if (attachmentKeys.length === 0) continue;
+
+        for (const attachmentKey of attachmentKeys) {
+          const record = store.getByAttachmentKey(attachmentKey);
+          if (event === 'add') {
+            await _handleAdd({ record, attachmentKey, collection, item, syncRoot });
+          } else {
+            await _handleRemove({ record, attachmentKey, collection, item, syncRoot, store });
+          }
+        }
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] itemMembershipHandler ${event}/${compositeID}: ${e?.message ?? e}`);
+      }
     }
   }
 }
