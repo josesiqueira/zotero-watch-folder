@@ -33,15 +33,20 @@ suite already covers.
       ignored after 18s; enabled false→true resumes, picks up the
       file dropped during the disabled window.
 
-- [ ] **Bulk-delete prompt re-entrancy.** Discovered during the
-      2026-05-27 DEL.3 live run. `confirmBulkDelete` correctly
-      fires and renders accurately, but the prompt is modal and
-      blocks the scan loop while open. If a user is slow to
-      respond, subsequent scan cycles can spawn additional
-      stacked instances of the same dialog (the runbook found
-      2 stacked at one point). Consider: track an "is prompt
-      pending" flag in `_handleExternalDeletions`; skip further
-      bulk-detect calls until the user resolves the first one.
+- [x] **Bulk-delete prompt re-entrancy.** Fixed 2026-05-28
+      (`0edbea6`). Module-level `_promptInFlight` flag in
+      `content/bulkGuard.mjs`. While set, secondary calls return
+      false (treated as user-declined), so a notifier 'trash' event
+      arriving while `_handleExternalDeletions` has its modal up
+      no longer stacks a second `commonDialog.xhtml`. Scope is
+      intra-bundle multi-path reentry — a plugin reload still
+      creates a fresh module instance and could stack, but reload
+      is an operator action. The original DEL.3 stacked-dialog
+      observation was actually a reload artifact; the in-bundle
+      protection against multi-path reentry from
+      `_handleZoteroTrash` / `mirrorExecutor._deleteFolder` firing
+      during an external-deletion modal is the real value. 3 new
+      unit tests in `test/unit/bulkGuard.test.mjs`.
 
 - [~] **Phase E `test/mcp/MODE2.md` runbook live pass.** Mostly done
       during the 2026-05-25c run: BASE.1, MEM.1, REN.1, SUPP.1
