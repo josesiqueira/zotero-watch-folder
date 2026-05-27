@@ -1,106 +1,113 @@
 # Zotero Watch Folder
 
-A Zotero plugin that watches a folder on disk and automatically imports new PDFs (and other configured file types) into your library, with optional metadata retrieval, smart renaming, and collection mirroring.
+A Zotero plugin that watches a folder on your computer and keeps it in sync with your Zotero library. Drop a PDF in the folder and it imports into Zotero with metadata and a properly-templated filename. Optionally, your Zotero collection tree is mirrored as folders on disk, in either or both directions, with a recoverable trash for safe-delete syncs.
 
-Built for Zotero 8 and Zotero 9, also compatible with Zotero 7 (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
+Compatible with **Zotero 7, 8, and 9** (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
 
-## What it does
+**Current release:** [v2.4.1](https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.4.1) (stable).
 
-Drop a file into your watched folder and the plugin imports it into a target collection in Zotero. Optionally, it fetches metadata, renames the file from a template, and keeps a collection tree mirrored against a folder tree on disk.
+## Three sync modes
+
+Switch any time from the prefs pane — no Zotero restart needed.
+
+| Mode | Direction | Behavior |
+|---|---|---|
+| **Mode 1** — import only | disk → Zotero | New files import. Deletes don't propagate either way. Safest. |
+| **Mode 2** — mirror without delete | disk ↔ Zotero | Renames + moves propagate both ways. Deletes are warn-only. |
+| **Mode 3** — mirror with safe delete | disk ↔ Zotero | Full two-way sync with a recoverable `.zotero-watch-trash/`. Bulk ops prompt for confirmation. |
 
 ## Install
 
 1. Download the latest `.xpi` from the [Releases](https://github.com/josesiqueira/zotero-watch-folder/releases) page.
-2. In Zotero, open `Tools` -> `Add-ons`.
+2. In Zotero, open `Tools` → `Plugins`.
 3. Click the gear icon and choose `Install Add-on From File...`.
 4. Select the downloaded `.xpi` and restart Zotero when prompted.
+5. Open `Edit` → `Settings` → `Watch Folder` and run the setup wizard — pick the folder, pick the Zotero collection that anchors the sync (the "sync root"), pick a mode, click Enable.
 
-## Configure
+The plugin auto-updates: future releases roll out via Zotero's update mechanism (manifest pinned to `update.json` on `main`, SHA-256 verified).
 
-Open `Edit` -> `Settings` -> `Watch Folder` (on macOS: `Zotero` -> `Settings`).
+## Documentation
 
-Core settings:
+Three single-file pages live at the repo root and are served via GitHub Pages at <https://josesiqueira.github.io/zotero-watch-folder/>:
 
-- **Enable Watch Folder** - master on/off switch.
-- **Source Folder** - the folder to monitor.
-- **Target Collection** - where imported items land (default `Inbox`).
-- **Poll Interval** - seconds between scans (default `5`).
-- **File Types** - comma-separated extensions, e.g. `pdf,epub`.
-- **Import Mode** - `stored` (copy into Zotero) or `linked` (link to original).
-- **Post-Import Action** - `leave`, `delete`, or `move` the source file.
-- **Auto-Retrieve Metadata** - fetch PDF metadata after import.
-- **Auto-Rename** + **Rename Pattern** - template like `{firstCreator} - {year} - {title}`. Available variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`, `{itemType}`, `{publicationTitle}`.
-
-Optional collection mirroring (Phase 2):
-
-- **Mirror Path** and **Mirror Root Collection** - keep a collection subtree and a folder subtree in sync.
-- **Bidirectional Sync** - propagate changes both ways.
-- **Conflict Resolution** - `zotero`, `disk`, `last`, `both`, or `manual`.
-
-All preferences live under `extensions.zotero.watchFolder.*` and can be inspected in `about:config`.
+- **[`index.html`](https://josesiqueira.github.io/zotero-watch-folder/index.html)** — overview, features, all 29 preferences explained.
+- **[`test-plan.html`](https://josesiqueira.github.io/zotero-watch-folder/test-plan.html)** — user-story walkthrough in five chapters (setup / day-to-day / when something looks off / changing the setup / second computer / cloud / drive).
+- **[`test-cases.html`](https://josesiqueira.github.io/zotero-watch-folder/test-cases.html)** — every plugin behavior classified as **Inclusion** (acts on) or **Exclusion** (refuses / skips / suppresses). 20 + 23 cases.
 
 ## Features
 
-**Auto-import (Phase 1)**
+- **Drop a PDF, it's in Zotero in ~5 seconds.** Metadata fetched, filename templated.
+- **Subfolders become subcollections** (and vice versa in Modes 2/3). Renames + moves propagate.
+- **Smart rules engine** with prefs-pane JSON editor — match on title / author / DOI / publication / tags / filename, apply add-to-collection / add-tag / set-field / skip-import.
+- **Content-hash deduplication.** Re-saving the same paper won't create a duplicate. Hash stamps are embedded in Zotero items' `Extra` field so dedup survives a tracking-store wipe and works across computers via Zotero sync.
+- **Recoverable trash.** In Mode 3, files trashed on either side go to `.zotero-watch-trash/` under your watch root. Un-trashing the Zotero attachment restores the file to its original path; manually moving a file back is recognized by hash and re-links.
+- **Six-case restore matrix.** Restore a single attachment, restore a parent with multiple attachments, re-attach to a live parent when the attachment was purged, handle collisions with a `.restored.<timestamp>` suffix, restore whole folders from prefs.
+- **Bulk-delete confirmation.** Operations affecting more than 10 files or more than 20% of your tracked items prompt before propagating. Headless contexts refuse rather than silently execute.
+- **Conflict gate.** If a file's content has drifted (annotations, edits), no sync operation will overwrite it. The record flips to `conflict-blocked` and shows in the prefs pane for explicit resolution.
+- **Drive-disconnect safe.** If your watch folder is on a removable drive, the plugin globally pauses when the drive is unreachable instead of mass-trashing tracked items.
+- **First-run setup wizard.** Four-step XHTML window: watch folder → sync root → mode → confirm, with mode-specific safety notes. Re-runnable from the prefs pane.
 
-- Polling-based folder watcher with adaptive interval.
-- Recursive subfolder scan: `WatchFolder/Research/AI/paper.pdf` imports into `TargetCollection/Research/AI`.
-- Metadata retrieval queue with throttling and a `_needs-review` tag for failures.
-- Template-based file renaming with sanitization and a configurable max length.
-- First-run detection: when the watch folder is set for the first time (or changed), the plugin scans existing files and offers `Import All`, `Skip`, or `Cancel`. Imports run in a batch with a progress window.
-- Two-way deletion sync (Phase 1):
-  - **Zotero → disk**: when you move an imported item to Zotero's bin, a 3-button dialog asks: `Move to OS trash` (default), `Keep on disk`, or `Delete permanently`. The OS trash (Mac Trash / Windows Recycle Bin / Linux XDG Trash) keeps the file recoverable. "Don't ask again" persists the chosen action via `extensions.zotero.watchFolder.diskDeleteOnTrash` (`ask` / `os_trash` / `permanent` / `never`).
-  - **Disk → Zotero**: when you delete a tracked file from the watch folder, the next scan auto-moves the matching Zotero item to Zotero's bin and shows a popup summarising what changed. The wording adjusts for stored vs linked mode. Controlled by `extensions.zotero.watchFolder.diskDeleteSync` (`auto` / `never`).
+## Configure
 
-**Collection mirroring (Phase 2)**
+Open `Edit` → `Settings` → `Watch Folder` (on macOS: `Zotero` → `Settings`).
 
-- Collection tree on disk reflects the Zotero collection tree (and optionally vice versa).
-- Item moves between collections are mirrored as file moves on disk.
-- New folders on disk can create matching collections.
-- Multiple conflict-resolution strategies for divergent state.
+Core fields:
 
-**Smart features (Phase 3)**
+- **Enable Watch Folder** — master on/off (toggles the scanner in-process).
+- **Source Folder** — the local folder being watched.
+- **Sync root collection** — the Zotero collection that anchors the sync.
+- **Mode** — Mode 1 / 2 / 3 (see table above).
+- **Poll Interval** — seconds between scans (default `5`; adaptive backoff doubles on quiet scans).
+- **File Types** — comma-separated extensions, e.g. `pdf,epub`.
+- **Import Mode** — `stored` (copy into Zotero) or `linked` (link to original file).
+- **Post-Import Action** — `leave`, `delete`, or `move` the source file.
+- **Auto-Retrieve Metadata** — fetch PDF metadata via Zotero's recognizer after import.
+- **Auto-Rename** + **Rename Pattern** — template like `{firstCreator} - {year} - {title}`. Variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`, `{itemType}`, `{publicationTitle}`.
+- **Disk-delete on Zotero trash** (Mode 3) — `ask` / `plugin_trash` (recoverable) / `os_trash` / `permanent` / `never`.
+- **Smart rules** — checkbox + JSON editor + validation. See `test-cases.html` for examples.
 
-- Smart rules engine: match on title, author, DOI, publication, tags, filename, etc.; apply actions like add-to-collection, add-tag, set-field, or skip-import. Supports nested collection paths.
-- Duplicate detection: DOI, ISBN, fuzzy title (configurable threshold), and optional content hash.
-- Bulk operations: re-apply naming pattern, retry failed metadata, apply rules across the existing library.
+All 29 preferences live under `extensions.zotero.watchFolder.*` and can be inspected via `about:config`.
 
 ## Known limitations
 
-- Smart rules are evaluated correctly, but there is no GUI for editing them yet. Rules are stored as JSON in `extensions.zotero.watchFolder.smartRules` and must be edited via `about:config` or a small script.
-- Folder watching is poll-based, not OS-event-based. Very short poll intervals on large folders may increase CPU/disk use.
-- Manual end-to-end test coverage in a live Zotero 8 instance is still in progress. See `TEST_PLAN.md` — the 10-minute Smoke Test at the top is the required pre-release pass; the Exhaustive Verification section below it is optional but useful when something specific breaks.
+- **Group libraries** aren't supported yet — the plugin operates on the user library only. Forward-compat hooks are in place (`syncRootLibraryID` pref + library-aware resolver).
+- **Folder watching is poll-based**, not OS-event-based. Very short poll intervals on huge folders may increase CPU/disk use; the default 5-second interval is safe for tens of thousands of files.
+- **No smart-rule form editor** — rules are managed via the prefs-pane JSON textarea. The engine validates each rule on save.
 
 ## For developers
 
-The code is plain ES modules under `content/`, loaded by `bootstrap.js`.
+Plain ES modules under `content/`, bundled to an IIFE by esbuild, loaded by `bootstrap.js`. No frameworks, no UI build pipeline.
 
 ```bash
 npm install      # install dev dependencies (esbuild, vitest, archiver)
-npm run build    # produce build output
-npm run package  # produce the .xpi
-npm test         # run the vitest unit suite (215 tests across 10 files)
+npm test         # vitest unit suite — 569 passing across 20 files
+npm run bundle   # content/index.mjs → dist/content/scripts/watchFolder.js
+npm run build    # copy non-source files into dist/
+npm run package  # zip dist/ into the .xpi + write update.json with sha256
 ```
 
-Module-level design docs live in `docs/`:
+Source-of-truth docs:
 
-- `docs/ARCHITECTURE.md` - high-level layout.
-- `docs/MODULE_DEPENDENCIES.md` - which module depends on which.
-- `docs/PHASE1_DESIGN.md` - watch + import + rename.
-- `docs/PHASE2_DESIGN.md` - collection/folder sync.
-- `docs/PHASE3_AND_PERFORMANCE.md` - rules, duplicates, bulk ops, perf notes.
+- `CLAUDE.md` — module layout, invariants, "don't touch without understanding" notes. **Read this before editing anything bigger than a comment.**
+- `TODO.md` — current status, release inventory, open work, bigger directions.
+- `updates_22_05_26.md` — v2 sync-model spec (restore matrix, suppression rules, mode definitions).
+- `test/README.md` — three test layers (unit / mcp / integration).
+- `test/mcp/INDEX.md` — per-runbook status table.
 
 Useful entry points:
 
-- `bootstrap.js` - plugin lifecycle.
-- `content/watchFolder.mjs` - main orchestrator.
-- `content/firstRunHandler.mjs` - the simple scan-and-prompt first-run flow.
-- `content/collectionSync.mjs` - Phase 2 sync coordinator.
-- `content/smartRules.mjs`, `content/duplicateDetector.mjs`, `content/bulkOperations.mjs` - Phase 3.
+- `bootstrap.js` — plugin lifecycle + default-pref initialization.
+- `content/index.mjs` — bundle entry; exports `Zotero.WatchFolder.hooks`.
+- `content/watchFolder.mjs` — main orchestrator (scan loop, notifier handlers, import pipeline).
+- `content/canonicalPath.mjs` — sync-root scoping + safe path composition.
+- `content/syncCoordinator.mjs` — Mode 2/3 event pipeline orchestrator.
+- `content/mirrorExecutor.mjs` — single mutation bottleneck behind per-key locks.
+- `content/trackingStore.mjs` — v2 schema (file / collection / tombstone records).
+- `content/setupWizard.{xhtml,js}` — v2.4 single-pane setup wizard.
 
 ## Contributing
 
-Issues and pull requests are welcome at <https://github.com/josesiqueira/zotero-watch-folder>. Please run `npm test` before opening a PR and, where it makes sense, add a unit test next to the module you are changing.
+Issues and pull requests are welcome at <https://github.com/josesiqueira/zotero-watch-folder>. Please run `npm test` before opening a PR and, where it makes sense, add a unit test next to the module you are changing. The codebase has a strict no-skipped-tests rule.
 
 ## License
 

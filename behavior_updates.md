@@ -1,5 +1,18 @@
 # Behavior Updates — expected behavior reference
 
+> **Canonical reference moved to `test-cases.html`.** As of v2.4.x, the
+> two-column INCLUSION / EXCLUSION behavior spec lives in
+> `test-cases.html` at the repo root (served at
+> <https://josesiqueira.github.io/zotero-watch-folder/test-cases.html>),
+> with 20 + 23 cases covering every plugin behavior. That page is the
+> source of truth for "what does the plugin do in scenario X".
+>
+> This file is now the **case-template reference** — it documents the
+> shape every case should follow (Description / Diagram / Start state /
+> Expected end state / Example) so new cases added to `test-cases.html`
+> stay consistent. The single existing detail case (I.1) below is kept
+> as the worked example.
+
 A living spec of what the Watch Folder plugin **should** do in every scenario, written from simplest to most complex. Each case is the source of truth for both manual review and for writing/updating tests.
 
 Two broad sections:

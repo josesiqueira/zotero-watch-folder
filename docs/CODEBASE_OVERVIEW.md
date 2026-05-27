@@ -2,15 +2,19 @@
 
 Long-form companion to `CLAUDE.md`. Written for a teammate who has never seen this code. Every non-trivial claim carries a `file:line` reference so you can navigate. Synthesised from three independent deep-dive audits.
 
-> **Freshness note (2026-05-25):** this overview was written for the v1.2.3
-> codebase and has not been re-synced for the v2 rewrite. Module roles and
-> file:line refs in the lower sections are partially stale. For the current
-> state of v2.0 (Mode 1), v2.1 (Mode 2 + Track A polish), and v2.2-in-
-> progress (cascading-trash fix, `.zotero-watch-trash/`, restore matrix
-> RST.1/3/6 + tombstone-aware dedup) consult `CLAUDE.md` and `TODO.md`.
-> The high-level orientation in §§1–3 below is still useful for new
-> readers; treat anything more specific as needing verification against
-> the current source.
+> **Freshness note (last reviewed 2026-05-27):** this overview was written
+> for the v1.2.3 codebase and has not been re-synced through the v2 rewrite
+> or the v2.3 / v2.4 stable cuts. Module roles and most `file:line` refs in
+> §§4+ are stale — `collectionSync.mjs` and `bulkOperations.mjs` are gone,
+> `canonicalPath.mjs` / `syncCoordinator.mjs` / `mirrorExecutor.mjs` /
+> `trackingStore.mjs` / `setupWizard.{xhtml,js}` are new. The high-level
+> orientation in §§1–3 is still useful for new readers; treat anything
+> more specific as needing verification against the current source.
+>
+> **Current sources of truth:** `CLAUDE.md` (module layout + invariants),
+> `TODO.md` (release inventory + status), `updates_22_05_26.md` (v2 sync-
+> model spec). A from-scratch rewrite of this overview is on the TODO list
+> as "docs/CODEBASE_OVERVIEW.md refresh".
 
 ---
 
