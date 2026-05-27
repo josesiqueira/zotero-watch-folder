@@ -18,6 +18,29 @@ suite already covers.
 
 ### Small follow-ups (not blocking)
 
+- [ ] **Fix `enabled` pref-toggle runtime observer.** Discovered
+      during the 2026-05-27 SMOKE S.7 run against v2.5.0-alpha.1.
+      Setting `extensions.zotero.watchFolder.enabled=false` via
+      `Zotero.Prefs.set` does NOT stop the scan loop — files
+      dropped while the pref says `false` still get imported.
+      `AddonManager.disable()` works correctly (proper lifecycle),
+      so the bug is specifically in the `enabledObserverID` handler
+      in `content/index.mjs`. Documented in v2.2 release notes as
+      "Toggling enabled off → on now starts/stops in-process" — the
+      stop direction is broken. Likely needs `clearTimeout(_timer)`
+      or equivalent in the stop path. Independent of the WP-A/B/C
+      perf pass; was likely shipped broken since v2.2.
+
+- [ ] **Bulk-delete prompt re-entrancy.** Discovered during the
+      2026-05-27 DEL.3 live run. `confirmBulkDelete` correctly
+      fires and renders accurately, but the prompt is modal and
+      blocks the scan loop while open. If a user is slow to
+      respond, subsequent scan cycles can spawn additional
+      stacked instances of the same dialog (the runbook found
+      2 stacked at one point). Consider: track an "is prompt
+      pending" flag in `_handleExternalDeletions`; skip further
+      bulk-detect calls until the user resolves the first one.
+
 - [~] **Phase E `test/mcp/MODE2.md` runbook live pass.** Mostly done
       during the 2026-05-25c run: BASE.1, MEM.1, REN.1, SUPP.1
       (with safety-net auto-clear), CONF.1, WARN.1, plus a new
