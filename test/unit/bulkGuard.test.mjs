@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { isBulkDelete, confirmBulkDelete } from '../../content/bulkGuard.mjs';
+import { isBulkDelete, confirmBulkDelete, __test_resetPromptInFlight } from '../../content/bulkGuard.mjs';
 
 describe('UT-110: isBulkDelete', () => {
   it('returns false for 0 or 1 affected', () => {
@@ -46,6 +46,7 @@ describe('UT-111: confirmBulkDelete', () => {
     // Reset the geckoMocks Services.prompt default (returns 0 = approve).
     Services.prompt.confirmEx.mockClear();
     Services.prompt.confirmEx.mockReturnValue(0);
+    __test_resetPromptInFlight();
   });
 
   it('returns true when user picks button 0 (Proceed)', async () => {
@@ -102,5 +103,69 @@ describe('UT-111: confirmBulkDelete', () => {
     expect(args[2]).toContain('30% of 100');
     expect(args[2]).toContain('"Methods"');
     expect(args[2]).toContain('trash');
+  });
+
+  // ── Re-entrancy guard (fix for the 2026-05-27 DEL.3 stacked-modal find).
+  it('declines a re-entrant call while a prompt is in flight', async () => {
+    // Simulate the Mozilla nested-event-loop case: while confirmEx is
+    // synchronously executing, another call to confirmBulkDelete
+    // reaches the guard. The re-entrant call must return false
+    // WITHOUT invoking confirmEx again — otherwise it would stack a
+    // second modal on top of the first (live-observed during the
+    // 2026-05-27 MCP run). Sync mock here matches production semantics
+    // (`Services.prompt.confirmEx` returns a number, not a Promise).
+    let reentrantPromise = null;
+    Services.prompt.confirmEx.mockImplementation(() => {
+      // _promptInFlight is set NOW (synchronously, before the body's
+      // first await), so the reentrant call's guard check fires
+      // immediately and returns a Promise resolving to false.
+      reentrantPromise = confirmBulkDelete({
+        action: 'second-call', path: '/y', affectedCount: 20, totalTracked: 50,
+      });
+      return 0; // outer "Proceed"
+    });
+    const outer = await confirmBulkDelete({
+      action: 'first-call', path: '/x', affectedCount: 50, totalTracked: 200,
+    });
+    const reentrantResult = await reentrantPromise;
+    expect(outer).toBe(true);
+    expect(reentrantResult).toBe(false);
+    // Only ONE confirmEx call total — the reentrant one was short-circuited.
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the in-flight flag after the prompt resolves (next call works)', async () => {
+    // First call returns Proceed.
+    Services.prompt.confirmEx.mockReturnValueOnce(0);
+    const a = await confirmBulkDelete({
+      action: 'a', path: '/x', affectedCount: 20, totalTracked: 100,
+    });
+    expect(a).toBe(true);
+    // Second call (after the first resolved) should reach confirmEx normally.
+    Services.prompt.confirmEx.mockReturnValueOnce(1);
+    const b = await confirmBulkDelete({
+      action: 'b', path: '/y', affectedCount: 20, totalTracked: 100,
+    });
+    expect(b).toBe(false);
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the in-flight flag if confirmEx throws', async () => {
+    // First call: confirmEx throws. Flag must still be cleared so a
+    // subsequent call can reach the prompt.
+    Services.prompt.confirmEx.mockImplementationOnce(() => { throw new Error('mock-throw'); });
+    let threw = null;
+    try {
+      await confirmBulkDelete({
+        action: 'a', path: '/x', affectedCount: 20, totalTracked: 100,
+      });
+    } catch (e) { threw = e; }
+    expect(threw?.message).toBe('mock-throw');
+    // Second call works.
+    Services.prompt.confirmEx.mockReturnValueOnce(0);
+    const b = await confirmBulkDelete({
+      action: 'b', path: '/y', affectedCount: 20, totalTracked: 100,
+    });
+    expect(b).toBe(true);
   });
 });

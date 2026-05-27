@@ -23,6 +23,36 @@ const BULK_FILE_THRESHOLD = 10;
 const BULK_PERCENT_THRESHOLD = 0.20;
 
 /**
+ * Re-entrancy guard. `Services.prompt.confirmEx` is synchronous in
+ * Mozilla but spins a *nested* event loop while displayed — meaning
+ * `setTimeout` callbacks and Zotero notifier events can fire while a
+ * prompt is up, each potentially triggering another bulk-delete
+ * branch from a DIFFERENT call path. Realistic case: `_handleZoteroTrash`
+ * receives a notifier 'trash' event while `_handleExternalDeletions`
+ * has its modal open, or `mirrorExecutor._deleteFolder` fires for a
+ * collection delete in the same window. Without this flag those
+ * secondary calls stack additional modal dialogs on top of the first.
+ *
+ * Scope: protects against multi-path reentry within ONE bundle
+ * instance. A plugin reload creates a fresh module + fresh flag, so
+ * reload-mid-modal can still stack — but reload is an operator
+ * action and out of scope for this guard.
+ *
+ * Behavior while the flag is set: subsequent `confirmBulkDelete`
+ * calls return `false` immediately (treated as user-declined). Each
+ * caller already has a safe path for `false` — mark-missing for
+ * external deletions, warn-only for Zotero trash, abort for folder
+ * delete. The user's eventual answer to the outstanding prompt still
+ * drives the original op.
+ *
+ * Discovered during the 2026-05-27 DEL.3 MCP run (two stacked
+ * commonDialog.xhtml windows — though that specific repro was via
+ * plugin reload; the in-bundle multi-path case is the primary one
+ * this fix prevents).
+ */
+let _promptInFlight = false;
+
+/**
  * @param {number} affectedCount - files about to be deleted/trashed
  * @param {number} totalTracked - all tracked files in the store
  * @returns {boolean} true if this counts as a "bulk" operation
@@ -49,6 +79,11 @@ export function isBulkDelete(affectedCount, totalTracked) {
  * @returns {Promise<boolean>}
  */
 export async function confirmBulkDelete({ action, path, affectedCount, totalTracked }) {
+  if (_promptInFlight) {
+    try { Zotero.debug(`[WatchFolder] bulkGuard: declined — another bulk prompt already pending (${action}, ${affectedCount}/${totalTracked}, ${path})`); }
+    catch (_e) { /* Zotero may not exist in unit tests; that's fine */ }
+    return false;
+  }
   let win = null;
   try {
     if (typeof Services !== 'undefined' && Services.wm && typeof Services.wm.getMostRecentWindow === 'function') {
@@ -69,9 +104,21 @@ export async function confirmBulkDelete({ action, path, affectedCount, totalTrac
   const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
               + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
               + Services.prompt.BUTTON_POS_1_DEFAULT; // Cancel is the default
-  const result = Services.prompt.confirmEx(
-    win, 'Watch Folder — bulk delete', msg, flags,
-    'Proceed', null, null, null, { value: false },
-  );
-  return result === 0;
+  _promptInFlight = true;
+  try {
+    const result = Services.prompt.confirmEx(
+      win, 'Watch Folder — bulk delete', msg, flags,
+      'Proceed', null, null, null, { value: false },
+    );
+    return result === 0;
+  } finally {
+    _promptInFlight = false;
+  }
+}
+
+/**
+ * Test seam — reset the re-entrancy flag between cases. Internal.
+ */
+export function __test_resetPromptInFlight() {
+  _promptInFlight = false;
 }
