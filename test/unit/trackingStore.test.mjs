@@ -819,3 +819,95 @@ describe('UT-115: getAllByAttachmentKey (canonical + shadows)', () => {
     expect(store2.getAllByAttachmentKey('AK1')).toHaveLength(2);
   });
 });
+
+// ─── UT-116 (WP-B / B3) ─────────────────────────────────────────────────────
+
+describe('UT-116: debounced save (WP-B / B3)', () => {
+  beforeEach(() => {
+    resetTrackingStore();
+    globalThis.IOUtils.writeJSON.mockClear();
+  });
+
+  it('save() coalesces rapid calls into ONE write', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    store.add(createFileRecord({ localPath: 'b.pdf' }));
+    store.add(createFileRecord({ localPath: 'c.pdf' }));
+    // Three save() calls in rapid succession — all return the same
+    // pending promise. Only ONE writeJSON should fire.
+    const p1 = store.save();
+    const p2 = store.save();
+    const p3 = store.save();
+    await Promise.all([p1, p2, p3]);
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    expect(store.isDirty).toBe(false);
+  });
+
+  it('save() returns a promise that resolves AFTER the actual write', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    let writeResolve;
+    const writePromise = new Promise(r => { writeResolve = r; });
+    globalThis.IOUtils.writeJSON.mockImplementationOnce(async () => {
+      await writePromise; // hold the write until we say so
+    });
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    const savePromise = store.save();
+    // Give the debounce timer time to fire and start the write.
+    await new Promise(r => setTimeout(r, 80));
+    // The write started but hasn't finished yet, so savePromise hasn't resolved.
+    let resolved = false;
+    savePromise.then(() => { resolved = true; });
+    await new Promise(r => setTimeout(r, 10));
+    expect(resolved).toBe(false);
+    writeResolve();
+    await savePromise;
+    expect(resolved).toBe(true);
+  });
+
+  it('save() returns a promise that REJECTS when the write fails', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.writeJSON.mockRejectedValueOnce(new Error('disk full'));
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await expect(store.save()).rejects.toThrow('disk full');
+  });
+
+  it('flush() bypasses the debounce timer — writes immediately', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    // Schedule a debounced save, then flush() to bypass.
+    const savePromise = store.save();
+    // flush() should pre-empt the timer.
+    await store.flush();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    // The earlier save() promise resolves to the same write outcome.
+    await expect(savePromise).resolves.toBeUndefined();
+  });
+
+  it('saveNow() is an alias for flush()', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.saveNow();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it('save() is a no-op when the store is not dirty', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    await store.save();
+    expect(globalThis.IOUtils.writeJSON).not.toHaveBeenCalled();
+  });
+
+  it('destroy() rejects awaiters with a clear error', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    const savePromise = store.save();
+    store.destroy();
+    await expect(savePromise).rejects.toThrow(/destroyed/i);
+  });
+});
