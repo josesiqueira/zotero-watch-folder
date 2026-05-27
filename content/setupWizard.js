@@ -26,6 +26,41 @@
 const WatchFolderSetup = (function () {
   "use strict";
 
+  // The setup wizard runs inside a standalone XHTML chrome window
+  // opened via `window.openDialog(...)`. Unlike `zoteroPane.xhtml`,
+  // this window does NOT get `Zotero` auto-injected into its global
+  // scope, so every `Zotero.*` call in this file would throw
+  // "Zotero is not defined" (bug surfaced 2026-05-28 at Step 2 of the
+  // wizard: collection enumeration).
+  //
+  // Resolution order:
+  //   1. globalThis.Zotero — set if the loader injected it.
+  //   2. window.opener.Zotero — the window that opened the wizard
+  //      (prefs pane or main browser window) has the live singleton.
+  // Components.classes is deliberately NOT used here: in some chrome
+  // contexts the access throws SecurityError synchronously at script
+  // parse time, which would make the entire wizard fail to construct.
+  let Zotero = (typeof globalThis !== "undefined" && globalThis.Zotero)
+    || (typeof window !== "undefined" && window.opener && window.opener.Zotero)
+    || null;
+
+  // Try ChromeUtils as a last-resort, wrapped in try/catch so a denied
+  // import can't tank the whole script. ChromeUtils is generally
+  // available in chrome:// pages without the Components-access caveat.
+  if (!Zotero) {
+    try {
+      const { Zotero: Z } = ChromeUtils.importESModule("chrome://zotero/content/zotero.mjs");
+      Zotero = Z;
+    } catch (_e) { /* fall through with Zotero null */ }
+  }
+
+  if (!Zotero) {
+    document.addEventListener("DOMContentLoaded", () => {
+      const err = document.getElementById("coll-error") || document.body;
+      if (err) err.textContent = "Setup wizard cannot reach Zotero (window scope missing). Try re-opening from Edit → Settings → Watch Folder.";
+    });
+  }
+
   const state = {
     step: 1,
     watchFolder: "",
