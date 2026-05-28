@@ -669,7 +669,7 @@ footer .fine {
       <div class="feat">
         <div class="icon">⌘</div>
         <h4>Smart rules</h4>
-        <p>Match on title / author / DOI / tags / filename. Apply add-to-collection, add-tag, set-field, or skip-import. JSON editor in prefs.</p>
+        <p>Match on title / author / DOI / tags / filename. Apply add-to-collection, add-tag, set-field, or skip-import. JSON editor opens in a separate window from the prefs pane's Advanced section.</p>
       </div>
       <div class="feat">
         <div class="icon">⇄</div>
@@ -913,7 +913,7 @@ footer .fine {
       </details>
       <details>
         <summary>What's not done yet?</summary>
-        <p>A multi-step setup wizard (the current setup is a single picker + first-run nudge) and broader live-Zotero MCP coverage of less-common Mode 3 scenarios. None of these are release-blocking — see <code>TODO.md</code>.</p>
+        <p>A form-based smart-rules editor (the engine is in place; the editor is still a JSON window) and broader live-Zotero MCP coverage of less-common Mode 3 scenarios. None of these are release-blocking.</p>
       </details>
     </div>
   </div>
@@ -925,9 +925,10 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.2 is the first end-to-end release across all three modes. The bar
-      to ship was: 523 unit tests passing, live-Zotero MCP validation,
-      and no known data-loss path.
+      v2.5.0 is the latest stable: full WP-A/B/C performance pass plus the
+      prefs-pane redesign on top of a v2.2 line that already had all three
+      modes end-to-end. The bar to ship was: 669 unit tests passing,
+      live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
     <ul class="roadmap-list">
@@ -995,10 +996,17 @@ footer .fine {
         </div>
       </li>
       <li>
-        <span class="status future">Future</span>
+        <span class="status done">Done</span>
         <div>
-          <b>v2.3 polish tag</b>
-          <span class="meta">Cut once the items above land in a meaningful batch.</span>
+          <b>v2.3 / v2.4 — stable line + setup wizard</b>
+          <span class="meta">Trashed sync-root hardening, full multi-step XHTML setup wizard, security audit close-out.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.5.0 — performance pass + UX polish</b>
+          <span class="meta">Module-level hash cache, debounced save, parallel <code>_moveFolder</code> child rewrites, notifier debounce + coalescing, prefs-pane redesign (live mode picker, bundled offline docs, advanced disclosure, Smart Rules in a separate window), perf telemetry hook.</span>
         </div>
       </li>
       <li>
@@ -1034,7 +1042,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (569 passing, 20 files)</span>
+<span class="c"># unit tests (669 passing, 22 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1046,9 +1054,8 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
 <span class="k">zotero_plugin_reload</span> { pluginId: <span class="s">"watch-folder@zotero-plugin.org"</span> }</pre>
 
     <p style="margin-top: 24px; font-size: 15px; color: var(--muted)">
-      Architecture notes live in <code>docs/CODEBASE_OVERVIEW.md</code>. The v2 sync-model spec
-      is <code>updates_22_05_26.md</code>. The MCP runbooks for live-Zotero validation start at
-      <code>test/mcp/INDEX.md</code>.
+      Module layout, invariants, and "don't touch without understanding" notes live
+      in <code>CLAUDE.md</code>. Test overview in <code>test/README.md</code>.
     </p>
   </div>
 </section>

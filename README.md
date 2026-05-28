@@ -14,6 +14,8 @@
 
 A Zotero plugin that watches a folder on your computer and keeps it in sync with your Zotero library. Drop a PDF in the folder and it imports into Zotero with metadata and a properly-templated filename. Optionally, your Zotero collection tree is mirrored as folders on disk, in either or both directions, with a recoverable trash for safe-delete syncs.
 
+📖 **[Read the user guide →](https://josesiqueira.github.io/zotero-watch-folder/)** — full feature tour, configure table, FAQ, and the [Inclusion / Exclusion](https://josesiqueira.github.io/zotero-watch-folder/test-cases.html) behavior reference. Same pages ship inside the plugin and open from the prefs pane.
+
 Compatible with **Zotero 7, 8, and 9** (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
 
 **Current release:** [v2.5.0](https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.5.0) (stable).
