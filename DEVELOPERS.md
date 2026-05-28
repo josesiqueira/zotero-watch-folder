@@ -99,7 +99,7 @@ Version lives in **both** `package.json` and `manifest.json` — keep them in sy
 
 ## Tests
 
-Vitest unit suite — **702 passing across 23 files** (zero skipped; strict no-skipped-tests rule). Config in `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, and `crypto.subtle`.
+Vitest unit suite — **711 passing across 23 files** (zero skipped; strict no-skipped-tests rule). Config in `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, and `crypto.subtle`.
 
 To add coverage: create `test/unit/<module>.test.mjs`, import the module under test from `../../content/<module>.mjs`, and mock dependencies per-file with `vi.mock(...)`, resetting in `beforeEach`. Tests that mock `getFileHash` across multiple scenarios must `hashCache.clear()` in `beforeEach` — the cache is a real module singleton, not a per-test mock.
 

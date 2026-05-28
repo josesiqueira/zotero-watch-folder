@@ -497,7 +497,7 @@
                 || 'This moves PDF file storage out of Zotero. Zotero will still sync metadata, notes, and annotations.';
             const msg =
                 `${preview.convertible.length} PDF(s) (~${mb} MB) can be converted to linked files in your watch folder.\n`
-                + `${preview.keptStored.length} PDF(s) with highlights/notes will be KEPT stored (not converted).\n\n`
+                + `${preview.keptStored.length} PDF(s) with Zotero annotations, notes, or unknown annotation status will be KEPT stored to protect your data.\n\n`
                 + note + '\n\nConvert now?';
             const ok = Services.prompt.confirm(window, 'Reclaim Zotero Storage Space', msg);
             if (!ok) return;

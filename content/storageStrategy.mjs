@@ -122,26 +122,67 @@ function _isStoredFileAttachment(att) {
 }
 
 /**
- * True when the attachment has ANY child item (PDF-reader annotation or a
- * child note). Such attachments are KEPT stored by Reclaim — converting them
- * would risk orphaning highlights, which live as children of the attachment.
+ * Fail-closed classifier for an attachment's child items. Reclaim may only
+ * convert a stored attachment to a linked one if we can CONFIDENTLY prove it
+ * has zero PDF-reader annotations and zero child notes — those live as child
+ * items in the Zotero DB, not in the PDF bytes, so a conversion that replaces
+ * the attachment would orphan them. Anything we can't confidently evaluate
+ * (missing API, thrown error, unexpected shape) must be treated as unsafe and
+ * kept stored — never presumed empty.
+ *
+ * @returns {{safe: boolean, reason: string|null}}
+ *   { safe: true,  reason: null }
+ *   { safe: false, reason: 'has-annotations' }
+ *   { safe: false, reason: 'has-notes' }
+ *   { safe: false, reason: 'annotation-status-unknown' }
+ *   { safe: false, reason: 'note-status-unknown' }
+ *   { safe: false, reason: 'child-status-unknown' }
  */
-function _hasChildItems(att) {
+function _classifyAttachmentChildren(att) {
   try {
-    const anns = (typeof att.getAnnotations === 'function') ? (att.getAnnotations() || []) : [];
-    if (anns.length > 0) return true;
-    const notes = (typeof att.getNotes === 'function') ? (att.getNotes() || []) : [];
-    if (notes.length > 0) return true;
-  } catch (_e) { /* treat as no children only if both calls are safe */ }
-  return false;
+    // ── PDF-reader annotations / highlights (child items) ──
+    if (typeof att.getAnnotations !== 'function') {
+      return { safe: false, reason: 'annotation-status-unknown' };
+    }
+    let anns;
+    try { anns = att.getAnnotations(); }
+    catch (_e) { return { safe: false, reason: 'annotation-status-unknown' }; }
+    if (!Array.isArray(anns)) {
+      return { safe: false, reason: 'annotation-status-unknown' };
+    }
+    if (anns.length > 0) return { safe: false, reason: 'has-annotations' };
+
+    // ── Child notes (or any other child item) ──
+    if (typeof att.getNotes !== 'function') {
+      return { safe: false, reason: 'note-status-unknown' };
+    }
+    let notes;
+    try { notes = att.getNotes(); }
+    catch (_e) { return { safe: false, reason: 'note-status-unknown' }; }
+    if (!Array.isArray(notes)) {
+      return { safe: false, reason: 'note-status-unknown' };
+    }
+    if (notes.length > 0) return { safe: false, reason: 'has-notes' };
+
+    // Confidently zero annotations AND zero notes.
+    return { safe: true, reason: null };
+  } catch (_e) {
+    // Anything unexpected (e.g. a null/odd attachment object) → unsafe.
+    return { safe: false, reason: 'child-status-unknown' };
+  }
 }
 
 // ─── Reclaim Zotero Storage (stored → linked_watch_folder) ──────────────────
 
 /**
  * Enumerate stored attachments under the sync root and classify each as
- * convertible (no annotations) or kept-stored (has annotations / file
- * unavailable). Pure read — never mutates Zotero or disk.
+ * convertible (confidently zero annotations/notes + file available) or
+ * kept-stored. Pure read — never mutates Zotero or disk. Classification is
+ * fail-closed: anything uncertain stays stored.
+ *
+ * keptStored reasons: 'has-annotations' | 'has-notes' |
+ * 'annotation-status-unknown' | 'note-status-unknown' | 'child-status-unknown'
+ * | 'file-unavailable'.
  *
  * @returns {Promise<{ok:boolean, reason?:string, convertible:Array, keptStored:Array, totalBytes:number}>}
  */
@@ -157,8 +198,11 @@ export async function previewReclaim() {
   for (const { attachment, item } of attachments) {
     if (!_isStoredFileAttachment(attachment)) continue; // already linked / not a stored file
     const filename = attachment.attachmentFilename || attachment.key;
-    if (_hasChildItems(attachment)) {
-      keptStored.push({ key: attachment.key, filename, reason: 'has-annotations' });
+    // Child-item gate (fail-closed): only convert when we can confidently
+    // prove zero annotations AND zero notes. Annotated/uncertain → keep stored.
+    const childStatus = _classifyAttachmentChildren(attachment);
+    if (!childStatus.safe) {
+      keptStored.push({ key: attachment.key, filename, reason: childStatus.reason });
       continue;
     }
     let path = null;

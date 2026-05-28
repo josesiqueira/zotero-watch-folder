@@ -725,9 +725,9 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
       <div class="case">
         <div class="case-id">E.24 <span class="mode-tag all">ALL</span></div>
-        <h4>Reclaim keeps annotated PDFs stored</h4>
-        <p class="when">During "Reclaim Zotero Storage", a stored PDF has Zotero highlights or child notes.</p>
-        <p class="then">It is NOT converted to a linked file — it's listed as "kept stored". Annotations live as child items of the attachment, so converting it would risk orphaning them. Only un-annotated PDFs convert.</p>
+        <h4>Reclaim keeps annotated (and uncertain) PDFs stored</h4>
+        <p class="when">During "Reclaim Zotero Storage", a stored PDF has Zotero highlights or child notes — <i>or</i> its annotation status can't be confirmed (the annotation/notes API is missing, throws, or returns an unexpected shape).</p>
+        <p class="then">It is NOT converted — listed as "kept stored" with a specific reason (<code>has-annotations</code> / <code>has-notes</code> / <code>annotation-status-unknown</code> / <code>note-status-unknown</code> / <code>child-status-unknown</code>). Annotations live as child items of the attachment, so converting could orphan them. The check is <b>fail-closed</b>: a PDF converts only when zero annotations AND zero notes are positively proven.</p>
       </div>
 
       <div class="case">
@@ -772,7 +772,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.6.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.6.1 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

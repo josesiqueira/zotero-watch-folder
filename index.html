@@ -421,7 +421,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.6.0 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.6.1 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -1003,6 +1003,13 @@ footer .fine {
       <li>
         <span class="status done">Done</span>
         <div>
+          <b>v2.6.1 — fail-closed "Reclaim Zotero Storage" safety fix</b>
+          <span class="meta">The stored→linked conversion now keeps a PDF stored unless it can positively prove zero annotations and zero notes — a missing or erroring annotation API is treated as "uncertain → keep stored", never as "safe to convert". Protects PDF-reader highlights from being orphaned.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
           <b>v2.6.0 — deletion-safety hardening + PDF storage strategy</b>
           <span class="meta">Conflict gates on every Mode 2/3 delete path (local-hash + Zotero-side freshness), Mode 2 suppress-not-drop (no re-import loop), adopt-into-scope after baseline, split local-folder / Zotero-collection delete directions; user-friendly README + technical DEVELOPERS.md; and a PDF storage-strategy layer — store in Zotero / link from watch folder / store + mirror — with "Reclaim Zotero Storage" and "Build/Repair Mirror" tools.</span>
         </div>
@@ -1054,7 +1061,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (702 passing, 23 files)</span>
+<span class="c"># unit tests (711 passing, 23 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1084,7 +1091,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.6.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-28
+      GPL-3.0 · v2.6.1 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-28
     </div>
   </div>
 </footer>

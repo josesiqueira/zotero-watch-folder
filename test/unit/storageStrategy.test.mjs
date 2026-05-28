@@ -203,6 +203,77 @@ describe('UT-903: previewReclaim classifies annotated vs un-annotated', () => {
   });
 });
 
+// ─── UT-907 ──────────────────────────────────────────────────────────────────
+
+describe('UT-907: child-item classification is fail-closed', () => {
+  beforeEach(() => {
+    resolveSyncRoot.mockResolvedValue({ collection: { key: 'ROOT1' }, libraryID: 1 });
+  });
+
+  async function previewOne(att) {
+    baseline.enumerateSyncRootAttachments.mockResolvedValue({ attachments: [{ attachment: att, item: att }] });
+    return storageStrategy.previewReclaim();
+  }
+
+  function expectKept(p, reason) {
+    expect(p.convertible).toEqual([]);
+    expect(p.keptStored).toHaveLength(1);
+    expect(p.keptStored[0].reason).toBe(reason);
+  }
+
+  it('confidently zero annotations AND notes → convertible', async () => {
+    const p = await previewOne(mockAttachment({ key: 'CLEAN', annotations: [], notes: [] }));
+    expect(p.convertible.map(c => c.key)).toEqual(['CLEAN']);
+    expect(p.keptStored).toEqual([]);
+  });
+
+  it('annotations present → kept stored (has-annotations)', async () => {
+    const p = await previewOne(mockAttachment({ key: 'A', annotations: [{ id: 1 }] }));
+    expectKept(p, 'has-annotations');
+  });
+
+  it('child notes present → kept stored (has-notes)', async () => {
+    const p = await previewOne(mockAttachment({ key: 'N', notes: [{ id: 9 }] }));
+    expectKept(p, 'has-notes');
+  });
+
+  it('getAnnotations() throws → kept stored (annotation-status-unknown), NOT convertible', async () => {
+    const att = mockAttachment({ key: 'THROW_A' });
+    att.getAnnotations = () => { throw new Error('boom'); };
+    expectKept(await previewOne(att), 'annotation-status-unknown');
+  });
+
+  it('getNotes() throws → kept stored (note-status-unknown), NOT convertible', async () => {
+    const att = mockAttachment({ key: 'THROW_N' }); // annotations default [] (safe), notes throw
+    att.getNotes = () => { throw new Error('boom'); };
+    expectKept(await previewOne(att), 'note-status-unknown');
+  });
+
+  it('annotation API missing → kept stored (annotation-status-unknown)', async () => {
+    const att = mockAttachment({ key: 'NOAPI' });
+    att.getAnnotations = undefined;
+    expectKept(await previewOne(att), 'annotation-status-unknown');
+  });
+
+  it('notes API missing → kept stored (note-status-unknown)', async () => {
+    const att = mockAttachment({ key: 'NONOTESAPI' });
+    att.getNotes = undefined;
+    expectKept(await previewOne(att), 'note-status-unknown');
+  });
+
+  it('unexpected (non-array) annotation result → kept stored (annotation-status-unknown)', async () => {
+    const att = mockAttachment({ key: 'WEIRD' });
+    att.getAnnotations = () => 'not-an-array';
+    expectKept(await previewOne(att), 'annotation-status-unknown');
+  });
+
+  it('safe children but file unavailable → kept stored (file-unavailable)', async () => {
+    const att = mockAttachment({ key: 'NOFILE', annotations: [], notes: [] });
+    att.getFilePathAsync = async () => false;
+    expectKept(await previewOne(att), 'file-unavailable');
+  });
+});
+
 // ─── UT-904 ──────────────────────────────────────────────────────────────────
 
 describe('UT-904: runReclaim converts only un-annotated, recoverable, parent preserved', () => {
