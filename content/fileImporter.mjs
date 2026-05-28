@@ -12,6 +12,7 @@
 
 import { getPref } from './utils.mjs';
 import { resolveSyncRoot, relativePathToCollection } from './canonicalPath.mjs';
+import { getStorageStrategy, STRATEGY } from './storageStrategy.mjs';
 
 /**
  * Import a file into Zotero.
@@ -23,11 +24,17 @@ import { resolveSyncRoot, relativePathToCollection } from './canonicalPath.mjs';
  *   falls back to the configured sync root.
  * @param {number} [options.libraryID] - Override the library. Defaults to
  *   the sync root's libraryID, or user library if no sync root configured.
- * @param {string} [options.importMode] - 'stored' (default) or 'linked'.
+ * @param {string} [options.storageStrategy] - Override the PDF storage
+ *   strategy ('stored' | 'linked_watch_folder' | 'stored_plus_mirror').
+ *   Defaults to the configured `pdfStorageStrategy` pref.
  * @returns {Promise<Zotero.Item>} The created attachment item.
  */
 export async function importFile(filePath, options = {}) {
-  const importMode = options.importMode || getPref('importMode') || 'stored';
+  const strategy = options.storageStrategy || getStorageStrategy();
+  // `linked_watch_folder` links to the file in place; `stored` and
+  // `stored_plus_mirror` both copy into Zotero storage (the mirror copy for
+  // stored_plus_mirror is the watch-folder file, which we leave on disk).
+  const useLinked = strategy === STRATEGY.LINKED_WATCH_FOLDER;
 
   // 1. Verify file exists
   const fileExists = await IOUtils.exists(filePath);
@@ -36,7 +43,7 @@ export async function importFile(filePath, options = {}) {
   }
 
   const filename = getFilename(filePath);
-  Zotero.debug(`[WatchFolder] Importing file: ${filename} (mode: ${importMode})`);
+  Zotero.debug(`[WatchFolder] Importing file: ${filename} (strategy: ${strategy})`);
 
   // 2. Resolve target collection. Caller normally passes one; if not, fall
   //    back to the configured sync root so we never silently drop files
@@ -55,10 +62,10 @@ export async function importFile(filePath, options = {}) {
   libraryID = libraryID ?? Zotero.Libraries.userLibraryID;
   const collections = collection ? [collection.id] : [];
 
-  // 3. Import based on mode
+  // 3. Import based on strategy
   let item;
   try {
-    if (importMode === 'linked') {
+    if (useLinked) {
       item = await Zotero.Attachments.linkFromFile({
         file: filePath,
         collections,
@@ -193,8 +200,11 @@ export async function importBatch(files, options = {}) {
       results.success.push(item);
 
       if (handlePostImport) {
-        const importMode = importOptions.importMode || getPref('importMode') || 'stored';
-        if (importMode === 'stored') {
+        // Post-import disposition (delete/move the source) is only safe for
+        // the pure `stored` strategy. `stored_plus_mirror` must keep the
+        // watch-folder copy; `linked_watch_folder` IS the watch-folder file.
+        const strategy = importOptions.storageStrategy || getStorageStrategy();
+        if (strategy === STRATEGY.STORED) {
           try {
             await handlePostImportAction(filePath);
           } catch (postImportError) {

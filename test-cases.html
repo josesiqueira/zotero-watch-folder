@@ -343,13 +343,13 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <div class="label">✓ Inclusion</div>
         <h2>Things the plugin acts on</h2>
         <p>Files arriving, items being added or moved, restores after a trash, baseline reconciles. The plugin <em>does</em> something visible — imports, copies, renames, mkdirs, recovers.</p>
-        <div class="ct">20 cases</div>
+        <div class="ct">25 cases</div>
       </div>
       <div class="summary-card no">
         <div class="label">✕ Exclusion</div>
         <h2>Things the plugin refuses</h2>
         <p>Duplicates, wrong file types, files in reserved dirs, deletes that shouldn't propagate, conflicts, bulk operations needing confirmation, items outside scope. The plugin <em>holds back</em>.</p>
-        <div class="ct">23 cases</div>
+        <div class="ct">29 cases</div>
       </div>
     </div>
 
@@ -374,7 +374,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
     <!-- INCLUSION COLUMN                                                -->
     <!-- ============================================================== -->
     <div class="column ok" id="inclusion">
-      <h3><span class="glyph">✓</span>Inclusion<span class="count">20 cases</span></h3>
+      <h3><span class="glyph">✓</span>Inclusion<span class="count">25 cases</span></h3>
 
       <div class="case">
         <div class="case-id">I.1 <span class="mode-tag all">ALL</span></div>
@@ -518,13 +518,48 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <p class="then">Configured actions fire — add-tag, add-to-collection, set-field, skip-import — in rule order.</p>
       </div>
 
+      <div class="case">
+        <div class="case-id">I.21 <span class="mode-tag all">ALL</span></div>
+        <h4>Import with "Link PDFs from watch folder"</h4>
+        <p class="when">The PDF storage strategy is <code>linked_watch_folder</code> and a new file is imported.</p>
+        <p class="then">Zotero links to the file in place instead of copying it into storage — saving Zotero Storage space. The watch-folder file is never moved or deleted.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.22 <span class="mode-tag all">ALL</span></div>
+        <h4>Reclaim Zotero Storage Space</h4>
+        <p class="when">From the prefs pane (linked strategy), the user runs "Reclaim Zotero Storage Space…" after a preview.</p>
+        <p class="then">Each un-annotated stored PDF is copied to its canonical watch-folder path, hash-verified, replaced by a linked attachment (parent / tags / collections preserved), and the old stored copy is moved to Zotero's recoverable trash.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.23 <span class="mode-tag all">ALL</span></div>
+        <h4>Build/Repair Watch Folder Mirror</h4>
+        <p class="when">The strategy is <code>stored_plus_mirror</code> and the user runs "Build/Repair Watch Folder Mirror…".</p>
+        <p class="then">Stored attachments under the sync root are copied to their canonical watch-folder paths. The stored Zotero attachments are kept exactly as-is — this is a redundant backup copy, not a conversion.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.24 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Existing item moved into the sync root after baseline</h4>
+        <p class="when">After the first-run baseline has completed, the user drags an existing Zotero item into a collection under the sync root.</p>
+        <p class="then">Its attachment is copied to the canonical local path and a FileRecord is created (adopt-into-scope). Before baseline completes, baseline owns the copy and the event is deferred.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.25 <span class="mode-tag m3">M3</span></div>
+        <h4>Local folder deleted → Zotero collection trashed</h4>
+        <p class="when">The user deletes a tracked local folder on disk (Mode 3, <code>localFolderDeleted</code> direction).</p>
+        <p class="then">Each contained attachment that passes the Zotero-side freshness check is moved to Zotero's trash (bulk-delete confirmation applies), then the Zotero collection itself is trashed — all recoverable. Drifted children block and keep the collection.</p>
+      </div>
+
     </div>
 
     <!-- ============================================================== -->
     <!-- EXCLUSION COLUMN                                                -->
     <!-- ============================================================== -->
     <div class="column no" id="exclusion">
-      <h3><span class="glyph">✕</span>Exclusion<span class="count">23 cases</span></h3>
+      <h3><span class="glyph">✕</span>Exclusion<span class="count">29 cases</span></h3>
 
       <div class="case">
         <div class="case-id">E.1 <span class="mode-tag all">ALL</span></div>
@@ -688,6 +723,48 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <p class="then">External-deletion sync skips it. The "missing" state isn't treated as a user deletion to propagate.</p>
       </div>
 
+      <div class="case">
+        <div class="case-id">E.24 <span class="mode-tag all">ALL</span></div>
+        <h4>Reclaim keeps annotated PDFs stored</h4>
+        <p class="when">During "Reclaim Zotero Storage", a stored PDF has Zotero highlights or child notes.</p>
+        <p class="then">It is NOT converted to a linked file — it's listed as "kept stored". Annotations live as child items of the attachment, so converting it would risk orphaning them. Only un-annotated PDFs convert.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.25 <span class="mode-tag all">ALL</span></div>
+        <h4>Reclaim aborts on hash mismatch</h4>
+        <p class="when">During conversion, the copy written to the watch folder doesn't hash-match the Zotero-stored original.</p>
+        <p class="then">That PDF is skipped and left stored, untouched — the old stored attachment is never trashed unless the copy is byte-verified.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.26 <span class="mode-tag m3">M3</span></div>
+        <h4>Locally-edited file not trashed on Zotero trash</h4>
+        <p class="when">A Zotero item is trashed, but the matching local file's content changed since the last sync (e.g. you annotated it on disk).</p>
+        <p class="then">The local file is NOT trashed. The record flips to <code>conflict-blocked</code> and surfaces in the prefs pane — your edited copy is never destroyed by a Zotero-side delete.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.27 <span class="mode-tag m3">M3</span></div>
+        <h4>Changed Zotero copy not trashed on local delete</h4>
+        <p class="when">A local file is deleted, but the Zotero-stored attachment's bytes changed since last sync — or can't be verified (not downloaded yet).</p>
+        <p class="then">The Zotero attachment is NOT trashed (freshness gate). The record becomes <code>conflict-blocked</code> for you to resolve. Deletion only propagates when the other side is provably unchanged.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.28 <span class="mode-tag m3">M3</span></div>
+        <h4>Folder with a drifted child not trashed</h4>
+        <p class="when">A tracked Zotero collection is deleted, but at least one child file in the matching local folder has drifted from its last-synced hash.</p>
+        <p class="then">The whole folder move aborts — nothing is trashed. Drifted children are flagged <code>conflict-blocked</code>. The folder is only trashed when every tracked child is unchanged.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.29 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Mode 2 trash suppresses, never re-imports</h4>
+        <p class="when">A Zotero item is trashed but the local file remains on disk (Mode 2, or Mode 3 with disk-delete set to <code>never</code> / a failed trash).</p>
+        <p class="then">The record is SUPPRESSED, not dropped. A dropped record plus a present file would make the next scan re-import the file and recreate the item you just trashed — suppression breaks that loop.</p>
+      </div>
+
     </div>
   </div>
 </div>
@@ -695,7 +772,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.5.1 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.6.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

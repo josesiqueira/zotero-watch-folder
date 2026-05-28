@@ -423,6 +423,121 @@
         Zotero.debug(`[Watch Folder] Mode changed via prefs UI: ${current} → ${newMode}`);
     }
 
+    // ─── PDF storage strategy (orthogonal to sync mode) ───────────────────
+    const STORAGE_STRATEGIES = ['stored', 'linked_watch_folder', 'stored_plus_mirror'];
+
+    function _storageStrategyAPI() {
+        return Zotero.WatchFolder && Zotero.WatchFolder.storageStrategy;
+    }
+
+    function getStorageStrategyPref() {
+        const api = _storageStrategyAPI();
+        if (api && typeof api.getStorageStrategy === 'function') return api.getStorageStrategy();
+        return getPref('pdfStorageStrategy') || 'stored';
+    }
+
+    function refreshStorageStrategyUI() {
+        const strategy = getStorageStrategyPref();
+        const radio = document.getElementById('watch-folder-storage-radio');
+        if (radio && STORAGE_STRATEGIES.includes(strategy)) radio.value = strategy;
+
+        const api = _storageStrategyAPI();
+        const which = (api && typeof api.buttonForStrategy === 'function')
+            ? api.buttonForStrategy(strategy)
+            : (strategy === 'linked_watch_folder' ? 'reclaim'
+                : strategy === 'stored_plus_mirror' ? 'mirror' : null);
+        const reclaimBtn = document.getElementById('watch-folder-storage-reclaim-btn');
+        const mirrorBtn = document.getElementById('watch-folder-storage-mirror-btn');
+        if (reclaimBtn) reclaimBtn.hidden = which !== 'reclaim';
+        if (mirrorBtn) mirrorBtn.hidden = which !== 'mirror';
+
+        const isLinked = strategy === 'linked_watch_folder';
+        const warn = document.getElementById('watch-folder-storage-warning');
+        const restore = document.getElementById('watch-folder-storage-restore');
+        if (warn) warn.hidden = !isLinked;
+        if (restore) restore.hidden = !isLinked;
+    }
+
+    function changeStorageStrategy(value) {
+        if (!STORAGE_STRATEGIES.includes(value)) return;
+        const current = getStorageStrategyPref();
+        if (value === current) return;
+        const labels = {
+            stored: 'Store PDFs in Zotero',
+            linked_watch_folder: 'Link PDFs from watch folder',
+            stored_plus_mirror: 'Store in Zotero and mirror to watch folder',
+        };
+        const ok = Services.prompt.confirm(
+            window,
+            'Change PDF storage strategy?',
+            `Switching to "${labels[value]}".\n\n`
+            + 'This changes how NEWLY imported PDFs are stored. It does not move or convert your '
+            + 'existing PDFs — use the conversion button below for that.\n\nContinue?'
+        );
+        if (!ok) { refreshStorageStrategyUI(); return; }
+        setPref('pdfStorageStrategy', value);
+        Zotero.debug(`[Watch Folder] PDF storage strategy changed: ${current} → ${value}`);
+        refreshStorageStrategyUI();
+    }
+
+    async function reclaimStorage() {
+        const api = _storageStrategyAPI();
+        if (!api || typeof api.previewReclaim !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Storage tools not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            const preview = await api.previewReclaim();
+            if (!preview.ok) {
+                Services.prompt.alert(window, 'Reclaim Zotero Storage', 'Set up a watch folder and sync root first.');
+                return;
+            }
+            const mb = (preview.totalBytes / (1024 * 1024)).toFixed(1);
+            const note = api.RECLAIM_CONFIRM_NOTE
+                || 'This moves PDF file storage out of Zotero. Zotero will still sync metadata, notes, and annotations.';
+            const msg =
+                `${preview.convertible.length} PDF(s) (~${mb} MB) can be converted to linked files in your watch folder.\n`
+                + `${preview.keptStored.length} PDF(s) with highlights/notes will be KEPT stored (not converted).\n\n`
+                + note + '\n\nConvert now?';
+            const ok = Services.prompt.confirm(window, 'Reclaim Zotero Storage Space', msg);
+            if (!ok) return;
+            const result = await api.runReclaim({ apply: true });
+            Services.prompt.alert(window, 'Reclaim complete',
+                `Converted ${result.converted} PDF(s) to linked files.\n`
+                + `Kept ${result.keptStored} stored (had highlights/notes).\n`
+                + (result.failed ? `${result.failed} could not be verified and were left stored.\n` : '')
+                + 'The old stored copies are in Zotero’s trash — empty it once you’ve confirmed everything looks right.');
+            refreshStorageStrategyUI();
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Reclaim failed: ${e?.message ?? e}`);
+        }
+    }
+
+    async function buildRepairMirror() {
+        const api = _storageStrategyAPI();
+        if (!api || typeof api.previewMirror !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Storage tools not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            const preview = await api.previewMirror();
+            if (!preview.ok) {
+                Services.prompt.alert(window, 'Build/Repair Mirror', 'Set up a watch folder and sync root first.');
+                return;
+            }
+            const ok = Services.prompt.confirm(window, 'Build/Repair Watch Folder Mirror',
+                `${preview.copies} PDF(s) would be copied to your watch folder. `
+                + 'Your Zotero stored attachments stay exactly as they are.\n\nContinue?');
+            if (!ok) return;
+            const result = await api.runMirror();
+            Services.prompt.alert(window, 'Mirror complete',
+                `Copied ${result.copies} PDF(s) to the watch folder`
+                + (result.errors ? `, ${result.errors} error(s).` : '.'));
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Build/Repair failed: ${e?.message ?? e}`);
+        }
+    }
+
     /**
      * Toggle the Advanced section's visibility + caret arrow.
      */
@@ -831,6 +946,7 @@
             // Sync-root + mode displays — v2.
             refreshSyncRootDisplay();
             refreshModeRadio();
+            refreshStorageStrategyUI();
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
@@ -861,6 +977,7 @@
         }
         refreshSyncRootDisplay();
         refreshModeRadio();
+        refreshStorageStrategyUI();
     }
 
     // Expose to window so oncommand attributes in the XHTML can reach these.
@@ -879,6 +996,10 @@
         toggleAdvanced,
         openDocs,
         openSmartRulesEditor,
+        // PDF storage strategy + conversion tools.
+        changeStorageStrategy,
+        reclaimStorage,
+        buildRepairMirror,
         onLoad: init,
     };
 

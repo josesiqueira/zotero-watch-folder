@@ -39,10 +39,11 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
   return {
     ...actual,
     collectionKeyToRelativePath: vi.fn(async () => null), // default: nothing is under sync root
+    resolveSyncRoot: vi.fn(async () => ({ collection: { key: 'ROOT1', id: 1 }, libraryID: 1 })),
   };
 });
 
-import { execute, canSafelyMove, init, reset, _getStore } from '../../content/mirrorExecutor.mjs';
+import { execute, canSafelyMove, canSafelyTrashZoteroAttachment, init, reset, _getStore } from '../../content/mirrorExecutor.mjs';
 import * as hashCache from '../../content/_hashCache.mjs';
 import { TrackingStore, createFileRecord, createCollectionRecord, STATE } from '../../content/trackingStore.mjs';
 import { getFileHash, getPref } from '../../content/utils.mjs';
@@ -1325,5 +1326,246 @@ describe('UT-421: _moveFolder rewrites children in parallel (WP-C #1)', () => {
     expect(result.ok).toBe(true);
     expect(store.getByLocalPath('Old/paper.pdf')).toBe(null);
     expect(store.getByLocalPath('New/paper.pdf')).toBeTruthy();
+  });
+});
+
+// ─── UT-423 (spec risk #2 — Zotero-side freshness gate) ─────────────────────
+
+describe('UT-423: canSafelyTrashZoteroAttachment (Zotero-side freshness gate)', () => {
+  beforeEach(() => {
+    hashCache.clear();
+  });
+
+  function attItem(path) {
+    return { key: 'ATT1', getFilePathAsync: async () => path };
+  }
+
+  it('ok when the Zotero-stored file still matches lastSyncedHash', async () => {
+    IOUtils.exists.mockResolvedValue(true);
+    getFileHash.mockResolvedValue('fakehash');
+    const gate = await canSafelyTrashZoteroAttachment(
+      { lastSyncedHash: 'fakehash' }, attItem('/zotero/storage/ATT1.pdf'));
+    expect(gate.ok).toBe(true);
+  });
+
+  it('hash-drifted when the Zotero-stored file changed since last sync', async () => {
+    IOUtils.exists.mockResolvedValue(true);
+    getFileHash.mockResolvedValue('newhash');
+    const gate = await canSafelyTrashZoteroAttachment(
+      { lastSyncedHash: 'oldhash' }, attItem('/zotero/storage/ATT1.pdf'));
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe('hash-drifted');
+  });
+
+  it('file-unavailable when getFilePathAsync resolves falsy (not downloaded)', async () => {
+    const gate = await canSafelyTrashZoteroAttachment(
+      { lastSyncedHash: 'h' }, { key: 'ATT1', getFilePathAsync: async () => false });
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe('file-unavailable');
+  });
+
+  it('no-baseline when the record has no lastSyncedHash (cannot prove safe)', async () => {
+    const gate = await canSafelyTrashZoteroAttachment(
+      { lastSyncedHash: null }, attItem('/zotero/storage/ATT1.pdf'));
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe('no-baseline');
+  });
+});
+
+// ─── UT-424 (spec risk #1b/#5/#6 — zoteroCollectionDeleted gate + alias + move) ─
+
+describe('UT-424: zoteroCollectionDeleted per-child local-hash gate', () => {
+  beforeEach(() => {
+    hashCache.clear();
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode3';
+      return undefined;
+    });
+  });
+
+  it('aborts the whole folder move when ANY tracked child drifted; flips it CONFLICT_BLOCKED', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    // Clean child (hash matches the mocked getFileHash 'fakehash').
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    // Drifted child (recorded hash differs from on-disk 'fakehash').
+    store.add(createFileRecord({
+      localPath: 'Methods/b.pdf', canonicalLocalPath: 'Methods/b.pdf',
+      zoteroAttachmentKey: 'K2', lastSyncedHash: 'driftedhash', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    IOUtils.exists.mockResolvedValue(true); // folder + all children present
+
+    const result = await execute({
+      type: 'zoteroCollectionDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('conflict-blocked');
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    // Folder untouched in tracking; drifted child flagged.
+    expect(store.getCollectionRecord('SUB1')).not.toBe(null);
+    expect(store.getByLocalPath('Methods/b.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
+  });
+
+  it('deleteFolder remains a back-compat alias for zoteroCollectionDeleted', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    init({ trackingStore: store });
+    // Only the folder exists; no tracked children → gate passes, moves to trash.
+    IOUtils.exists.mockImplementation(async (p) => p === '/watch/Methods');
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.trashPath).toBe('.zotero-watch-trash/Methods');
+  });
+
+  it('moveItem resolves nested relative paths correctly (Methods/paper.pdf → Other/paper.pdf)', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'Methods/paper.pdf', canonicalLocalPath: 'Methods/paper.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    IOUtils.exists.mockResolvedValue(true);
+
+    const result = await execute({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'K1',
+        oldCanonicalPath: 'Methods/paper.pdf',
+        newCanonicalPath: 'Other/paper.pdf',
+        newCanonicalCollectionKey: 'SUB2',
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    // Relative record paths were resolved to absolute for the FS move.
+    expect(IOUtils.move).toHaveBeenCalledWith(
+      '/watch/Methods/paper.pdf', '/watch/Other/paper.pdf', expect.anything());
+    expect(store.getByLocalPath('Methods/paper.pdf')).toBe(null);
+    expect(store.getByLocalPath('Other/paper.pdf')).toBeTruthy();
+  });
+});
+
+// ─── UT-425 (spec risk #5 — localFolderDeleted bulk-safe-delete to Zotero) ──
+
+describe('UT-425: localFolderDeleted propagates to Zotero (Mode 3)', () => {
+  let items;
+  let collection;
+
+  beforeEach(() => {
+    hashCache.clear();
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode3';
+      return undefined;
+    });
+    IOUtils.exists.mockResolvedValue(true);
+    getFileHash.mockResolvedValue('fakehash');
+    items = new Map();
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async (_lib, key) => items.get(key) ?? null);
+    collection = { key: 'SUB1', deleted: false, saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKey = vi.fn(() => collection);
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+  });
+
+  function addItem(key, { hash = 'fakehash' } = {}) {
+    items.set(key, {
+      key, deleted: false, saveTx: vi.fn(async () => {}),
+      getFilePathAsync: async () => `/zotero/storage/${key}.pdf`,
+    });
+    return key;
+  }
+
+  it('trashes clean child attachments + the collection (recoverable)', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Methods/b.pdf', canonicalLocalPath: 'Methods/b.pdf',
+      zoteroAttachmentKey: 'K2', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    addItem('K1'); addItem('K2');
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'localFolderDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.trashed).toBe(2);
+    expect(result.blocked).toBe(0);
+    expect(items.get('K1').deleted).toBe(true);
+    expect(items.get('K2').deleted).toBe(true);
+    expect(collection.deleted).toBe(true);
+    expect(store.getByLocalPath('Methods/a.pdf')).toBe(null);
+    expect(store.getCollectionRecord('SUB1')).toBe(null);
+  });
+
+  it('blocks a drifted child (Zotero copy changed), keeps it + does NOT trash the collection', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Methods/b.pdf', canonicalLocalPath: 'Methods/b.pdf',
+      zoteroAttachmentKey: 'K2', lastSyncedHash: 'driftedhash', state: STATE.CLEAN,
+    }));
+    addItem('K1'); addItem('K2');
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'localFolderDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.trashed).toBe(1);          // K1 clean → trashed
+    expect(result.blocked).toBe(1);          // K2 drifted → blocked
+    expect(items.get('K1').deleted).toBe(true);
+    expect(items.get('K2').deleted).toBe(false);
+    expect(collection.deleted).toBe(false);  // blocked child → collection kept
+    expect(store.getByLocalPath('Methods/b.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
+  });
+
+  it('Mode 2 is warn-only — collection record suppressed, nothing trashed', async () => {
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode2';
+      return undefined;
+    });
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    addItem('K1');
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'localFolderDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('warn-only-mode2');
+    expect(items.get('K1').deleted).toBe(false);
+    expect(collection.deleted).toBe(false);
+    expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
   });
 });

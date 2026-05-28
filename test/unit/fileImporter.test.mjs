@@ -346,6 +346,40 @@ describe('UT-059: importFile — stored vs linked import modes (v2 API: collecti
   });
 });
 
+// ─── UT-060 ──────────────────────────────────────────────────────────────────
+
+describe('UT-060: importFile honors the explicit storageStrategy option', () => {
+  let importFile;
+  const fakeCollection = { id: 7, key: 'C7', libraryID: 1 };
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const mod = await import('../../content/fileImporter.mjs');
+    importFile = mod.importFile;
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.Attachments.importFromFile = vi.fn(async () => ({ id: 1 }));
+    globalThis.Zotero.Attachments.linkFromFile = vi.fn(async () => ({ id: 2 }));
+  });
+
+  it('stored → importFromFile', async () => {
+    await importFile('/watch/p.pdf', { collection: fakeCollection, storageStrategy: 'stored' });
+    expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledTimes(1);
+    expect(globalThis.Zotero.Attachments.linkFromFile).not.toHaveBeenCalled();
+  });
+
+  it('stored_plus_mirror → importFromFile (Zotero stores; watch-folder copy kept)', async () => {
+    await importFile('/watch/p.pdf', { collection: fakeCollection, storageStrategy: 'stored_plus_mirror' });
+    expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledTimes(1);
+    expect(globalThis.Zotero.Attachments.linkFromFile).not.toHaveBeenCalled();
+  });
+
+  it('linked_watch_folder → linkFromFile', async () => {
+    await importFile('/watch/p.pdf', { collection: fakeCollection, storageStrategy: 'linked_watch_folder' });
+    expect(globalThis.Zotero.Attachments.linkFromFile).toHaveBeenCalledTimes(1);
+    expect(globalThis.Zotero.Attachments.importFromFile).not.toHaveBeenCalled();
+  });
+});
+
 // ─── UT-064 ──────────────────────────────────────────────────────────────────
 
 describe('UT-064: importBatch — empty files array', () => {

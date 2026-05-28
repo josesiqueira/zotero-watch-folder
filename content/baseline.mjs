@@ -13,10 +13,16 @@
  *   B.1 (both empty)        — no-op
  *   B.3/B.4/B.5 (disk has)  — covered by the regular scan loop +
  *                             _ensureCollectionsForExistingFolders
- *   B.7 (both have content) — current code skips disk files that
- *                             already exist at the destination; full
- *                             hash-based reconcile + reverse copy is
- *                             a follow-up.
+ *   B.7 (both have content) — implemented: before copying from Zotero
+ *                             storage, `_copyAttachmentToCanonical`
+ *                             consults a content-hash index of the disk
+ *                             (`_buildDiskHashIndex` /
+ *                             `diskHashIndex.lookupForAttachment`) and, on a
+ *                             hash match at a non-canonical path, ADOPTS the
+ *                             existing file (links the record) instead of
+ *                             duplicating bytes. Disk-side files with no
+ *                             Zotero match are imported by the regular scan
+ *                             loop. Never deletes.
  *
  * Idempotent. Marks completion via the `baselineCompletedForRoot`
  * pref keyed on the sync-root collection key, so changing the sync
@@ -563,6 +569,16 @@ async function _enumerateUnderSyncRoot(syncRoot) {
 
   await walk(syncRoot.collection);
   return { collections, attachments: Array.from(attachmentMap.values()) };
+}
+
+/**
+ * Public wrapper around `_enumerateUnderSyncRoot` so the storage-strategy
+ * engine can enumerate every attachment under the sync root without
+ * duplicating the recursive walk. Returns `{ collections, attachments }`
+ * where attachments is an array of `{ attachment, item }`.
+ */
+export async function enumerateSyncRootAttachments(syncRoot) {
+  return _enumerateUnderSyncRoot(syncRoot);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

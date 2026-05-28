@@ -1,134 +1,79 @@
 # Zotero Watch Folder
 
+**Drop a PDF into a folder on your computer — it shows up in Zotero a few seconds later, with its metadata filled in and a tidy filename. No dragging, no clicking, no manual import.**
+
+Point the plugin at a folder, pick the Zotero collection it belongs to, and that's it. From then on, anything you save into that folder is pulled into your library automatically. If you like, the plugin can also keep your folders and your Zotero collections mirrored to each other — so the way you organise things on disk and the way you organise them in Zotero stay the same.
+
+📖 **[Open the user guide →](https://josesiqueira.github.io/zotero-watch-folder/)** — a friendly walkthrough with screenshots-in-words, a full settings reference, and answers to common questions. The same guide ships inside the plugin and opens straight from the settings pane.
+
+Works with **Zotero 7, 8, and 9**. Tested on the latest Zotero 9.
+
+---
+
 > [!WARNING]
-> **Back up your watch folder and your Zotero library before using this plugin.**
+> **Back up your folder and your Zotero library before you start.**
 >
-> This plugin can **rename, move, and (in Mode 3) delete files on disk** to keep your watch folder in sync with Zotero. In Mode 2 and Mode 3 it also creates and renames **Zotero collections** to mirror the folder structure. If you point it at a folder full of papers you care about, copy that folder somewhere safe first.
+> Depending on the mode you choose, this plugin can **rename, move, and even delete files on your disk** to keep your folder and Zotero in step. It can also create and rename **Zotero collections** to match your folders. That's the whole point — but it means a wrong setting on a folder full of papers you care about can ruin your day.
 >
-> Specifically before enabling:
-> - Make a copy of your watch folder (`cp -r`, rsync, your cloud sync's snapshot — any of these).
-> - Make sure Zotero's "Sync" tab is up to date OR export a backup of your library (`File → Export Library… → Zotero RDF`).
-> - Start in **Mode 1 (Import only)**. Get comfortable with how it imports your files before switching to mirror modes.
+> Two minutes of insurance before you flip it on:
+> - **Copy your folder somewhere safe** (drag it to a backup drive, let your cloud service snapshot it — anything).
+> - **Back up your Zotero library** — either make sure Zotero Sync is up to date, or use `File → Export Library… → Zotero RDF`.
+> - **Start in Mode 1 (Import only).** It only ever *adds* things. Get a feel for it before trying the mirror modes.
 >
-> The recoverable trash (`.zotero-watch-trash/` under your watch folder, used in Mode 3) catches most accidents, but better safe than sorry.
+> Mode 3 keeps a recoverable trash folder so most mistakes can be undone — but a backup is still the thing that lets you sleep at night.
 
-A Zotero plugin that watches a folder on your computer and keeps it in sync with your Zotero library. Drop a PDF in the folder and it imports into Zotero with metadata and a properly-templated filename. Optionally, your Zotero collection tree is mirrored as folders on disk, in either or both directions, with a recoverable trash for safe-delete syncs.
+---
 
-📖 **[Read the user guide →](https://josesiqueira.github.io/zotero-watch-folder/)** — full feature tour, configure table, FAQ, and the [Inclusion / Exclusion](https://josesiqueira.github.io/zotero-watch-folder/test-cases.html) behavior reference. Same pages ship inside the plugin and open from the prefs pane.
+## What it does, in plain terms
 
-Compatible with **Zotero 7, 8, and 9** (`strict_min_version: 6.999`, `strict_max_version: 9.*`). Live-verified on Zotero 9.0.4.
+- **You save a PDF, it lands in Zotero.** Drop a file into your watched folder and within a few seconds it's an item in your library — metadata looked up, filename cleaned up (e.g. `Smith - 2021 - A Great Paper.pdf`).
+- **Your folders and Zotero collections can stay in sync.** Make a subfolder, get a subcollection. Rename one, the other follows. (Optional — only in the mirror modes.)
+- **It won't make duplicates.** Save the same paper twice and the plugin recognises it and skips it.
+- **Nothing gets lost by surprise.** It refuses to overwrite a file you've edited, pauses if your folder goes missing (e.g. an unplugged drive), and asks before doing anything that affects a lot of files at once.
+- **Mistakes are recoverable.** In the delete-capable mode, removed files go to a recoverable trash inside your folder, and you can put them back.
 
-**Current release:** [v2.5.0](https://github.com/josesiqueira/zotero-watch-folder/releases/tag/v2.5.0) (stable).
+## Pick how hands-on it is: three modes
 
-## Three sync modes
+You choose a mode during setup, and you can switch any time from the settings — no restart needed.
 
-Switch any time from the prefs pane — no Zotero restart needed.
-
-| Mode | Direction | Behavior |
+| Mode | What it does | Who it's for |
 |---|---|---|
-| **Mode 1** — import only | disk → Zotero | New files import. Deletes don't propagate either way. Safest. |
-| **Mode 2** — mirror without delete | disk ↔ Zotero | Renames + moves propagate both ways. Deletes are warn-only. |
-| **Mode 3** — mirror with safe delete | disk ↔ Zotero | Full two-way sync with a recoverable `.zotero-watch-trash/`. Bulk ops prompt for confirmation. |
+| **Mode 1 — Import only** | New files get imported. Nothing is ever moved or deleted. The safest option. | Most people. Start here. |
+| **Mode 2 — Mirror, no deleting** | Your folders and Zotero collections mirror each other both ways. Renames and moves follow along. Deletions are only flagged, never carried out. | People who organise in folders and want Zotero to match. |
+| **Mode 3 — Mirror with safe delete** | Full two-way sync, including deletions — but deleted files go to a recoverable trash, and big deletions ask first. | People who want their folder and Zotero to be exact mirrors. |
 
 ## Install
 
-1. Download the latest `.xpi` from the [Releases](https://github.com/josesiqueira/zotero-watch-folder/releases) page.
-2. In Zotero, open `Tools` → `Plugins`.
-3. Click the gear icon and choose `Install Add-on From File...`.
-4. Select the downloaded `.xpi` and restart Zotero when prompted.
-5. Open `Edit` → `Settings` → `Watch Folder` and run the setup wizard — pick the folder, pick the Zotero collection that anchors the sync (the "sync root"), pick a mode, click Enable.
+1. Download the latest `.xpi` from the **[Releases page](https://github.com/josesiqueira/zotero-watch-folder/releases)**.
+2. In Zotero, open **Tools → Plugins**.
+3. Click the gear icon → **Install Add-on From File…**
+4. Choose the `.xpi` you downloaded, and restart Zotero if asked.
+5. Open **Edit → Settings → Watch Folder** (on a Mac: **Zotero → Settings**) and click **Set up Watch Folder…**. The wizard walks you through it: pick the folder, pick the Zotero collection that anchors everything, pick a mode, and turn it on.
 
-The plugin auto-updates: future releases roll out via Zotero's update mechanism (manifest pinned to `update.json` on `main`, SHA-256 verified).
+After that you don't have to think about it. New releases install themselves automatically through Zotero.
 
-## Documentation
+## A few things worth knowing
 
-Three single-file pages live at the repo root and are served via GitHub Pages at <https://josesiqueira.github.io/zotero-watch-folder/>:
+**Will it rename or move my files on disk?**
+In Mode 1, no — it only imports. In Modes 2 and 3, yes: keeping your folder and Zotero mirrored means the plugin renames and moves files to match. That's expected behaviour, not a bug. If you don't want your files touched, stay in Mode 1.
 
-- **[`index.html`](https://josesiqueira.github.io/zotero-watch-folder/index.html)** — overview, features, all 29 preferences explained.
-- **[`test-plan.html`](https://josesiqueira.github.io/zotero-watch-folder/test-plan.html)** — user-story walkthrough in five chapters (setup / day-to-day / when something looks off / changing the setup / second computer / cloud / drive).
-- **[`test-cases.html`](https://josesiqueira.github.io/zotero-watch-folder/test-cases.html)** — every plugin behavior classified as **Inclusion** (acts on) or **Exclusion** (refuses / skips / suppresses). 20 + 23 cases.
+**Does it sync my PDFs to my phone / other computers?**
+Not by itself — the plugin works on your computer. What reaches your phone is whatever **Zotero's own sync** carries. Zotero syncs all your item *information* (titles, authors, collections) for free and without limit, so you'll always see your papers listed everywhere. The PDF *files* only sync if you have room in your **Zotero storage quota** (the free tier is 300 MB). If you import a lot of PDFs the normal way ("stored" files), you can fill that up — at which point new files stay on your computer but stop uploading. You can either buy more Zotero storage, or set the plugin to **linked** files (it then points at the files in your folder instead of copying them into Zotero, so they don't count against your quota — but they also won't open on your phone).
 
-## Features
+**What if my folder is on a cloud drive (Dropbox, pCloud, etc.)?**
+That works well on a single computer. Across several computers it gets tricky, because two machines syncing the same folder *and* talking to Zotero can step on each other. If you go multi-device, prefer letting Zotero handle the syncing, and keep the watch folder local.
 
-- **Drop a PDF, it's in Zotero in ~5 seconds.** Metadata fetched, filename templated.
-- **Subfolders become subcollections** (and vice versa in Modes 2/3). Renames + moves propagate.
-- **Smart rules engine** with prefs-pane JSON editor — match on title / author / DOI / publication / tags / filename, apply add-to-collection / add-tag / set-field / skip-import.
-- **Content-hash deduplication.** Re-saving the same paper won't create a duplicate. Hash stamps are embedded in Zotero items' `Extra` field so dedup survives a tracking-store wipe and works across computers via Zotero sync.
-- **Recoverable trash.** In Mode 3, files trashed on either side go to `.zotero-watch-trash/` under your watch root. Un-trashing the Zotero attachment restores the file to its original path; manually moving a file back is recognized by hash and re-links.
-- **Six-case restore matrix.** Restore a single attachment, restore a parent with multiple attachments, re-attach to a live parent when the attachment was purged, handle collisions with a `.restored.<timestamp>` suffix, restore whole folders from prefs.
-- **Bulk-delete confirmation.** Operations affecting more than 10 files or more than 20% of your tracked items prompt before propagating. Headless contexts refuse rather than silently execute.
-- **Conflict gate.** If a file's content has drifted (annotations, edits), no sync operation will overwrite it. The record flips to `conflict-blocked` and shows in the prefs pane for explicit resolution.
-- **Drive-disconnect safe.** If your watch folder is on a removable drive, the plugin globally pauses when the drive is unreachable instead of mass-trashing tracked items.
-- **First-run setup wizard.** Four-step XHTML window: watch folder → sync root → mode → confirm, with mode-specific safety notes. Re-runnable from the prefs pane.
+**Something looks off — where do I look?**
+The settings pane surfaces anything that needs your attention: suppressed items, conflicts, sync warnings, and a "restore trashed folders" option. Each comes with a button to resolve it. The [user guide](https://josesiqueira.github.io/zotero-watch-folder/) has a whole chapter on "when something looks off."
 
-## Configure
+## Getting help
 
-Open `Edit` → `Settings` → `Watch Folder` (on macOS: `Zotero` → `Settings`).
-
-Core fields:
-
-- **Enable Watch Folder** — master on/off (toggles the scanner in-process).
-- **Source Folder** — the local folder being watched.
-- **Sync root collection** — the Zotero collection that anchors the sync.
-- **Mode** — Mode 1 / 2 / 3 (see table above).
-- **Poll Interval** — seconds between scans (default `5`; adaptive backoff doubles on quiet scans).
-- **File Types** — comma-separated extensions, e.g. `pdf,epub`.
-- **Import Mode** — `stored` (copy into Zotero) or `linked` (link to original file).
-- **Post-Import Action** — `leave`, `delete`, or `move` the source file.
-- **Auto-Retrieve Metadata** — fetch PDF metadata via Zotero's recognizer after import.
-- **Auto-Rename** + **Rename Pattern** — template like `{firstCreator} - {year} - {title}`. Variables: `{firstCreator}`, `{creators}`, `{year}`, `{title}`, `{shortTitle}`, `{DOI}`, `{itemType}`, `{publicationTitle}`.
-- **Disk-delete on Zotero trash** (Mode 3) — `ask` / `plugin_trash` (recoverable) / `os_trash` / `permanent` / `never`.
-- **Smart rules** — checkbox + JSON editor + validation. See `test-cases.html` for examples.
-
-All 29 preferences live under `extensions.zotero.watchFolder.*` and can be inspected via `about:config`.
-
-## Known limitations
-
-- **Group libraries** aren't supported yet — the plugin operates on the user library only. Forward-compat hooks are in place (`syncRootLibraryID` pref + library-aware resolver).
-- **Folder watching is poll-based**, not OS-event-based. Very short poll intervals on huge folders may increase CPU/disk use; the default 5-second interval is safe for tens of thousands of files.
-- **No smart-rule form editor** — rules are managed via the prefs-pane JSON textarea. The engine validates each rule on save.
-
-## For developers
-
-Plain ES modules under `content/`, bundled to an IIFE by esbuild, loaded by `bootstrap.js`. No frameworks, no UI build pipeline.
-
-```bash
-npm install      # install dev dependencies (esbuild, vitest, archiver)
-npm test         # vitest unit suite — 569 passing across 20 files
-npm run bundle   # content/index.mjs → dist/content/scripts/watchFolder.js
-npm run build    # copy non-source files into dist/
-npm run package  # zip dist/ into the .xpi + write update.json with sha256
-```
-
-Source-of-truth docs:
-
-- `CLAUDE.md` — module layout, invariants, "don't touch without understanding" notes. **Read this before editing anything bigger than a comment.**
-- `test/README.md` — overview of the test layers (currently: unit suite).
-
-Internal / historical notes (maintainer-only, kept locally in `.private/`,
-not in the public repo):
-
-- `.private/docs/` — design history (`ARCHITECTURE.md`,
-  `CODEBASE_OVERVIEW.md`, `PHASE*_DESIGN.md`, etc.).
-- `.private/legacy/updates_22_05_26.md` — v2 sync-model spec.
-- `.private/mcp-runbooks/INDEX.md` — MCP-driven verification runbooks
-  used for live testing against Zotero.
-
-Useful entry points:
-
-- `bootstrap.js` — plugin lifecycle + default-pref initialization.
-- `content/index.mjs` — bundle entry; exports `Zotero.WatchFolder.hooks`.
-- `content/watchFolder.mjs` — main orchestrator (scan loop, notifier handlers, import pipeline).
-- `content/canonicalPath.mjs` — sync-root scoping + safe path composition.
-- `content/syncCoordinator.mjs` — Mode 2/3 event pipeline orchestrator.
-- `content/mirrorExecutor.mjs` — single mutation bottleneck behind per-key locks.
-- `content/trackingStore.mjs` — v2 schema (file / collection / tombstone records).
-- `content/setupWizard.{xhtml,js}` — v2.4 single-pane setup wizard.
-
-## Contributing
-
-Issues and pull requests are welcome at <https://github.com/josesiqueira/zotero-watch-folder>. Please run `npm test` before opening a PR and, where it makes sense, add a unit test next to the module you are changing. The codebase has a strict no-skipped-tests rule.
+Found a bug or have an idea? Open an issue at **[github.com/josesiqueira/zotero-watch-folder/issues](https://github.com/josesiqueira/zotero-watch-folder/issues)**.
 
 ## License
 
-GNU GPL v3.0. See `LICENSE` for the full text.
+GNU GPL v3.0 — free and open source. See [`LICENSE`](LICENSE) for the full text.
+
+---
+
+*Building from source, contributing, or just curious how it works under the hood? See **[DEVELOPERS.md](DEVELOPERS.md)**.*

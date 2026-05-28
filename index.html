@@ -421,7 +421,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.5.1 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.6.0 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -783,7 +783,7 @@ footer .fine {
 <!-- ========== CONFIGURE ========== -->
 <section id="configure">
   <div class="wrap">
-    <div class="section-eyebrow">All 29 preferences, in plain language</div>
+    <div class="section-eyebrow">All 30 preferences, in plain language</div>
     <h2>Configurable, but you don't have to.</h2>
     <p class="section-lede">
       Defaults are sane. These are the knobs you'd reach for first. Everything
@@ -827,9 +827,14 @@ footer .fine {
           <td>Comma-separated extensions. <code>pdf,epub,djvu</code> all work.</td>
         </tr>
         <tr>
+          <td><span class="key">pdfStorageStrategy</span></td>
+          <td><code>stored</code></td>
+          <td>Where PDFs live (separate from sync mode): <code>stored</code> (Zotero manages + syncs them), <code>linked_watch_folder</code> (Zotero links to the watch-folder file — saves Zotero Storage), or <code>stored_plus_mirror</code> (both). The prefs pane offers a guided "Reclaim Zotero Storage" / "Build/Repair Mirror" conversion.</td>
+        </tr>
+        <tr>
           <td><span class="key">importMode</span></td>
           <td><code>stored</code></td>
-          <td><code>stored</code> copies the file into Zotero's storage; <code>linked</code> links to the original.</td>
+          <td>Legacy, superseded by <code>pdfStorageStrategy</code>. <code>linked</code> is treated as <code>linked_watch_folder</code>.</td>
         </tr>
         <tr>
           <td><span class="key">postImportAction</span></td>
@@ -908,8 +913,8 @@ footer .fine {
         <p>Yes to both. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 9.*</code>. Primary development target is Zotero 8.</p>
       </details>
       <details>
-        <summary>Does it work with linked attachments or only stored?</summary>
-        <p>Both. <code>importMode</code> is a preference. Linked mode is friendlier to large libraries or cloud-synced folders; stored mode keeps everything inside Zotero's storage tree.</p>
+        <summary>Where do my PDFs actually live — Zotero or my folder?</summary>
+        <p>Your choice, via the <strong>PDF storage strategy</strong> (separate from the sync mode). <em>Store in Zotero</em> keeps PDFs in Zotero's storage and syncs them via Zotero Storage/WebDAV. <em>Link from watch folder</em> leaves PDFs in your folder and links Zotero to them — this saves Zotero Storage space, and your folder-sync tool (pCloud, Dropbox, Syncthing…) backs them up. <em>Store + mirror</em> keeps both. Either way, Zotero still syncs your metadata, notes, and highlights — those are independent of where the PDF files sit. If you're already storing PDFs in Zotero and want to free up storage, the prefs pane has a guided "Reclaim Zotero Storage" tool (it keeps annotated PDFs stored, and the old copies go to Zotero's recoverable trash).</p>
       </details>
       <details>
         <summary>What's not done yet?</summary>
@@ -998,6 +1003,13 @@ footer .fine {
       <li>
         <span class="status done">Done</span>
         <div>
+          <b>v2.6.0 — deletion-safety hardening + PDF storage strategy</b>
+          <span class="meta">Conflict gates on every Mode 2/3 delete path (local-hash + Zotero-side freshness), Mode 2 suppress-not-drop (no re-import loop), adopt-into-scope after baseline, split local-folder / Zotero-collection delete directions; user-friendly README + technical DEVELOPERS.md; and a PDF storage-strategy layer — store in Zotero / link from watch folder / store + mirror — with "Reclaim Zotero Storage" and "Build/Repair Mirror" tools.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
           <b>v2.3 / v2.4 — stable line + setup wizard</b>
           <span class="meta">Trashed sync-root hardening, full multi-step XHTML setup wizard, security audit close-out.</span>
         </div>
@@ -1042,7 +1054,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (669 passing, 22 files)</span>
+<span class="c"># unit tests (702 passing, 23 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1072,7 +1084,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.5.1 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-28
+      GPL-3.0 · v2.6.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-28
     </div>
   </div>
 </footer>

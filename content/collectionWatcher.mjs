@@ -371,8 +371,10 @@ async function _handleDelete(id, extraData) {
   if (!key || !_store) return;
   const record = _store.getCollectionRecord(key);
   if (!record) return; // never tracked → not under sync root → ignore
+  // Zotero-side deletion → trash the LOCAL folder (zoteroCollectionDeleted).
+  // Distinct from localFolderDeleted (disk-side), which propagates to Zotero.
   await _emit({
-    type: 'deleteFolder',
+    type: 'zoteroCollectionDeleted',
     payload: {
       collectionKey: key,
       oldRelativePath: record.localPath,

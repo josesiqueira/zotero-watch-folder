@@ -402,7 +402,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>My folder is empty and my Zotero library is empty</h3>
       <p class="voice">I just installed the plugin. I want to set things up so it's ready when I start downloading papers.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Open settings, point the plugin at a folder I'll be dropping PDFs into, pick a Zotero collection where new items should land, pick a mode, turn it on.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">A four-step wizard offers me: pick the local folder → pick the Zotero collection → pick a mode → confirm. Defaults work for most people. After "Enable", the plugin is running. Nothing visible happens yet on disk or in Zotero because there's nothing to sync.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">A five-step wizard offers me: pick the local folder → pick the Zotero collection → pick a mode → pick where PDFs live (storage strategy) → confirm. Defaults work for most people. After "Enable", the plugin is running. Nothing visible happens yet on disk or in Zotero because there's nothing to sync.</span></div>
       <div class="row offnote"><span class="label">If it looks off</span><span class="body">No wizard appears → check that <code>setupCompleted</code> isn't already true from a previous attempt. Open prefs and re-run setup via "Re-run setup wizard…".</span></div>
       <div class="ref"><b>Covers:</b> S.1, S.4, SETUP.1, P1.1, P1.2, P1.10</div>
     </div>
@@ -794,12 +794,13 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
     </div>
 
     <div class="story">
-      <div class="story-tag">4.9 · linked vs stored</div>
-      <h3>I want to link to files instead of copying into Zotero storage</h3>
-      <p class="voice">Storage is at a premium. I'd rather have Zotero point to the file in my watch folder than copy it.</p>
-      <div class="row"><span class="label">I want to</span><span class="body">Use Zotero's "Link to file" mode for new imports.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>importMode</code> to <code>linked</code>. New imports become linked-file attachments. The original PDF stays in the watch folder. No copy in Zotero storage.</span></div>
-      <div class="ref"><b>Covers:</b> P1.9</div>
+      <div class="story-tag">4.9 · where PDFs live</div>
+      <h3>I want to pick where my PDFs are stored — and free up Zotero storage</h3>
+      <p class="voice">My Zotero storage is nearly full. I'd rather Zotero point to the PDFs in my watch folder than keep its own copies — but I don't want to lose my highlights.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Choose a <b>PDF storage strategy</b> (separate from the sync mode), and convert my existing stored PDFs to linked ones to reclaim space.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The prefs pane offers three strategies: <b>Store in Zotero</b> (default), <b>Link from watch folder</b> (saves Zotero storage — your folder-sync tool backs the files up), and <b>Store + mirror</b> (both). Picking "Link" changes how <em>new</em> imports are stored. To convert existing ones, "Reclaim Zotero Storage Space…" previews what it'll do, then converts only PDFs <b>without</b> highlights/notes — each copied out, hash-verified, relinked, with the old stored copy sent to Zotero's recoverable trash. Your metadata, notes, and annotations keep syncing regardless of where the file sits.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">A PDF you expected to convert stayed stored → it has highlights/notes, which are deliberately kept stored so they can't be orphaned. Linked PDFs not opening on your phone → linked files don't sync to Zotero mobile; that's expected for the "Link" strategy.</span></div>
+      <div class="ref"><b>Covers:</b> P1.9, I.21, I.22, I.23, E.24, E.25</div>
     </div>
 
     <div class="story">
@@ -871,7 +872,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap-wide">
     <div class="row">
-      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.5.1 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
+      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.6.0 · Covers Zotero 7, 8, 9 · Last updated 2026-05-28</div>
       <ul>
         <li><a href="index.html">Back to overview</a></li>
         <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>

@@ -100,7 +100,8 @@ function _initDefaultPrefs() {
   _set("sourcePath",             "");
   _set("pollInterval",           5);
   _set("fileTypes",              "pdf");
-  _set("importMode",             "stored");
+  _set("importMode",             "stored"); // legacy — superseded by pdfStorageStrategy
+  _set("pdfStorageStrategy",     "stored"); // "stored" | "linked_watch_folder" | "stored_plus_mirror"
   _set("postImportAction",       "leave");
   _set("autoRetrieveMetadata",   true);
   _set("diskDeleteOnTrash",      "ask");  // "ask" | "plugin_trash" | "os_trash" | "permanent" | "never" — no-op in Mode 1; consumed by v2.1/v2.2. plugin_trash = move to .zotero-watch-trash/ under watch root.

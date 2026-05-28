@@ -127,6 +127,53 @@
     </hbox>
   </groupbox>
 
+  <!-- ─── PDF storage strategy ───────────────────────────────────── -->
+  <groupbox>
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-storage"/></label>
+    <html:p data-l10n-id="watch-folder-pref-storage-explainer"
+            style="margin: 0 0 8px 0; font-size: 0.9em; color: #444; line-height: 1.35;"/>
+    <radiogroup id="watch-folder-storage-radio"
+                oncommand="WatchFolderPrefs.changeStorageStrategy(event.target.value)"
+                style="margin: 4px 0 0 16px;">
+      <vbox style="margin-bottom: 6px;">
+        <radio value="stored" data-l10n-id="watch-folder-pref-storage-stored-label"/>
+        <html:p data-l10n-id="watch-folder-pref-storage-stored-desc"
+                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+      </vbox>
+      <vbox style="margin-bottom: 6px;">
+        <radio value="linked_watch_folder" data-l10n-id="watch-folder-pref-storage-linked-label"/>
+        <html:p data-l10n-id="watch-folder-pref-storage-linked-desc"
+                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+      </vbox>
+      <vbox>
+        <radio value="stored_plus_mirror" data-l10n-id="watch-folder-pref-storage-mirror-label"/>
+        <html:p data-l10n-id="watch-folder-pref-storage-mirror-desc"
+                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+      </vbox>
+    </radiogroup>
+
+    <html:p id="watch-folder-storage-warning"
+            data-l10n-id="watch-folder-pref-storage-linked-warning"
+            hidden="true"
+            style="margin: 8px 0 0 16px; font-size: 0.9em; color: #a33; line-height: 1.3;"/>
+
+    <html:p id="watch-folder-storage-restore"
+            data-l10n-id="watch-folder-pref-storage-restore"
+            hidden="true"
+            style="margin: 6px 0 0 16px; font-size: 0.85em; color: #666; line-height: 1.3;"/>
+
+    <hbox align="center" style="margin-top: 8px;">
+      <button id="watch-folder-storage-reclaim-btn"
+              data-l10n-id="watch-folder-pref-storage-reclaim"
+              hidden="true"
+              oncommand="WatchFolderPrefs.reclaimStorage()"/>
+      <button id="watch-folder-storage-mirror-btn"
+              data-l10n-id="watch-folder-pref-storage-build-mirror"
+              hidden="true"
+              oncommand="WatchFolderPrefs.buildRepairMirror()"/>
+    </hbox>
+  </groupbox>
+
   <!-- ─── File Naming ────────────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>

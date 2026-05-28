@@ -333,7 +333,7 @@ describe('UT-308: collection delete → deleteFolder iff record exists', () => {
     await getObs().notify('delete', 'collection', [200], { 200: { key: 'SUB1' } });
 
     const action = mirrorExecutor.execute.mock.calls[0][0];
-    expect(action.type).toBe('deleteFolder');
+    expect(action.type).toBe('zoteroCollectionDeleted');
     expect(action.payload.collectionKey).toBe('SUB1');
     expect(action.payload.oldRelativePath).toBe('Methods');
   });
@@ -361,7 +361,7 @@ describe('UT-308: collection delete → deleteFolder iff record exists', () => {
     await getObs().notify('trash', 'collection', [200], { 200: { key: 'SUB1' } });
 
     expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('deleteFolder');
+    expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('zoteroCollectionDeleted');
   });
 });
 

@@ -15,7 +15,13 @@
  *
  *   createFolder            — mkdir under watch root; insert CollectionRecord
  *   moveFolder              — rename/move local dir; rewrite child file paths
- *   deleteFolder            — Mode 2 warns only; Mode 3 recursive-moves into plugin trash
+ *   zoteroCollectionDeleted — Zotero collection gone → Mode 3 trashes the LOCAL
+ *                             folder (per-child local-hash gate); Mode 2 warns.
+ *                             `deleteFolder` is a back-compat alias for this.
+ *   localFolderDeleted      — local folder gone → Mode 3 propagates to Zotero:
+ *                             bulk-safe-delete the contained attachments (each
+ *                             cleared by the Zotero-side freshness gate) then
+ *                             trashes the Zotero collection; Mode 2 warns.
  *   moveItem                — gated by conflict-gate; move single file
  *   addItemMembership       — tracking-only (collectionMembershipKeys union)
  *   removeItemMembership    — tracking-only (collectionMembershipKeys minus)
@@ -29,7 +35,7 @@
 import { getPref, getFileHash } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
-import { collectionKeyToRelativePath } from './canonicalPath.mjs';
+import { collectionKeyToRelativePath, resolveSyncRoot } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
 import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
@@ -150,7 +156,14 @@ export async function execute(action) {
     case 'createFolder':         return _createFolder(payload);
     case 'moveFolder':           return _moveFolder(payload);
     case 'renameFolder':         return _moveFolder(payload); // alias
-    case 'deleteFolder':         return _deleteFolder(payload);
+    // Direction-specific folder deletion (spec risk #5). The Zotero side
+    // and the disk side mean very different things, so they get distinct
+    // handlers + conflict gates. `deleteFolder` is kept as a back-compat
+    // alias for the Zotero-collection-deleted direction (its historical
+    // behavior: trash the LOCAL folder).
+    case 'zoteroCollectionDeleted': return _zoteroCollectionDeleted(payload);
+    case 'deleteFolder':            return _zoteroCollectionDeleted(payload); // alias
+    case 'localFolderDeleted':      return _localFolderDeleted(payload);
     case 'moveItem':             return _moveItem(payload);
     case 'addItemMembership':    return _addItemMembership(payload);
     case 'removeItemMembership': return _removeItemMembership(payload);
@@ -206,6 +219,63 @@ export async function canSafelyMove(record, absPath) {
     currentHash = await getFileHash(absPath);
   }
   if (!currentHash) return { ok: false, reason: 'hash-failed' };
+  if (currentHash !== record.lastSyncedHash) {
+    return {
+      ok: false,
+      reason: 'hash-drifted',
+      currentHash,
+      recordedHash: record.lastSyncedHash,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Freshness gate for propagating a LOCAL deletion to Zotero. Before we trash
+ * a Zotero attachment because its local file disappeared, verify the
+ * Zotero-stored attachment file still matches `record.lastSyncedHash` — i.e.
+ * the Zotero side has NOT changed since the last successful sync. If we
+ * cannot prove it's unchanged (no baseline hash, or the stored file is
+ * unavailable / not yet downloaded by file-sync), we BLOCK the deletion
+ * (spec §"Zotero-side freshness protection for local-file deletion").
+ *
+ * This is the Zotero-side mirror of `canSafelyMove` (which gates the LOCAL
+ * side). Both deletion directions must clear the appropriate gate before any
+ * destructive action.
+ *
+ * Returns:
+ *   { ok: true }                                — Zotero side unchanged, safe
+ *   { ok: false, reason: 'invalid-record' }     — missing args
+ *   { ok: false, reason: 'no-baseline' }        — record has no lastSyncedHash
+ *   { ok: false, reason: 'file-unavailable' }   — stored file missing / not downloaded
+ *   { ok: false, reason: 'hash-drifted', currentHash, recordedHash }
+ *
+ * @param {object} record - FileRecord.
+ * @param {object} attachmentItem - Zotero attachment Item.
+ */
+export async function canSafelyTrashZoteroAttachment(record, attachmentItem) {
+  if (!record || !attachmentItem) return { ok: false, reason: 'invalid-record' };
+  if (!record.lastSyncedHash) return { ok: false, reason: 'no-baseline' };
+  let storedPath = null;
+  try {
+    if (typeof attachmentItem.getFilePathAsync === 'function') {
+      storedPath = await attachmentItem.getFilePathAsync();
+    } else if (typeof attachmentItem.getFilePath === 'function') {
+      storedPath = attachmentItem.getFilePath();
+    }
+  } catch (_e) {
+    storedPath = null;
+  }
+  // getFilePathAsync() resolves to `false` when the file isn't available
+  // (linked-missing, or file-sync hasn't downloaded it yet).
+  if (!storedPath) return { ok: false, reason: 'file-unavailable' };
+  let exists = false;
+  try { exists = await IOUtils.exists(storedPath); } catch (_e) { exists = false; }
+  if (!exists) return { ok: false, reason: 'file-unavailable' };
+  let currentHash = null;
+  try { currentHash = await _hashFileCached(storedPath); } catch (_e) { currentHash = null; }
+  if (!currentHash) currentHash = await getFileHash(storedPath);
+  if (!currentHash) return { ok: false, reason: 'file-unavailable' };
   if (currentHash !== record.lastSyncedHash) {
     return {
       ok: false,
@@ -467,7 +537,14 @@ async function _moveFolder(payload) {
   });
 }
 
-async function _deleteFolder(payload) {
+/**
+ * `zoteroCollectionDeleted` direction (spec risk #5): a Zotero collection
+ * was deleted, so the corresponding LOCAL folder should be trashed. The
+ * local files still exist on disk, so the conflict gate is the LOCAL-hash
+ * one (`canSafelyMove`) applied per child before the recursive move.
+ * Historically this was `deleteFolder`; that name remains a dispatch alias.
+ */
+async function _zoteroCollectionDeleted(payload) {
   const { collectionKey, oldRelativePath } = payload;
   if (!collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`collection:${collectionKey}`, async () => {
@@ -574,6 +651,43 @@ async function _deleteFolder(payload) {
       }
     }
 
+    // Per-child conflict gate (spec risk #1b). Before moving the whole
+    // folder into plugin trash, verify EVERY tracked child file is unchanged
+    // since last sync. We only block on genuine content drift (`hash-drifted`)
+    // — a missing or baseline-less child isn't user-edited content at risk, so
+    // it doesn't veto the whole folder. Any drift aborts the entire move and
+    // flips the drifted records to CONFLICT_BLOCKED; we never trash bytes the
+    // user edited locally (spec: "verify every tracked local child file is
+    // unchanged before moving the folder").
+    if (_store) {
+      const prefix = oldRelativePath + '/';
+      const children = _store.getAllOfType('file').filter((r) =>
+        r.localPath === oldRelativePath
+        || (typeof r.localPath === 'string' && r.localPath.startsWith(prefix)));
+      const drifted = [];
+      for (const child of children) {
+        let childAbs;
+        try { childAbs = _absPath(child.localPath); } catch (_e) { continue; }
+        const gate = await canSafelyMove(child, childAbs);
+        if (!gate.ok && gate.reason === 'hash-drifted') drifted.push(child);
+      }
+      if (drifted.length > 0) {
+        for (const child of drifted) {
+          _store.update(child.localPath, { state: STATE.CONFLICT_BLOCKED });
+          reportWarning({
+            category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+            actionType: 'deleteFolder',
+            collectionKey,
+            path: child.localPath,
+            reason: 'hash-drifted',
+            message: `Refused to trash folder "${oldRelativePath}" — child file "${child.localPath}" was edited locally since last sync. Resolve the conflict first.`,
+          });
+        }
+        try { await _store.save(); } catch (_e) { /* logged */ }
+        return { ok: false, reason: 'conflict-blocked', conflictedCount: drifted.length };
+      }
+    }
+
     // Compute destination under plugin trash. Collision policy mirrors
     // _moveToPluginTrash (RST.6): never overwrite — suffix with a
     // millisecond timestamp on the folder name.
@@ -651,6 +765,182 @@ function _dropCollectionAndChildren(collectionKey, relativePath) {
     }
   }
   for (const p of toRemove) _store.remove(p);
+}
+
+/**
+ * `localFolderDeleted` direction (spec risk #5): the user deleted a LOCAL
+ * folder, so the change should propagate to Zotero. The local files are
+ * already gone, so the conflict gate here is the ZOTERO-side freshness one
+ * (`canSafelyTrashZoteroAttachment`) — we only trash a Zotero attachment if
+ * its stored bytes still match `lastSyncedHash`.
+ *
+ * Mode 3 (per the approved product decision — bulk-safe-delete):
+ *   1. Enumerate tracked child file records under the folder.
+ *   2. Bulk-guard once (>10 files or >20% of the tree → confirm).
+ *   3. Per child: freshness gate → clean ⇒ trash the Zotero attachment +
+ *      drop record; drifted/unverifiable ⇒ CONFLICT_BLOCKED + warn + keep.
+ *      Shadow records whose canonical sibling still lives elsewhere are
+ *      dropped without trashing the shared attachment (cascading-trash guard).
+ *   4. Trash the Zotero collection (recoverable) + drop its record.
+ *
+ * Mode 2 stays warn-only (mirror of the other direction): flip the
+ * collection record to OUT_OF_SCOPE_SUPPRESSED and warn.
+ */
+async function _localFolderDeleted(payload) {
+  const { collectionKey, oldRelativePath } = payload;
+  if (!collectionKey) return { ok: false, reason: 'invalid-payload' };
+  return _withLock(`collection:${collectionKey}`, async () => {
+    const mode = getPref('mode') || 'mode1';
+
+    if (mode !== 'mode3') {
+      if (_store) {
+        const existing = _store.getCollectionRecord(collectionKey);
+        if (existing) {
+          _store.add(createCollectionRecord({
+            ...existing,
+            state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+          }));
+          try { await _store.save(); } catch (_e) { /* logged */ }
+        }
+      }
+      reportWarning({
+        category: WARNING_CATEGORY.SUPPRESSED,
+        actionType: 'localFolderDeleted',
+        collectionKey,
+        path: oldRelativePath || null,
+        reason: 'warn-only-mode2',
+        message: `Local folder removal suppressed (Mode 2): "${oldRelativePath || collectionKey}" — Zotero collection kept.`,
+      });
+      return { ok: false, reason: 'warn-only-mode2' };
+    }
+
+    // Mode 3 — propagate the deletion to Zotero.
+    const syncRoot = await resolveSyncRoot().catch(() => null);
+    const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
+
+    // Gather tracked child file records (under the folder path).
+    let children = [];
+    if (_store && oldRelativePath) {
+      const prefix = oldRelativePath + '/';
+      children = _store.getAllOfType('file').filter((r) =>
+        r.localPath === oldRelativePath
+        || (typeof r.localPath === 'string' && r.localPath.startsWith(prefix)));
+    }
+
+    // Bulk-delete protection — count the attachments that would be trashed.
+    if (_store && children.length > 0) {
+      const totalTracked = _store.getAllOfType('file').length;
+      if (isBulkDelete(children.length, totalTracked)) {
+        const approved = await confirmBulkDelete({
+          action: 'trash in Zotero (local folder deleted)',
+          path: oldRelativePath,
+          affectedCount: children.length,
+          totalTracked,
+        });
+        if (!approved) {
+          reportWarning({
+            category: WARNING_CATEGORY.SUPPRESSED,
+            actionType: 'localFolderDeleted',
+            collectionKey,
+            path: oldRelativePath,
+            reason: 'bulk-confirm-denied',
+            message: `Bulk Zotero-trash refused: ${children.length}/${totalTracked} attachment(s) under "${oldRelativePath}" left untouched (user declined or no UI).`,
+          });
+          return { ok: false, reason: 'bulk-confirm-denied', affectedCount: children.length, totalTracked };
+        }
+      }
+    }
+
+    let trashed = 0;
+    let blocked = 0;
+    for (const child of children) {
+      if (!child.zoteroAttachmentKey) { if (_store) _store.remove(child.localPath); continue; }
+
+      // Cascading-trash guard: a shadow (localPath !== canonicalLocalPath)
+      // whose canonical sibling still lives elsewhere shares the SAME Zotero
+      // attachment — don't trash it. Drop the shadow record only.
+      const isShadow = child.localPath !== child.canonicalLocalPath;
+      if (isShadow && _store) {
+        const canonical = _store.getAllByAttachmentKey(child.zoteroAttachmentKey)
+          .find((r) => r.localPath === r.canonicalLocalPath && r !== child);
+        if (canonical) {
+          _store.remove(child.localPath);
+          continue;
+        }
+      }
+
+      let item = null;
+      try {
+        item = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, child.zoteroAttachmentKey);
+      } catch (_e) { item = null; }
+      if (!item) {
+        // Attachment already gone from Zotero — nothing to trash.
+        if (_store) _store.remove(child.localPath);
+        continue;
+      }
+
+      const gate = await canSafelyTrashZoteroAttachment(child, item);
+      if (!gate.ok) {
+        if (_store) _store.update(child.localPath, { state: STATE.CONFLICT_BLOCKED });
+        blocked++;
+        reportWarning({
+          category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+          actionType: 'localFolderDeleted',
+          attachmentKey: child.zoteroAttachmentKey,
+          collectionKey,
+          path: child.localPath,
+          reason: gate.reason,
+          message: `Refused to trash Zotero attachment for "${child.localPath}" — ${gate.reason === 'hash-drifted' ? 'Zotero copy changed since last sync' : gate.reason}. Local folder was deleted; resolve before propagating.`,
+        });
+        continue;
+      }
+
+      try {
+        if (!item.deleted) {
+          item.deleted = true;
+          await item.saveTx();
+        }
+        trashed++;
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] mirrorExecutor localFolderDeleted trash ${child.zoteroAttachmentKey}: ${e?.message ?? e}`);
+      }
+      if (_store) _store.remove(child.localPath);
+    }
+
+    // Trash the Zotero collection itself (recoverable) — but only if no
+    // child was conflict-blocked (a blocked child means the folder isn't
+    // safely empty yet; keep the collection so the user can resolve).
+    let collectionTrashed = false;
+    if (blocked === 0) {
+      try {
+        const collection = Zotero.Collections.getByLibraryAndKey
+          ? Zotero.Collections.getByLibraryAndKey(libraryID, collectionKey)
+          : null;
+        if (collection) {
+          if (!collection.deleted) {
+            collection.deleted = true;
+            await collection.saveTx();
+          }
+          collectionTrashed = true;
+        }
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] mirrorExecutor localFolderDeleted trash collection ${collectionKey}: ${e?.message ?? e}`);
+      }
+      if (_store) _store.removeCollectionRecord(collectionKey);
+    }
+
+    try { if (_store) await _store.save(); } catch (_e) { /* logged */ }
+    reportWarning({
+      category: WARNING_CATEGORY.SUPPRESSED,
+      actionType: 'localFolderDeleted',
+      collectionKey,
+      path: oldRelativePath || null,
+      reason: blocked > 0 ? 'partial-conflict' : 'propagated-to-zotero',
+      message: `Local folder "${oldRelativePath || collectionKey}" deleted → trashed ${trashed} Zotero attachment(s)${blocked > 0 ? `, ${blocked} blocked (conflict)` : ''}${collectionTrashed ? ', collection trashed' : ''}.`,
+    });
+    Zotero.debug(`[WatchFolder] mirrorExecutor: localFolderDeleted ${oldRelativePath || collectionKey} — trashed=${trashed} blocked=${blocked} collectionTrashed=${collectionTrashed}`);
+    return { ok: true, reason: blocked > 0 ? 'partial-conflict' : 'propagated-to-zotero', trashed, blocked, collectionTrashed };
+  });
 }
 
 async function _moveItem(payload) {

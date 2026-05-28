@@ -35,6 +35,8 @@ import {
   chooseCanonicalCollection,
 } from './canonicalPath.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
+import * as baseline from './baseline.mjs';
+import { getPref } from './utils.mjs';
 
 /**
  * Handle a `collection-item` notifier event.
@@ -106,7 +108,7 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
         for (const attachmentKey of attachmentKeys) {
           const record = store.getByAttachmentKey(attachmentKey);
           if (event === 'add') {
-            await _handleAdd({ record, attachmentKey, collection, item, syncRoot });
+            await _handleAdd({ record, attachmentKey, collection, item, syncRoot, store });
           } else {
             await _handleRemove({ record, attachmentKey, collection, item, syncRoot, store });
           }
@@ -120,14 +122,41 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
 
 // ─── Event handlers ────────────────────────────────────────────────────────
 
-async function _handleAdd({ record, attachmentKey, collection, item, syncRoot }) {
+async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, store }) {
   if (!record) {
-    // Untracked item appeared in a sync-root collection. This is the B.2
-    // case from the install-time baseline matrix (Zotero has the item; the
-    // plugin hasn't tracked it). Full handling lives in Phase C
-    // (first-run baseline / baseline-copy-from-Zotero-storage). For now
-    // we just log so the event is observable in MCP runbooks.
-    Zotero.debug(`[WatchFolder] itemMembershipHandler: untracked attachment ${attachmentKey} added to ${collection.key} (deferring — Phase C)`);
+    // Untracked attachment appeared in a sync-root collection.
+    //
+    // During first-run baseline this is the B.2 case and baseline owns the
+    // copy (it walks the whole tree once), so defer. But AFTER baseline has
+    // completed for this sync root, baseline will never run again — an item
+    // the user drags/moves into the sync root would be silently missed. So
+    // here we ADOPT it: copy the attachment to its canonical local path and
+    // create a FileRecord (spec risk #4). `copyAttachmentToCanonical` is
+    // idempotent — it skips notes/links (no attachmentFilename), already-
+    // tracked attachments, and files already present at the destination.
+    const baselineRoot = getPref('baselineCompletedForRoot');
+    const baselineDone = !!baselineRoot
+      && !!syncRoot?.collection?.key
+      && baselineRoot === syncRoot.collection.key;
+    if (!baselineDone) {
+      Zotero.debug(`[WatchFolder] itemMembershipHandler: untracked attachment ${attachmentKey} added to ${collection.key} — deferring to baseline (not yet complete)`);
+      return;
+    }
+    const watchRoot = getPref('sourcePath');
+    if (!watchRoot || !store) return;
+    let attachment = null;
+    try {
+      attachment = await Zotero.Items.getByLibraryAndKeyAsync(syncRoot.libraryID, attachmentKey);
+    } catch (_e) { attachment = null; }
+    if (!attachment) return;
+    try {
+      const result = await baseline.copyAttachmentToCanonical({
+        attachment, item, syncRoot, watchRoot, store,
+      });
+      Zotero.debug(`[WatchFolder] itemMembershipHandler: adopted untracked attachment ${attachmentKey} into sync root → ${result}`);
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] itemMembershipHandler adopt ${attachmentKey}: ${e?.message ?? e}`);
+    }
     return;
   }
   // Idempotent union update.

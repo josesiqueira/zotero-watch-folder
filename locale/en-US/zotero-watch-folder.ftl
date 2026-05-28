@@ -45,6 +45,20 @@ watch-folder-pref-mode3-desc = Full two-way sync. Adds, renames, AND deletions p
 
 watch-folder-pref-rerun-wizard = Re-run setup wizard…
 
+# ─── PDF storage strategy (orthogonal to sync mode) ───────────────
+watch-folder-pref-section-storage = PDF storage strategy
+watch-folder-pref-storage-explainer = Zotero data sync protects your library metadata, notes, collections, and Zotero highlights. PDF files are separate. If you choose linked watch-folder files, Zotero will remember the papers and annotations, while your folder-sync provider protects the PDF files.
+watch-folder-pref-storage-stored-label = Store PDFs in Zotero
+watch-folder-pref-storage-stored-desc = Best Zotero experience. Zotero manages PDFs and can sync them using Zotero Storage or WebDAV. Uses Zotero file storage if file sync is enabled.
+watch-folder-pref-storage-linked-label = Link PDFs from watch folder
+watch-folder-pref-storage-linked-desc = Saves Zotero Storage space. PDFs live in your watch folder, so use pCloud Sync, Dropbox, OneDrive, Syncthing, or another folder-sync tool to back them up.
+watch-folder-pref-storage-mirror-label = Store in Zotero and mirror to watch folder
+watch-folder-pref-storage-mirror-desc = Keeps Zotero's normal stored attachment plus a copy in the watch folder. This is redundant and useful for backup/export workflows, but it does not save Zotero Storage space.
+watch-folder-pref-storage-linked-warning = Linked PDFs may not be available inside Zotero mobile apps.
+watch-folder-pref-storage-restore = If this computer is lost, install Zotero and sign in to restore metadata, notes, and annotations. Then install your folder-sync app, let it download the watch folder, and set Zotero's linked attachment base directory so Zotero can find the PDFs again.
+watch-folder-pref-storage-reclaim = Reclaim Zotero Storage Space…
+watch-folder-pref-storage-build-mirror = Build/Repair Watch Folder Mirror…
+
 # ─── Attention rows (only shown when non-zero) ────────────────────
 watch-folder-pref-warnings = Sync warnings:
 watch-folder-pref-warnings-view = View

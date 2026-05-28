@@ -14,6 +14,8 @@ import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
+import { canSafelyMove, canSafelyTrashZoteroAttachment } from './mirrorExecutor.mjs';
+import { getStorageStrategy, STRATEGY } from './storageStrategy.mjs';
 import {
   resolveSyncRoot,
   relativePathToCollection,
@@ -772,8 +774,12 @@ export class WatchFolderService {
 
       // Step 4b: Post-import action (only meaningful for stored mode).
       let postImportResult = { action: 'leave', finalPath: filePath };
-      const importMode = getPref('importMode') || 'stored';
-      if (importMode === 'stored') {
+      // Post-import disposition (delete/move the dropped file) only applies to
+      // the pure `stored` strategy. `stored_plus_mirror` must keep the
+      // watch-folder copy as the mirror; `linked_watch_folder` IS the
+      // watch-folder file Zotero now links to — never move/delete it.
+      const storageStrategy = getStorageStrategy();
+      if (storageStrategy === STRATEGY.STORED) {
         try {
           postImportResult = await handlePostImportAction(filePath);
         } catch (e) {
@@ -1473,21 +1479,64 @@ export class WatchFolderService {
       const canonical = records.find(r => r.localPath === r.canonicalLocalPath) || records[0];
       const shadows = records.filter(r => r !== canonical);
       let canonicalDiskPath = null;
+      let conflictBlocked = false;
       if (canonical.state !== STATE.MISSING && canonical.localPath) {
         const abs = this._resolveTrackedAbs(canonical.localPath, watchPath);
         const exists = await IOUtils.exists(abs).catch(() => false);
-        if (exists) canonicalDiskPath = abs;
+        if (exists && syncMode !== 'mode3') {
+          // Mode 2 never trashes the local file; no conflict gate needed.
+          canonicalDiskPath = abs;
+        } else if (exists) {
+          // Conflict gate (spec risk #1a): only trash the local file if its
+          // bytes still match the last-synced hash. If the user edited the
+          // file locally since last sync, trashing it on a Zotero-side trash
+          // would destroy those edits — block instead. We only veto on proven
+          // drift; a record with no baseline hash falls through to the prior
+          // behavior (can't detect an edit, so don't presume one).
+          const gate = await canSafelyMove(canonical, abs);
+          if (gate.ok || gate.reason !== 'hash-drifted') {
+            canonicalDiskPath = abs;
+          } else {
+            conflictBlocked = true;
+            this._trackingStore.update(canonical.localPath, { state: STATE.CONFLICT_BLOCKED });
+            try {
+              reportWarning({
+                category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+                actionType: 'zotero-trash',
+                attachmentKey: key,
+                path: canonical.localPath,
+                reason: 'hash-drifted',
+                message: `Zotero item trashed, but local file "${canonical.localPath}" was edited since last sync — NOT trashed. Resolve the conflict via the prefs pane.`,
+              });
+            } catch (_e) { /* sink unavailable */ }
+          }
+        }
       }
-      plans.push({ attachmentKey: key, canonical, shadows, canonicalDiskPath });
+      plans.push({ attachmentKey: key, canonical, shadows, canonicalDiskPath, conflictBlocked });
     }
     if (plans.length === 0) return;
 
-    // 3. Mode 2: warn-only. Drop tracking for canonical + shadows, surface
-    //    one warningSink entry per attachment. Never touch disk.
+    // 3. Mode 2: warn-only. Never touch disk. SUPPRESS (don't drop) tracking
+    //    for any record whose local file still exists — dropping it would
+    //    let the next scan re-import the file, recreating the Zotero item the
+    //    user just trashed (spec risk #3). Records whose file is already gone
+    //    are removed. Suppressed records surface in the prefs-pane resolution
+    //    UX (OUT_OF_SCOPE_SUPPRESSED).
     if (syncMode === 'mode2') {
       for (const p of plans) {
+        let suppressed = 0;
         for (const r of [p.canonical, ...p.shadows]) {
-          this._trackingStore.remove(r.localPath);
+          let stillOnDisk = false;
+          try {
+            const rAbs = this._resolveTrackedAbs(r.localPath, watchPath);
+            stillOnDisk = await IOUtils.exists(rAbs).catch(() => false);
+          } catch (_e) { stillOnDisk = false; }
+          if (stillOnDisk) {
+            this._trackingStore.update(r.localPath, { state: STATE.OUT_OF_SCOPE_SUPPRESSED });
+            suppressed++;
+          } else {
+            this._trackingStore.remove(r.localPath);
+          }
         }
         try {
           reportWarning({
@@ -1496,7 +1545,7 @@ export class WatchFolderService {
             attachmentKey: p.attachmentKey,
             path: p.canonical.localPath,
             reason: 'mode2-warn-only',
-            message: `Zotero item trashed — local file kept (Mode 2): "${p.canonical.localPath}"${p.shadows.length > 0 ? ` (+${p.shadows.length} shadow record${p.shadows.length === 1 ? '' : 's'} dropped)` : ''}`,
+            message: `Zotero item trashed — local file kept (Mode 2): "${p.canonical.localPath}". ${suppressed} record(s) suppressed (won't re-import); resolve via the prefs pane.`,
           });
         } catch (_e) { /* sink unavailable */ }
       }
@@ -1552,11 +1601,13 @@ export class WatchFolderService {
     for (const p of plans) {
       let trashPath = null;   // sync-root-relative path inside plugin trash
       let movedToRecoverable = false; // covers plugin_trash + os_trash success
+      let fileRemoved = false; // canonical bytes are actually gone from disk
       if (p.canonicalDiskPath) {
         if (action === 'plugin_trash') {
           trashPath = await this._moveToPluginTrash(p.canonicalDiskPath);
           if (trashPath) {
             movedToRecoverable = true;
+            fileRemoved = true;
           } else {
             // Fall back to OS trash so the user doesn't end up with an
             // un-actioned file plus a missing tracking record. Logged
@@ -1566,6 +1617,7 @@ export class WatchFolderService {
             try {
               await this._moveToOSTrash(p.canonicalDiskPath);
               movedToRecoverable = true;
+              fileRemoved = true;
             } catch (e) {
               Zotero.debug(`[WatchFolder] OS-trash fallback failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`);
             }
@@ -1574,18 +1626,20 @@ export class WatchFolderService {
           try {
             await this._moveToOSTrash(p.canonicalDiskPath);
             movedToRecoverable = true;
+            fileRemoved = true;
           } catch (e) {
             Zotero.debug(`[WatchFolder] _handleZoteroTrash os_trash failed for ${p.canonicalDiskPath}: ${e?.message ?? e}`);
           }
         } else if (action === 'permanent') {
           try {
             await IOUtils.remove(p.canonicalDiskPath);
+            fileRemoved = true;
             Zotero.debug(`[WatchFolder] _handleZoteroTrash: permanently deleted ${p.canonicalDiskPath}`);
           } catch (e) {
             Zotero.debug(`[WatchFolder] _handleZoteroTrash: failed to delete ${p.canonicalDiskPath}: ${e?.message ?? e}`);
           }
         }
-        // 'never' → leave canonical file alone
+        // 'never' → leave canonical file alone (fileRemoved stays false)
       }
 
       // Emit a tombstone when the canonical file landed in plugin or OS
@@ -1609,11 +1663,45 @@ export class WatchFolderService {
         }
       }
 
-      // Drop tracking for canonical + every shadow. Shadow paths are
-      // NEVER disk-deleted here — that's the cascading-trash guard.
-      this._trackingStore.remove(p.canonical.localPath);
+      // Tracking cleanup. A canonical file that still lives on disk (action
+      // 'never', or a failed trash) must NOT have its record dropped — the
+      // next scan would re-import it (spec risk #3, "same risk applies to
+      // Mode 3 when never / trash fails"). Keep it as OUT_OF_SCOPE_SUPPRESSED
+      // so the path-skip guard holds and the user can resolve via the prefs
+      // pane. Conflict-blocked canonicals were already flipped in the
+      // plan-build pass — leave them untouched.
+      if (!p.conflictBlocked) {
+        if (!fileRemoved && p.canonicalDiskPath) {
+          this._trackingStore.update(p.canonical.localPath, { state: STATE.OUT_OF_SCOPE_SUPPRESSED });
+          try {
+            reportWarning({
+              category: WARNING_CATEGORY.SUPPRESSED,
+              actionType: 'zotero-trash',
+              attachmentKey: p.attachmentKey,
+              path: p.canonical.localPath,
+              reason: 'kept-local',
+              message: `Zotero item trashed; local file "${p.canonical.localPath}" kept on disk and suppressed (won't re-import). Resolve via the prefs pane.`,
+            });
+          } catch (_e) { /* sink unavailable */ }
+        } else {
+          this._trackingStore.remove(p.canonical.localPath);
+        }
+      }
+
+      // Shadow records are NEVER disk-deleted here (cascading-trash guard).
+      // A shadow whose file is still on disk must be suppressed, not dropped,
+      // or the next scan re-imports the duplicate copy as a brand-new item.
       for (const s of p.shadows) {
-        this._trackingStore.remove(s.localPath);
+        let shadowExists = false;
+        try {
+          const sAbs = this._resolveTrackedAbs(s.localPath, watchPath);
+          shadowExists = await IOUtils.exists(sAbs).catch(() => false);
+        } catch (_e) { shadowExists = false; }
+        if (shadowExists) {
+          this._trackingStore.update(s.localPath, { state: STATE.OUT_OF_SCOPE_SUPPRESSED });
+        } else {
+          this._trackingStore.remove(s.localPath);
+        }
       }
     }
 
@@ -1790,9 +1878,8 @@ export class WatchFolderService {
     }
 
     const count = targets.length;
-    const importMode = getPref('importMode') || 'stored';
-    const linkedWarning = importMode === 'linked'
-      ? '\n\nNote: you are in linked mode — the watch-folder file is the ONLY copy. '
+    const linkedWarning = getStorageStrategy() === STRATEGY.LINKED_WATCH_FOLDER
+      ? '\n\nNote: you are using linked PDFs — the watch-folder file is the ONLY copy. '
       + 'Permanent delete cannot be undone.'
       : '';
 
@@ -2202,6 +2289,27 @@ export class WatchFolderService {
           this._trackingStore.removeByAttachmentKey(record.zoteroAttachmentKey);
           continue;
         }
+        // Zotero-side freshness gate (spec risk #2): the local file is gone,
+        // but only propagate that deletion to Zotero if the Zotero-stored
+        // attachment is still unchanged since last sync. If it changed — or we
+        // can't prove it's unchanged (file unavailable / no baseline) — block:
+        // never trash a Zotero attachment that may hold newer content than we
+        // last saw. The record is kept (CONFLICT_BLOCKED) for user resolution.
+        const fresh = await canSafelyTrashZoteroAttachment(record, item);
+        if (!fresh.ok) {
+          this._trackingStore.update(record.localPath, { state: STATE.CONFLICT_BLOCKED });
+          try {
+            reportWarning({
+              category: WARNING_CATEGORY.CONFLICT_BLOCKED,
+              actionType: 'external-deletion',
+              attachmentKey: record.zoteroAttachmentKey,
+              path: record.localPath,
+              reason: fresh.reason,
+              message: `Local file "${record.localPath}" was deleted, but the Zotero copy ${fresh.reason === 'hash-drifted' ? 'changed since last sync' : `could not be verified (${fresh.reason})`} — NOT trashing it. Resolve via the prefs pane.`,
+            });
+          } catch (_e) { /* sink unavailable */ }
+          continue;
+        }
         if (!item.deleted) {
           item.deleted = true;
           await item.saveTx();
@@ -2346,13 +2454,12 @@ export class WatchFolderService {
     const window = this._pickWindow();
     if (!window || !Services || !Services.prompt) return;
 
-    const importMode = getPref('importMode') || 'stored';
     const count = trashed.length;
     const lines = trashed.slice(0, 20).map(t => `- ${t.path}  → "${t.title}"`).join('\n');
     const more = trashed.length > 20 ? `\n…and ${trashed.length - 20} more.` : '';
 
     let footer;
-    if (importMode === 'linked') {
+    if (getStorageStrategy() === STRATEGY.LINKED_WATCH_FOLDER) {
       footer = 'These were linked attachments — the items are now in the bin '
              + 'with broken file links. Restore them from the bin to keep the records, '
              + 'or empty the bin to discard.';

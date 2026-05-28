@@ -20,7 +20,8 @@
  *   1. Pick watch folder (FilePicker)
  *   2. Pick sync-root collection (flat list, indented by depth)
  *   3. Pick mode (mode1 / mode2 / mode3 radio)
- *   4. Confirm (summary + mode-specific safety note)
+ *   4. Pick PDF storage strategy (stored / linked_watch_folder / stored_plus_mirror)
+ *   5. Confirm (summary + mode-specific safety note)
  */
 
 const WatchFolderSetup = (function () {
@@ -68,6 +69,7 @@ const WatchFolderSetup = (function () {
     syncRootLibraryID: 1,
     syncRootLabel: "",
     mode: "mode1",
+    storageStrategy: "stored",
     result: null,
   };
 
@@ -102,7 +104,7 @@ const WatchFolderSetup = (function () {
     const enable = $("btn-enable");
     if (n === 1) back.setAttribute("hidden", "hidden");
     else back.removeAttribute("hidden");
-    if (n === 4) {
+    if (n === 5) {
       next.setAttribute("hidden", "hidden");
       enable.removeAttribute("hidden");
     } else {
@@ -112,7 +114,7 @@ const WatchFolderSetup = (function () {
 
     // Per-step entry hooks
     if (n === 2) populateCollections();
-    if (n === 4) renderConfirm();
+    if (n === 5) renderConfirm();
   }
 
   function validateStep(n) {
@@ -137,12 +139,17 @@ const WatchFolderSetup = (function () {
       state.mode = checked ? checked.value : "mode1";
       return true;
     }
+    if (n === 4) {
+      const checked = document.querySelector('input[name="storage"]:checked');
+      state.storageStrategy = checked ? checked.value : "stored";
+      return true;
+    }
     return true;
   }
 
   function next() {
     if (!validateStep(state.step)) return;
-    if (state.step < 4) showStep(state.step + 1);
+    if (state.step < 5) showStep(state.step + 1);
   }
 
   function back() {
@@ -156,6 +163,7 @@ const WatchFolderSetup = (function () {
 
   function enable() {
     if (!validateStep(3)) return;
+    if (!validateStep(4)) return;
     _onResult({
       canceled: false,
       watchFolder: state.watchFolder,
@@ -163,6 +171,7 @@ const WatchFolderSetup = (function () {
       syncRootLibraryID: state.syncRootLibraryID,
       syncRootLabel: state.syncRootLabel,
       mode: state.mode,
+      storageStrategy: state.storageStrategy,
     });
     _safeWindow().close();
   }
@@ -296,12 +305,23 @@ const WatchFolderSetup = (function () {
     return "";
   }
 
+  function _storageLabel(strategy) {
+    if (strategy === "stored") return "Store PDFs in Zotero";
+    if (strategy === "linked_watch_folder") return "Link PDFs from watch folder";
+    if (strategy === "stored_plus_mirror") return "Store in Zotero and mirror to watch folder";
+    return strategy;
+  }
+
   function renderConfirm() {
-    const checked = document.querySelector('input[name="mode"]:checked');
-    state.mode = checked ? checked.value : state.mode;
+    const checkedMode = document.querySelector('input[name="mode"]:checked');
+    state.mode = checkedMode ? checkedMode.value : state.mode;
+    const checkedStorage = document.querySelector('input[name="storage"]:checked');
+    state.storageStrategy = checkedStorage ? checkedStorage.value : state.storageStrategy;
     $("sum-folder").textContent = state.watchFolder || "—";
     $("sum-coll").textContent = state.syncRootLabel || state.syncRootKey || "—";
     $("sum-mode").textContent = _modeLabel(state.mode);
+    const storageEl = $("sum-storage");
+    if (storageEl) storageEl.textContent = _storageLabel(state.storageStrategy);
     const note = $("safety-note");
     note.className = "safety-note " + state.mode;
     note.textContent = _modeSafetyText(state.mode);

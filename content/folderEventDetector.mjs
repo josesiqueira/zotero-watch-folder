@@ -65,17 +65,21 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     catch (_e) { exists = false; }
     if (exists) continue;
 
-    Zotero.debug(`[WatchFolder] folderEventDetector: tracked collection missing on disk → deleteFolder (${rec.localPath})`);
+    // Disk-side deletion → propagate to Zotero (localFolderDeleted). The
+    // local folder is GONE; the corresponding Zotero collection (and, in
+    // Mode 3, its clean attachments) is what gets trashed. Distinct from
+    // `zoteroCollectionDeleted`, which trashes the local folder.
+    Zotero.debug(`[WatchFolder] folderEventDetector: tracked collection missing on disk → localFolderDeleted (${rec.localPath})`);
     try {
       await mirrorExecutor.execute({
-        type: 'deleteFolder',
+        type: 'localFolderDeleted',
         payload: {
           collectionKey: rec.zoteroCollectionKey,
           oldRelativePath: rec.localPath,
         },
       });
     } catch (e) {
-      Zotero.logError(`[WatchFolder] folderEventDetector emit deleteFolder ${rec.localPath}: ${e?.message ?? e}`);
+      Zotero.logError(`[WatchFolder] folderEventDetector emit localFolderDeleted ${rec.localPath}: ${e?.message ?? e}`);
     }
   }
 }

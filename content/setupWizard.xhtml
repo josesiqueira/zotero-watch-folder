@@ -209,7 +209,7 @@
 
   <div class="wizard-header">
     <h1>Watch Folder Setup</h1>
-    <div class="step-indicator">Step <span id="step-num">1</span> of 4</div>
+    <div class="step-indicator">Step <span id="step-num">1</span> of 5</div>
   </div>
 
   <!-- ============ Step 1: pick watch folder ============ -->
@@ -269,9 +269,39 @@
     </fieldset>
   </div>
 
-  <!-- ============ Step 4: confirm ============ -->
-  <div class="step" id="step-confirm" data-step="4">
-    <h2>4. Confirm</h2>
+  <!-- ============ Step 4: PDF storage strategy ============ -->
+  <div class="step" id="step-storage" data-step="4">
+    <h2>4. Where should PDFs live?</h2>
+    <p class="lede">
+      Zotero syncs your metadata, notes, and highlights. PDF <em>files</em> are
+      separate — this picks where they're stored. You can change it later.
+    </p>
+    <fieldset class="modes">
+      <legend>PDF storage strategy</legend>
+
+      <label class="mode-option">
+        <input type="radio" name="storage" value="stored" checked="checked"/>
+        <span class="mode-title">Store PDFs in Zotero</span>
+        <span class="mode-desc">Best Zotero experience. Zotero manages PDFs and can sync them using Zotero Storage or WebDAV. Uses Zotero file storage if file sync is enabled.</span>
+      </label>
+
+      <label class="mode-option">
+        <input type="radio" name="storage" value="linked_watch_folder"/>
+        <span class="mode-title">Link PDFs from watch folder</span>
+        <span class="mode-desc">Saves Zotero Storage space. PDFs stay in your watch folder; use a folder-sync tool (pCloud, Dropbox, OneDrive, Syncthing…) to back them up. <b>May not open in Zotero mobile apps.</b></span>
+      </label>
+
+      <label class="mode-option">
+        <input type="radio" name="storage" value="stored_plus_mirror"/>
+        <span class="mode-title">Store in Zotero and mirror to watch folder</span>
+        <span class="mode-desc">Keeps Zotero's normal stored copy plus a copy in the watch folder. Redundant backup/export; does not save Zotero Storage space.</span>
+      </label>
+    </fieldset>
+  </div>
+
+  <!-- ============ Step 5: confirm ============ -->
+  <div class="step" id="step-confirm" data-step="5">
+    <h2>5. Confirm</h2>
     <p class="lede">
       Review your choices. After "Enable", the plugin will start watching
       on the next scan cycle (default every 5 seconds).
@@ -280,6 +310,7 @@
       <dt>Watch folder</dt><dd id="sum-folder">—</dd>
       <dt>Sync root</dt><dd id="sum-coll">—</dd>
       <dt>Mode</dt><dd id="sum-mode">—</dd>
+      <dt>PDFs</dt><dd id="sum-storage">—</dd>
     </dl>
     <p class="safety-note" id="safety-note">—</p>
   </div>

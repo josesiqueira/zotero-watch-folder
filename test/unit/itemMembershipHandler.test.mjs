@@ -30,6 +30,16 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
     chooseCanonicalCollection: vi.fn(),
   };
 });
+// getPref defaults to undefined → untracked adds DEFER (baseline not complete).
+// The adopt-after-baseline tests override it.
+vi.mock('../../content/utils.mjs', async () => {
+  const actual = await vi.importActual('../../content/utils.mjs');
+  return { ...actual, getPref: vi.fn(() => undefined) };
+});
+vi.mock('../../content/baseline.mjs', () => ({
+  copyAttachmentToCanonical: vi.fn(async () => 'copied'),
+  adoptCollectionSubtree: vi.fn(async () => ({ ok: true })),
+}));
 
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import {
@@ -37,6 +47,8 @@ import {
   collectionKeyToRelativePath,
   chooseCanonicalCollection,
 } from '../../content/canonicalPath.mjs';
+import { getPref } from '../../content/utils.mjs';
+import * as baseline from '../../content/baseline.mjs';
 import { handleCollectionItemEvent } from '../../content/itemMembershipHandler.mjs';
 
 const SYNC_ROOT = { id: 100, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null };
@@ -115,9 +127,44 @@ describe('UT-502: add on untracked item → defer (B.2 case)', () => {
 
     await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(baseline.copyAttachmentToCanonical).not.toHaveBeenCalled();
     expect(Zotero.debug).toHaveBeenCalledWith(
-      expect.stringMatching(/untracked.*NEW.*Phase C/),
+      expect.stringMatching(/untracked.*NEW.*deferring to baseline/),
     );
+  });
+});
+
+// ─── UT-513 (spec risk #4 — adopt item moved into sync root after baseline) ─
+
+describe('UT-513: add on untracked attachment AFTER baseline → adopt', () => {
+  it('copies the attachment to its canonical path + creates a record when baseline is complete', async () => {
+    getPref.mockImplementation((k) => ({ baselineCompletedForRoot: 'ROOT1', sourcePath: '/watch' }[k]));
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'NEWATT', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => att);
+
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
+
+    expect(baseline.copyAttachmentToCanonical).toHaveBeenCalledTimes(1);
+    const arg = baseline.copyAttachmentToCanonical.mock.calls[0][0];
+    expect(arg.attachment).toBe(att);
+    expect(arg.watchRoot).toBe('/watch');
+    // It's an adopt, not a membership mutation.
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('still defers when baseline completed for a DIFFERENT root', async () => {
+    getPref.mockImplementation((k) => ({ baselineCompletedForRoot: 'OTHERROOT', sourcePath: '/watch' }[k]));
+    const collection = { id: 200, key: 'SUB1' };
+    const att = { key: 'NEWATT', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+
+    await handleCollectionItemEvent('add', ['200-300'], {}, makeCoordinator(makeStore()));
+
+    expect(baseline.copyAttachmentToCanonical).not.toHaveBeenCalled();
   });
 });
 

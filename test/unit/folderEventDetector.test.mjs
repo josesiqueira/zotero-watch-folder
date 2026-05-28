@@ -46,7 +46,7 @@ describe('UT-601: emits deleteFolder for missing-on-disk records', () => {
     const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
     expect(calls.length).toBe(2);
     expect(calls.map((c) => c.payload.collectionKey).sort()).toEqual(['A', 'B']);
-    expect(calls.every((c) => c.type === 'deleteFolder')).toBe(true);
+    expect(calls.every((c) => c.type === 'localFolderDeleted')).toBe(true);
   });
 });
 
@@ -117,10 +117,10 @@ describe('UT-604: absolute-path records work via idempotent _toAbs', () => {
     });
     // Now that the schema-drift skip is gone, the detector resolves
     // /watch/V1Path → /watch/V1Path (idempotent), sees it's NOT in the
-    // dirSet + fallback exists returns false → emits deleteFolder.
+    // dirSet + fallback exists returns false → emits localFolderDeleted.
     expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
     expect(mirrorExecutor.execute.mock.calls[0][0]).toMatchObject({
-      type: 'deleteFolder',
+      type: 'localFolderDeleted',
       payload: { collectionKey: 'V1' },
     });
   });

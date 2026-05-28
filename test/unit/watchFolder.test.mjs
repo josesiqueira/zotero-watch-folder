@@ -954,6 +954,10 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    // The module-level hash cache is a real singleton; clear it so a hash
+    // computed in one case can't leak into the freshness gate of the next.
+    const hashCache = await import('../../content/_hashCache.mjs');
+    hashCache.clear();
     const utils = await import('../../content/utils.mjs');
     utils.getPref.mockImplementation((k) => {
       if (k === 'mode') return 'mode3';
@@ -996,6 +1000,9 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
     globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({
       key: 'ATT001', deleted: false, saveTx: vi.fn(async () => {}),
       getDisplayTitle: () => 'doc', getField: () => 'doc',
+      // Zotero-stored attachment path used by the freshness gate
+      // (canSafelyTrashZoteroAttachment). Default: present + hash-matching.
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
     }));
     globalThis.Zotero.Libraries = { userLibraryID: 1 };
     service._showExternalDeletionPopup = vi.fn();
@@ -1027,7 +1034,12 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
       { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
       { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
-    globalThis.IOUtils.exists = vi.fn(async () => false); // everything missing
+    // Both local copies are gone, but the Zotero-stored file is present and
+    // UNCHANGED (hash matches lastSyncedHash), so the freshness gate passes
+    // and propagation proceeds.
+    const utils = await import('../../content/utils.mjs');
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
     const diskPaths = new Set();
 
     await service._handleExternalDeletions(diskPaths, []);
@@ -1054,6 +1066,22 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
 
     expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).toHaveBeenCalled();
   });
+
+  it('Mode 3 BLOCKS trashing the Zotero attachment when its stored copy changed (freshness gate, spec risk #2)', async () => {
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+    // Local file gone; the Zotero-stored copy is present but CHANGED (≠ H1).
+    const utils = await import('../../content/utils.mjs');
+    utils.getFileHash.mockResolvedValue('DRIFTED');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    // Attachment NOT trashed; record kept and flipped to conflict-blocked.
+    expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+  });
 });
 
 describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite', () => {
@@ -1072,6 +1100,10 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
       if (k === 'diskDeleteOnTrash') return 'permanent';
       return undefined;
     });
+    // The conflict gate (canSafelyMove) reads the module-level hash cache;
+    // clear it so a hash from another case can't leak in.
+    const hc090 = await import('../../content/_hashCache.mjs');
+    hc090.clear();
 
     watchFolderMod = await import('../../content/watchFolder.mjs');
     warningSinkMod = await import('../../content/warningSink.mjs');
@@ -1089,6 +1121,11 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
         return true;
       }),
       removeByAttachmentKey: vi.fn(),
+      update: vi.fn((path, updates) => {
+        const r = records.find(x => x.localPath === path);
+        if (r) Object.assign(r, updates);
+        return !!r;
+      }),
       save: vi.fn(async () => {}),
       flush: vi.fn(async () => {}),
     };
@@ -1114,9 +1151,13 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     // IOUtils.remove called exactly once, for canonical only.
     expect(globalThis.IOUtils.remove).toHaveBeenCalledTimes(1);
     expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
-    // Both tracking records dropped via .remove (not removeByAttachmentKey).
+    // Canonical bytes were permanently deleted → its record is dropped.
     expect(store.remove).toHaveBeenCalledWith('A.pdf');
-    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    // The shadow file is NEVER disk-deleted (cascading guard). It still
+    // exists on disk, so its record is SUPPRESSED (not dropped) to prevent a
+    // re-import loop (spec risk #3).
+    expect(store.update).toHaveBeenCalledWith('A2.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.remove).not.toHaveBeenCalledWith('A2.pdf');
   });
 
   it('Mode 3 with diskDeleteOnTrash=never drops tracking but never touches disk', async () => {
@@ -1135,11 +1176,14 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
 
     expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
     expect(service._moveToOSTrash).not.toHaveBeenCalled();
-    expect(store.remove).toHaveBeenCalledWith('A.pdf');
-    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    // diskDeleteOnTrash='never' leaves both files on disk → both records are
+    // SUPPRESSED, not dropped, so the next scan can't re-import them.
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.update).toHaveBeenCalledWith('A2.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.remove).not.toHaveBeenCalled();
   });
 
-  it('Mode 2 (warn-only) drops tracking + reports warning, never touches disk', async () => {
+  it('Mode 2 (warn-only) suppresses tracking + reports warning, never touches disk', async () => {
     utils.getPref.mockImplementation((k) => {
       if (k === 'mode') return 'mode2';
       if (k === 'sourcePath') return '/watch';
@@ -1155,14 +1199,35 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
 
     expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
     expect(service._moveToOSTrash).not.toHaveBeenCalled();
-    expect(store.remove).toHaveBeenCalledWith('A.pdf');
-    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    // Mode 2 keeps the local files; both records are SUPPRESSED (not dropped)
+    // so the next scan can't re-create the Zotero item the user just trashed.
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.update).toHaveBeenCalledWith('A2.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.remove).not.toHaveBeenCalled();
     expect(reportSpy).toHaveBeenCalledTimes(1);
     expect(reportSpy.mock.calls[0][0]).toMatchObject({
       actionType: 'zotero-trash',
       attachmentKey: 'ATT001',
       reason: 'mode2-warn-only',
     });
+  });
+
+  it('Mode 3 does NOT trash a locally-edited canonical file (conflict gate, spec risk #1a)', async () => {
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+    const utils = await import('../../content/utils.mjs');
+    utils.getFileHash.mockResolvedValue('DRIFTED'); // current on-disk hash ≠ baseline
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    // The edited local file is NOT trashed; its record is kept and flipped to
+    // conflict-blocked for the user to resolve.
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+    expect(store.remove).not.toHaveBeenCalledWith('A.pdf');
   });
 
   it('skips non-attachment items WITHOUT child attachments', async () => {
@@ -1367,6 +1432,10 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
       if (k === 'diskDeleteOnTrash') return 'plugin_trash';
       return undefined;
     });
+    // Clear the module-level hash cache so the conflict gate doesn't read a
+    // stale hash computed by another describe.
+    const hc091 = await import('../../content/_hashCache.mjs');
+    hc091.clear();
 
     const watchFolderMod = await import('../../content/watchFolder.mjs');
     service = new watchFolderMod.WatchFolderService();
@@ -1385,6 +1454,11 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
         return true;
       }),
       removeByAttachmentKey: vi.fn(),
+      update: vi.fn((path, updates) => {
+        const r = records.find(x => x.localPath === path);
+        if (r) Object.assign(r, updates);
+        return !!r;
+      }),
       save: vi.fn(async () => {}),
       flush: vi.fn(async () => {}),
     };
@@ -1451,7 +1525,9 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
     await service._handleZoteroTrash([42]);
 
     expect(tombstones).toHaveLength(0);
-    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    // 'never' keeps the file on disk → record is suppressed, not dropped.
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'out-of-scope-suppressed' });
+    expect(store.remove).not.toHaveBeenCalledWith('A.pdf');
   });
 
   it('does NOT emit a tombstone for action=permanent (file unrecoverable)', async () => {

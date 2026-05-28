@@ -11,11 +11,12 @@ import { getSyncCoordinator, resetSyncCoordinator } from './syncCoordinator.mjs'
 import * as warningSink from './warningSink.mjs';
 import * as suppressionResolver from './suppressionResolver.mjs';
 import * as baseline from './baseline.mjs';
+import * as storageStrategy from './storageStrategy.mjs';
 import * as hashCache from './_hashCache.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
-// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline}.
-export { warningSink, suppressionResolver, baseline };
+// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy}.
+export { warningSink, suppressionResolver, baseline, storageStrategy };
 
 // Diagnostic surface — read-only stats from the WP-A1 hash cache plus
 // a clear hook for fresh measurements. Used to verify steady-state
@@ -131,6 +132,7 @@ export async function runSetupWizard(window) {
             modeKey: xhtmlResult.mode,
             modeLabel: _modeLabelFor(xhtmlResult.mode),
             syncRootLabel: xhtmlResult.syncRootLabel,
+            storageStrategy: xhtmlResult.storageStrategy,
         });
         return true;
     }
@@ -144,11 +146,12 @@ export async function runSetupWizard(window) {
     const welcome = Services.prompt.confirmEx(
         window,
         "Watch Folder — Setup",
-        "Set up Watch Folder in 4 steps?\n\n"
+        "Set up Watch Folder in 5 steps?\n\n"
           + "1. Pick a local folder the plugin should watch\n"
           + "2. Pick the Zotero collection imports should land in\n"
           + "3. Pick a sync mode\n"
-          + "4. Confirm and enable\n\n"
+          + "4. Pick where PDFs should live\n"
+          + "5. Confirm and enable\n\n"
           + "You can re-run the wizard later from Edit → Settings → Watch Folder.",
         welcomeFlags,
         "Continue",
@@ -170,7 +173,11 @@ export async function runSetupWizard(window) {
     const modeChoice = _wizardPickMode(window);
     if (!modeChoice) return false;
 
-    // ─── Step 5: confirm ─────────────────────────────────────────
+    // ─── Step 5: PDF storage strategy ────────────────────────────
+    const storageChoice = _wizardPickStorageStrategy(window);
+    if (!storageChoice) return false;
+
+    // ─── Step 6: confirm ─────────────────────────────────────────
     const confirmFlags =
           Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
         | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
@@ -182,7 +189,8 @@ export async function runSetupWizard(window) {
         `Ready to enable:\n\n`
           + `Watch folder: ${watchFolder}\n`
           + `Zotero sync root: ${syncRootChoice.label}\n`
-          + `Mode: ${modeChoice.label}\n\n`
+          + `Mode: ${modeChoice.label}\n`
+          + `PDFs: ${storageChoice.label}\n\n`
           + `${safetyNote}\n\n`
           + `Imports will start on the next scan cycle (default every 5s). You can change any of these in Edit → Settings → Watch Folder.`,
         confirmFlags,
@@ -200,6 +208,7 @@ export async function runSetupWizard(window) {
         modeKey: modeChoice.key,
         modeLabel: modeChoice.label,
         syncRootLabel: syncRootChoice.label,
+        storageStrategy: storageChoice.key,
     });
     return true;
 }
@@ -240,6 +249,7 @@ async function _runSetupWizardXHTML(parentWindow) {
                     syncRootLibraryID: payload.syncRootLibraryID,
                     syncRootLabel: payload.syncRootLabel,
                     mode: payload.mode,
+                    storageStrategy: payload.storageStrategy,
                 });
             },
         };
@@ -278,11 +288,14 @@ async function _runSetupWizardXHTML(parentWindow) {
  * fallback. Writes the 6 prefs + starts services.
  * @private
  */
-async function _commitWizardResult({ watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel }) {
+async function _commitWizardResult({ watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy }) {
     setPref("sourcePath", watchFolder);
     setPref("syncRootCollectionKey", syncRootKey);
     setPref("syncRootLibraryID", syncRootLibraryID);
     setPref("mode", modeKey);
+    if (storageStrategy === 'stored' || storageStrategy === 'linked_watch_folder' || storageStrategy === 'stored_plus_mirror') {
+        setPref("pdfStorageStrategy", storageStrategy);
+    }
     setPref("setupCompleted", true);
     setPref("enabled", true);
     try {
@@ -380,6 +393,27 @@ function _wizardPickMode(window) {
     );
     if (!ok) return null;
     return modes[out.value] ?? null;
+}
+
+function _wizardPickStorageStrategy(window) {
+    const strategies = [
+        { key: "stored", label: "Store PDFs in Zotero (best Zotero experience; uses Zotero Storage/WebDAV)" },
+        { key: "linked_watch_folder", label: "Link PDFs from watch folder (saves Zotero Storage; your folder-sync backs them up)" },
+        { key: "stored_plus_mirror", label: "Store in Zotero AND mirror to watch folder (redundant backup; no storage savings)" },
+    ];
+    const out = {};
+    const ok = Services.prompt.select(
+        window,
+        "Where should PDFs live?",
+        "Zotero syncs your metadata, notes, and highlights. PDF FILES are separate.\n\n"
+          + "Store in Zotero: Zotero manages the PDFs and syncs them via Zotero Storage or WebDAV.\n\n"
+          + "Link from watch folder: PDFs stay in your folder (saves Zotero Storage); a folder-sync tool backs them up. May not open in Zotero mobile apps.\n\n"
+          + "Store + mirror: keeps Zotero's copy plus a copy in the watch folder. You can change this later in the preferences pane.",
+        strategies.map((s) => s.label),
+        out,
+    );
+    if (!ok) return null;
+    return strategies[out.value] ?? null;
 }
 
 function _modeSafetyNote(modeKey) {
