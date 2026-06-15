@@ -4,6 +4,23 @@
       style="overflow: auto;"
       onload="if (typeof WatchFolderPrefs !== 'undefined' &amp;&amp; WatchFolderPrefs.onLoad) WatchFolderPrefs.onLoad()">
 
+  <!-- Selectable "option card" styling for the mode + storage pickers.
+       rgba colors adapt to light/dark themes; .wf-sel marks the live choice. -->
+  <html:style>
+    .wf-opt { display: block; border: 1px solid rgba(127,127,127,0.35); border-radius: 6px;
+              padding: 7px 10px; margin: 5px 0; cursor: pointer; }
+    .wf-opt:hover { background: rgba(127,127,127,0.12); }
+    .wf-opt.wf-sel { border-color: #4072b8; border-left-width: 4px;
+                     background: rgba(64,114,184,0.13); }
+    .wf-opt .wf-opt-current { display: none; color: #4072b8; font-weight: 700;
+                              font-size: 0.85em; margin-left: 6px; }
+    .wf-opt.wf-sel .wf-opt-current { display: inline; }
+    .wf-opt-rec { display: inline-block; color: #1a7f37; border: 1px solid #1a7f37;
+                  border-radius: 4px; font-size: 0.72em; font-weight: 700;
+                  padding: 0 5px; margin-left: 8px; white-space: nowrap; }
+    .wf-opt-desc { margin: 3px 0 0 24px; font-size: 0.95em; opacity: 0.95; line-height: 1.5; }
+  </html:style>
+
   <!-- ─── About + doc links ──────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-about"/></label>
@@ -26,7 +43,7 @@
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-setup"/></label>
     <vbox style="margin: 4px 8px;">
-      <html:p data-l10n-id="watch-folder-pref-setup-blurb" style="margin: 4px 0; line-height: 1.4; color: #666;"/>
+      <html:p data-l10n-id="watch-folder-pref-setup-blurb" style="margin: 4px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
       <hbox style="margin: 8px 0;">
         <button id="watch-folder-setup-cta-btn"
                 data-l10n-id="watch-folder-pref-setup-cta"
@@ -62,26 +79,33 @@
               oncommand="WatchFolderPrefs.pickSyncRoot()"/>
     </hbox>
 
-    <!-- ─── Live mode picker ────────────────────────────────────── -->
+    <!-- ─── Live mode picker (click anywhere on a card to select) ── -->
     <vbox style="margin-top: 8px;">
       <label data-l10n-id="watch-folder-pref-mode"/>
-      <radiogroup id="watch-folder-mode-radio"
-                  oncommand="WatchFolderPrefs.changeMode(event.target.value)"
-                  style="margin: 4px 0 0 16px;">
-        <vbox style="margin-bottom: 6px;">
-          <radio value="mode1" data-l10n-id="watch-folder-pref-mode1-label"/>
+      <radiogroup id="watch-folder-mode-radio" style="margin: 4px 0 0 8px;">
+        <vbox class="wf-opt" id="wf-mode-opt-mode1" onclick="WatchFolderPrefs.changeMode('mode1')">
+          <hbox align="center">
+            <radio value="mode1" data-l10n-id="watch-folder-pref-mode1-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
           <html:p data-l10n-id="watch-folder-pref-mode1-desc"
-                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                  class="wf-opt-desc"/>
         </vbox>
-        <vbox style="margin-bottom: 6px;">
-          <radio value="mode2" data-l10n-id="watch-folder-pref-mode2-label"/>
+        <vbox class="wf-opt" id="wf-mode-opt-mode2" onclick="WatchFolderPrefs.changeMode('mode2')">
+          <hbox align="center">
+            <radio value="mode2" data-l10n-id="watch-folder-pref-mode2-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
           <html:p data-l10n-id="watch-folder-pref-mode2-desc"
-                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                  class="wf-opt-desc"/>
         </vbox>
-        <vbox>
-          <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label"/>
+        <vbox class="wf-opt" id="wf-mode-opt-mode3" onclick="WatchFolderPrefs.changeMode('mode3')">
+          <hbox align="center">
+            <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
           <html:p data-l10n-id="watch-folder-pref-mode3-desc"
-                  style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                  class="wf-opt-desc"/>
         </vbox>
       </radiogroup>
     </vbox>
@@ -131,36 +155,47 @@
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-storage"/></label>
     <html:p data-l10n-id="watch-folder-pref-storage-explainer"
-            style="margin: 0 0 8px 0; font-size: 0.9em; color: #444; line-height: 1.35;"/>
-    <radiogroup id="watch-folder-storage-radio"
-                oncommand="WatchFolderPrefs.changeStorageStrategy(event.target.value)"
-                style="margin: 4px 0 0 16px;">
-      <vbox style="margin-bottom: 6px;">
-        <radio value="stored" data-l10n-id="watch-folder-pref-storage-stored-label"/>
+            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+    <html:p data-l10n-id="watch-folder-pref-storage-webdav-hint"
+            style="margin: 0 0 10px 0; padding: 8px 11px; font-size: 0.98em; color: #ffffff;
+                   line-height: 1.45; background: #1a7f37; border-radius: 5px; font-weight: 500;"/>
+    <radiogroup id="watch-folder-storage-radio" style="margin: 4px 0 0 8px;">
+      <vbox class="wf-opt" id="wf-storage-opt-stored" onclick="WatchFolderPrefs.changeStorageStrategy('stored')">
+        <hbox align="center">
+          <radio value="stored" data-l10n-id="watch-folder-pref-storage-stored-label"/>
+          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-storage-webdav-badge"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
         <html:p data-l10n-id="watch-folder-pref-storage-stored-desc"
-                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                class="wf-opt-desc"/>
       </vbox>
-      <vbox style="margin-bottom: 6px;">
-        <radio value="linked_watch_folder" data-l10n-id="watch-folder-pref-storage-linked-label"/>
+      <vbox class="wf-opt" id="wf-storage-opt-linked_watch_folder" onclick="WatchFolderPrefs.changeStorageStrategy('linked_watch_folder')">
+        <hbox align="center">
+          <radio value="linked_watch_folder" data-l10n-id="watch-folder-pref-storage-linked-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
         <html:p data-l10n-id="watch-folder-pref-storage-linked-desc"
-                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                class="wf-opt-desc"/>
       </vbox>
-      <vbox>
-        <radio value="stored_plus_mirror" data-l10n-id="watch-folder-pref-storage-mirror-label"/>
+      <vbox class="wf-opt" id="wf-storage-opt-stored_plus_mirror" onclick="WatchFolderPrefs.changeStorageStrategy('stored_plus_mirror')">
+        <hbox align="center">
+          <radio value="stored_plus_mirror" data-l10n-id="watch-folder-pref-storage-mirror-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
         <html:p data-l10n-id="watch-folder-pref-storage-mirror-desc"
-                style="margin: 0 0 0 24px; font-size: 0.9em; color: #666; line-height: 1.3;"/>
+                class="wf-opt-desc"/>
       </vbox>
     </radiogroup>
 
     <html:p id="watch-folder-storage-warning"
             data-l10n-id="watch-folder-pref-storage-linked-warning"
             hidden="true"
-            style="margin: 8px 0 0 16px; font-size: 0.9em; color: #a33; line-height: 1.3;"/>
+            style="margin: 8px 0 0 16px; font-size: 0.92em; color: #e06c75; font-weight: 600; line-height: 1.45;"/>
 
     <html:p id="watch-folder-storage-restore"
             data-l10n-id="watch-folder-pref-storage-restore"
             hidden="true"
-            style="margin: 6px 0 0 16px; font-size: 0.85em; color: #666; line-height: 1.3;"/>
+            style="margin: 6px 0 0 16px; font-size: 0.9em; opacity: 0.78; line-height: 1.45;"/>
 
     <hbox align="center" style="margin-top: 8px;">
       <button id="watch-folder-storage-reclaim-btn"

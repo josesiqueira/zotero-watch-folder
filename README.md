@@ -76,4 +76,4 @@ GNU GPL v3.0 — free and open source. See [`LICENSE`](LICENSE) for the full tex
 
 ---
 
-*Building from source, contributing, or just curious how it works under the hood? See **[DEVELOPERS.md](DEVELOPERS.md)**.*
+*Building from source, contributing, or just curious how it works under the hood? See **[docs/DEVELOPERS.md](docs/DEVELOPERS.md)** and the visual **[docs/architecture.md](docs/architecture.md)**.*

@@ -1,8 +1,8 @@
 # Developer & technical reference
 
-Everything under the hood: architecture, the full feature set described technically, every preference, the build pipeline, and the test layout. If you just want to *use* the plugin, the [README](README.md) and the [user guide](https://josesiqueira.github.io/zotero-watch-folder/) are the friendlier reads.
+Everything under the hood: architecture, the full feature set described technically, every preference, the build pipeline, and the test layout. If you just want to *use* the plugin, the [README](../README.md) and the [user guide](https://josesiqueira.github.io/zotero-watch-folder/) are the friendlier reads.
 
-> **Working on the code with an AI agent?** Read [`CLAUDE.md`](CLAUDE.md) first. It holds the load-bearing invariants and "don't touch without understanding" notes that this document deliberately does not repeat.
+> **Working on the code with an AI agent?** Read [`CLAUDE.md`](../CLAUDE.md) first. It holds the load-bearing invariants and "don't touch without understanding" notes that this document deliberately does not repeat.
 
 ---
 
@@ -39,7 +39,7 @@ Mode can be switched at runtime — `syncCoordinator` registers an observer on t
 - **Drive-disconnect safety.** If the watch root becomes unreachable (e.g. an unmounted removable drive), the plugin globally pauses instead of interpreting "everything is missing" as "trash everything."
 - **Suppression + warning surfacing.** Out-of-scope and detached items, conflicts, and IO/missing-file warnings are tracked and surfaced in the settings pane with resolve actions (`suppressionResolver`, `warningSink`).
 - **Smart rules engine.** Match on title / author / DOI / publication / tags / filename; apply add-to-collection / add-tag / set-field / skip-import. Managed via a JSON editor window opened from the settings pane; each rule is validated on save. Regex matching is ReDoS-hardened (input capped at 8 KB, patterns over 512 chars rejected before compile).
-- **First-run setup wizard.** A single XHTML window (`content/setupWizard.{xhtml,js}`) with four steps — watch folder → sync root → mode → confirm — opened via `window.openDialog`. A modal `Services.prompt` sequence is preserved as a fallback when the window can't open. Re-runnable from the settings pane.
+- **First-run setup wizard.** A single XHTML window (`content/setupWizard.{xhtml,js}`) with five steps — watch folder → sync root → mode → PDF storage → confirm — opened via `window.openDialog`. A modal `Services.prompt` sequence is preserved as a fallback when the window can't open. Re-runnable from the settings pane.
 
 ### Hardening notes
 
@@ -103,7 +103,7 @@ Vitest unit suite — **711 passing across 23 files** (zero skipped; strict no-s
 
 To add coverage: create `test/unit/<module>.test.mjs`, import the module under test from `../../content/<module>.mjs`, and mock dependencies per-file with `vi.mock(...)`, resetting in `beforeEach`. Tests that mock `getFileHash` across multiple scenarios must `hashCache.clear()` in `beforeEach` — the cache is a real module singleton, not a per-test mock.
 
-See [`test/README.md`](test/README.md) for the layered overview.
+See [`test/README.md`](../test/README.md) for the layered overview.
 
 ## Project layout
 
@@ -139,8 +139,9 @@ test/unit/*.test.mjs         Vitest suite
 
 ## Documentation map
 
-- **[README.md](README.md)** — user-facing overview.
-- **[CLAUDE.md](CLAUDE.md)** — agent working rules, invariants, "don't touch" notes. Read before editing.
+- **[README.md](../README.md)** — user-facing overview.
+- **[architecture.md](architecture.md)** — visual architecture: the layers, the mode × storage-strategy dials, the provider-agnostic cloud layer (WebDAV and folder-sync tools), and runtime-scenario diagrams.
+- **[CLAUDE.md](../CLAUDE.md)** — agent working rules, invariants, "don't touch" notes. Read before editing.
 - **User guide** (`index.html`, `test-plan.html`, `test-cases.html` at repo root, served via GitHub Pages) — single-file HTML, no build step. Keep in sync at every checkpoint per the policy in `CLAUDE.md`.
 - **`.private/`** — gitignored, maintainer-only design history and MCP verification runbooks. Not part of the public repo.
 
@@ -150,4 +151,4 @@ Issues and PRs welcome at <https://github.com/josesiqueira/zotero-watch-folder>.
 
 ## License
 
-GNU GPL v3.0. See [`LICENSE`](LICENSE).
+GNU GPL v3.0. See [`LICENSE`](../LICENSE).

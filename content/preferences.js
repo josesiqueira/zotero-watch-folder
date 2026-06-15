@@ -382,6 +382,16 @@
      * Refresh the mode picker (radiogroup) to match the stored pref.
      * Replaces the previous read-only display.
      */
+    // Toggle the `.wf-sel` highlight (and "✓ current" badge) on the option
+    // card matching `selected`, clearing it from the others. Belt-and-braces
+    // on top of the native radio bullet, so the live choice is unmistakable.
+    function _markSelectedCard(idPrefix, values, selected) {
+        for (const v of values) {
+            const el = document.getElementById(idPrefix + v);
+            if (el) el.classList.toggle('wf-sel', v === selected);
+        }
+    }
+
     function refreshModeRadio() {
         const radio = document.getElementById('watch-folder-mode-radio');
         if (!radio) return;
@@ -389,12 +399,13 @@
         // Only valid modes set the radio; unknown values leave it cleared.
         if (mode === 'mode1' || mode === 'mode2' || mode === 'mode3') {
             radio.value = mode;
+            _markSelectedCard('wf-mode-opt-', ['mode1', 'mode2', 'mode3'], mode);
         }
     }
 
     /**
-     * Confirm-and-apply on mode change. The radiogroup's oncommand fires
-     * when the user clicks a different radio; we confirm before
+     * Confirm-and-apply on mode change. Invoked by an option card's onclick
+     * (the radiogroups no longer use oncommand); we confirm before
      * persisting. Cancel reverts the visual selection.
      */
     function changeMode(newMode) {
@@ -421,6 +432,7 @@
         }
         setPref('mode', newMode);
         Zotero.debug(`[Watch Folder] Mode changed via prefs UI: ${current} → ${newMode}`);
+        refreshModeRadio(); // move the highlight + re-assert the radio to the new value
     }
 
     // ─── PDF storage strategy (orthogonal to sync mode) ───────────────────
@@ -440,6 +452,7 @@
         const strategy = getStorageStrategyPref();
         const radio = document.getElementById('watch-folder-storage-radio');
         if (radio && STORAGE_STRATEGIES.includes(strategy)) radio.value = strategy;
+        _markSelectedCard('wf-storage-opt-', STORAGE_STRATEGIES, strategy);
 
         const api = _storageStrategyAPI();
         const which = (api && typeof api.buttonForStrategy === 'function')
