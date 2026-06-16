@@ -64,6 +64,62 @@ export function isUnsafeCollectionNameSegment(name) {
 }
 
 /**
+ * Windows reserved device names (case-insensitive, matched against the
+ * pre-extension base of a segment). A file/folder named any of these is
+ * rejected by the Windows filesystem regardless of extension, so we prefix
+ * an underscore to disarm them.
+ */
+const _WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
+/**
+ * Map a single collection-name segment to a filesystem-safe disk segment.
+ *
+ * This is a SEPARATE LAYER from {@link isUnsafeCollectionNameSegment}: that
+ * function is the path-traversal GATE (refuses `..`, `/`, `\`, NUL, empty)
+ * and must run FIRST. `sanitizeCollectionNameSegment` only ever runs on a
+ * segment already cleared by that gate, and addresses the WIDER set of names
+ * that are traversal-safe but still problematic on disk (notably Windows):
+ *
+ *   - characters illegal on Windows: `< > : " | ? *` and control chars
+ *     `\x00-\x1f` → replaced with `_`;
+ *   - trailing dots/spaces (silently stripped by Windows) → removed;
+ *   - Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9),
+ *     matched on the pre-dot base, case-insensitive → prefixed with `_`;
+ *   - an empty result (e.g. the name was all dots/spaces) → `_`.
+ *
+ * The Zotero collection NAME remains canonical; the disk name is a
+ * deterministic pure function of it, so {@link relativePathToCollection}
+ * (which works in the Zotero-name domain) stays reversible.
+ *
+ * ACCEPTED LIMITATION (out of scope for this fix): two sibling collections
+ * whose names sanitize to the same disk segment (e.g. `Topic?` and `Topic*`
+ * both → `Topic_`) will share one folder. This is rare and non-destructive;
+ * a collision-suffix scheme is deliberately deferred to keep this surgical.
+ *
+ * @param {string} name - A segment already cleared by isUnsafeCollectionNameSegment.
+ * @returns {string} A non-empty, filesystem-safe segment.
+ */
+export function sanitizeCollectionNameSegment(name) {
+  if (typeof name !== 'string') return '_';
+  // Replace Windows-illegal characters and control chars.
+  let out = name.replace(/[<>:"|?*\x00-\x1f]/g, '_');
+  // Strip trailing dots and spaces (Windows silently drops these).
+  out = out.replace(/[. ]+$/, '');
+  if (out === '') return '_';
+  // Disarm Windows reserved device names, matched on the pre-dot base.
+  const dot = out.indexOf('.');
+  const base = (dot === -1 ? out : out.slice(0, dot)).toUpperCase();
+  if (_WINDOWS_RESERVED_DEVICE_NAMES.has(base)) {
+    out = '_' + out;
+  }
+  return out;
+}
+
+/**
  * WP-B / B4: module-level cache for `collectionKeyToRelativePathCached`.
  *
  * Keyed by `${libraryID}:${collectionKey}` → string. Stores positive
@@ -177,6 +233,28 @@ export async function collectionKeyToRelativePath(collectionKey) {
   }
   // Walked off the top without finding sync root → not under it.
   return null;
+}
+
+/**
+ * Disk-domain variant of {@link collectionKeyToRelativePath}.
+ *
+ * Returns the same relative path with every segment run through
+ * {@link sanitizeCollectionNameSegment}, so the result is safe to use as an
+ * on-disk relative path (and as the stored `localPath`/`relPath` value that
+ * `relativePath(abs, root)` must round-trip against the folders actually
+ * created on disk). Use this — NOT the raw variant — at every callsite that
+ * creates a directory or stores a path derived from a collection name.
+ *
+ * Passes through the special return values unchanged: `''` (sync root itself)
+ * and `null` (not under sync root / sync root unset).
+ *
+ * @param {string} collectionKey
+ * @returns {Promise<string|null>}
+ */
+export async function collectionKeyToDiskRelativePath(collectionKey) {
+  const rel = await collectionKeyToRelativePath(collectionKey);
+  if (rel === '' || rel == null) return rel;
+  return rel.split('/').map(sanitizeCollectionNameSegment).join('/');
 }
 
 /**

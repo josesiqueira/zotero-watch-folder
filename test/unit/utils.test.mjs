@@ -13,6 +13,7 @@ import {
   relativePath,
   HASH_CHUNK_SIZE,
   sanitizeUntrustedKeys,
+  isWatchRootUnsafe,
 } from '../../content/utils.mjs';
 
 // ─── UT-001 ──────────────────────────────────────────────────────────────────
@@ -288,5 +289,80 @@ describe('UT-007: sanitizeUntrustedKeys', () => {
     // After sanitize, instantiate a clean object and confirm no pollution.
     const fresh = {};
     expect(fresh.polluted).toBeUndefined();
+  });
+});
+
+// ─── UT-007a–j — isWatchRootUnsafe (DATA-4: reject watch root overlapping
+// the Zotero data/storage dir). Pure config-time guard; fails open. ──────────
+
+describe('UT-007 (DATA-4): isWatchRootUnsafe — data-dir overlap guard', () => {
+  const DATA = '/home/u/Zotero';
+
+  // UT-007a — watch root EQUALS the data dir → unsafe
+  it('UT-007a: flags a watch root equal to the data dir', () => {
+    expect(isWatchRootUnsafe('/home/u/Zotero', DATA)).toMatch(/data directory/i);
+  });
+
+  // UT-007b — watch root INSIDE the data dir → unsafe
+  it('UT-007b: flags a watch root inside the data dir', () => {
+    expect(isWatchRootUnsafe('/home/u/Zotero/inbox', DATA)).toMatch(/data directory/i);
+  });
+
+  // UT-007c — watch root is a PARENT of the data dir → unsafe
+  it('UT-007c: flags a watch root that contains the data dir', () => {
+    expect(isWatchRootUnsafe('/home/u', DATA)).toMatch(/contains the Zotero data/i);
+  });
+
+  // UT-007d — watch root EQUALS the storage subdir → unsafe. Since storage
+  // lives under the data dir (storageDir = dataDir + '/storage'), the data-dir
+  // branch fires first; either way the storage path MUST be flagged.
+  it('UT-007d: flags a watch root equal to the storage subdir', () => {
+    expect(isWatchRootUnsafe('/home/u/Zotero/storage', DATA)).not.toBeNull();
+  });
+
+  // UT-007e — watch root INSIDE the storage subdir → unsafe
+  it('UT-007e: flags a watch root inside the storage subdir', () => {
+    // Inside storage is also inside the data dir; either reason is acceptable,
+    // but it MUST be flagged.
+    expect(isWatchRootUnsafe('/home/u/Zotero/storage/ABCD1234', DATA)).not.toBeNull();
+  });
+
+  // UT-007f — a separate, unrelated folder → safe (null)
+  it('UT-007f: returns null for a separate folder', () => {
+    expect(isWatchRootUnsafe('/home/u/Inbox', DATA)).toBeNull();
+    expect(isWatchRootUnsafe('/tmp/watch', DATA)).toBeNull();
+  });
+
+  // UT-007g — Windows backslash paths inside the data dir → flagged
+  it('UT-007g: flags Windows backslash paths inside the data dir', () => {
+    const winData = 'C:\\Users\\u\\Zotero';
+    expect(isWatchRootUnsafe('C:\\Users\\u\\Zotero\\inbox', winData)).not.toBeNull();
+    expect(isWatchRootUnsafe('C:\\Users\\u\\Zotero', winData)).not.toBeNull();
+    // Separate Windows folder is safe.
+    expect(isWatchRootUnsafe('C:\\Users\\u\\Inbox', winData)).toBeNull();
+  });
+
+  // UT-007h — sibling-prefix: 'Zotero-backup' vs 'Zotero' must NOT be flagged
+  // (guards against a naive startsWith bug).
+  it('UT-007h: does not flag a sibling-prefix folder (Zotero-backup vs Zotero)', () => {
+    expect(isWatchRootUnsafe('/home/u/Zotero-backup', DATA)).toBeNull();
+    expect(isWatchRootUnsafe('/home/u/Zotero-backup/inbox', DATA)).toBeNull();
+    // The reverse direction (data dir is "Zotero-backup", watch is sibling) too.
+    expect(isWatchRootUnsafe('/home/u/Zotero', '/home/u/Zotero-backup')).toBeNull();
+  });
+
+  // UT-007i — unresolvable / empty dataDir → fail open (null)
+  it('UT-007i: returns null (fail open) when dataDir is empty or undefined', () => {
+    expect(isWatchRootUnsafe('/home/u/Zotero', '')).toBeNull();
+    expect(isWatchRootUnsafe('/home/u/Zotero', undefined)).toBeNull();
+    expect(isWatchRootUnsafe('/home/u/Zotero', null)).toBeNull();
+  });
+
+  // UT-007j — empty / undefined watchRoot → null
+  it('UT-007j: returns null when watchRoot is empty or undefined', () => {
+    expect(isWatchRootUnsafe('', DATA)).toBeNull();
+    expect(isWatchRootUnsafe(undefined, DATA)).toBeNull();
+    expect(isWatchRootUnsafe(null, DATA)).toBeNull();
+    expect(isWatchRootUnsafe(42, DATA)).toBeNull();
   });
 });

@@ -18,6 +18,8 @@ import {
   relativePathToCollection,
   isSpecialCollection,
   isUnsafeCollectionNameSegment,
+  sanitizeCollectionNameSegment,
+  collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   SyncRootMissingError,
 } from '../../content/canonicalPath.mjs';
@@ -545,5 +547,103 @@ describe('UT-207: collectionKeyToRelativePathCached + invalidateCanonicalPathCac
     // Pre-populate the registry; pass libraryID directly.
     const result = await collectionKeyToRelativePathCached('METHODS', 1);
     expect(result).toBe('Methods');
+  });
+});
+
+// ─── UT-206 (FS-1) ──────────────────────────────────────────────────────────
+
+describe('UT-206: sanitizeCollectionNameSegment', () => {
+  it('prefixes Windows reserved device names with _', () => {
+    expect(sanitizeCollectionNameSegment('CON')).toBe('_CON');
+    expect(sanitizeCollectionNameSegment('COM1')).toBe('_COM1');
+    expect(sanitizeCollectionNameSegment('LPT9')).toBe('_LPT9');
+    expect(sanitizeCollectionNameSegment('NUL')).toBe('_NUL');
+    expect(sanitizeCollectionNameSegment('aux')).toBe('_aux'); // case-insensitive
+  });
+
+  it('matches reserved names on the pre-dot base (CON.notes → _CON.notes)', () => {
+    expect(sanitizeCollectionNameSegment('CON.notes')).toBe('_CON.notes');
+    expect(sanitizeCollectionNameSegment('com1.txt')).toBe('_com1.txt');
+  });
+
+  it('does NOT treat a reserved name as reserved when it is only a substring', () => {
+    expect(sanitizeCollectionNameSegment('CONTROL')).toBe('CONTROL');
+    expect(sanitizeCollectionNameSegment('SCON')).toBe('SCON');
+    expect(sanitizeCollectionNameSegment('COM10')).toBe('COM10'); // COM1-9 only
+  });
+
+  it('replaces Windows-illegal characters with _', () => {
+    expect(sanitizeCollectionNameSegment('Re: view?')).toBe('Re_ view_');
+    expect(sanitizeCollectionNameSegment('a<b>c|d*e"f')).toBe('a_b_c_d_e_f');
+  });
+
+  it('strips trailing dots and spaces', () => {
+    expect(sanitizeCollectionNameSegment('Methods.')).toBe('Methods');
+    expect(sanitizeCollectionNameSegment('Topic   ')).toBe('Topic');
+    expect(sanitizeCollectionNameSegment('Name. . ')).toBe('Name');
+  });
+
+  it('returns _ when the name reduces to empty (all dots/spaces)', () => {
+    expect(sanitizeCollectionNameSegment('...')).toBe('_');
+    expect(sanitizeCollectionNameSegment('   ')).toBe('_');
+  });
+
+  it('leaves a typical safe name untouched', () => {
+    expect(sanitizeCollectionNameSegment('Machine Learning')).toBe('Machine Learning');
+    expect(sanitizeCollectionNameSegment('2024-papers')).toBe('2024-papers');
+  });
+
+  it('returns _ for a non-string input (defensive)', () => {
+    expect(sanitizeCollectionNameSegment(null)).toBe('_');
+    expect(sanitizeCollectionNameSegment(undefined)).toBe('_');
+  });
+});
+
+// ─── UT-207 (FS-1) ──────────────────────────────────────────────────────────
+
+describe('UT-207: collectionKeyToDiskRelativePath', () => {
+  it('passes through "" (sync root itself) and null (not under sync root)', async () => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 4, key: 'OTHER', name: 'Other', libraryID: 1, parentID: null },
+    ]);
+    expect(await collectionKeyToDiskRelativePath('ROOT1')).toBe('');
+    expect(await collectionKeyToDiskRelativePath('OTHER')).toBe(null);
+  });
+
+  it('sanitizes every segment while the raw variant returns the unsanitized chain', async () => {
+    resetPrefs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+    makeCollectionRegistry([
+      { id: 1, key: 'ROOT1', name: 'Inbox', libraryID: 1, parentID: null },
+      { id: 2, key: 'CON', name: 'CON', libraryID: 1, parentID: 1 },
+      { id: 3, key: 'REP', name: 'Re?ports', libraryID: 1, parentID: 2 },
+      { id: 4, key: 'FIN', name: 'Final.', libraryID: 1, parentID: 3 },
+    ]);
+    // Raw variant: unsanitized Zotero-name chain.
+    expect(await collectionKeyToRelativePath('FIN')).toBe('CON/Re?ports/Final.');
+    // Disk variant: each segment sanitized.
+    expect(await collectionKeyToDiskRelativePath('FIN')).toBe('_CON/Re_ports/Final');
+  });
+});
+
+// ─── UT-208 (FS-1) ──────────────────────────────────────────────────────────
+
+describe('UT-208: isUnsafeCollectionNameSegment regression (sanitize is a separate layer)', () => {
+  it('still treats traversal/separator/NUL/empty segments as UNSAFE', () => {
+    expect(isUnsafeCollectionNameSegment('..')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('.')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('a/b')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('a\\b')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('a\0b')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('')).toBe(true);
+    expect(isUnsafeCollectionNameSegment('   ')).toBe(true);
+    expect(isUnsafeCollectionNameSegment(null)).toBe(true);
+  });
+
+  it('still treats reserved-name / trailing-dot segments as SAFE by THIS gate (sanitize handles them)', () => {
+    expect(isUnsafeCollectionNameSegment('CON')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('Methods.')).toBe(false);
+    expect(isUnsafeCollectionNameSegment('Re: port?')).toBe(false);
   });
 });

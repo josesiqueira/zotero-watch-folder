@@ -132,27 +132,12 @@ h1 em { font-style: italic; color: var(--accent); font-weight: 500 }
 .hero-meta span b { color: var(--ink); font-weight: 600 }
 
 /* hero illustration: a tiny animated "drop into folder" diagram */
-.hero-art {
-  background: var(--ink); color: var(--paper);
-  padding: 28px; border-radius: 12px;
-  font-family: var(--mono); font-size: 13px; line-height: 1.7;
-  box-shadow: var(--shadow);
-  position: relative; overflow: hidden;
+.hero-art-wrap { display: flex; align-items: center; justify-content: center; }
+.hero-shot {
+  width: 100%; max-width: 620px; height: auto; display: block;
+  border-radius: 14px;
+  box-shadow: 0 30px 60px -20px rgba(43,37,33,.45), 0 8px 20px -8px rgba(43,37,33,.3);
 }
-.hero-art .bar {
-  display: flex; gap: 6px; margin-bottom: 18px;
-}
-.hero-art .bar i {
-  width: 11px; height: 11px; border-radius: 50%; background: #2a2521; display: inline-block;
-}
-.hero-art .bar i:nth-child(1) { background: #c44536 }
-.hero-art .bar i:nth-child(2) { background: #b07c1e }
-.hero-art .bar i:nth-child(3) { background: #3b6e3a }
-.hero-art pre { margin: 0; white-space: pre-wrap; font-family: inherit }
-.hero-art .k { color: #e3a59c }
-.hero-art .v { color: #fff8e7 }
-.hero-art .c { color: #88837c; font-style: italic }
-.hero-art .arrow { color: #c44536 }
 
 /* ---------- sections ---------- */
 section { padding: 80px 0; border-top: 1px solid rgba(20,17,15,.08) }
@@ -421,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.6.2 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.6.3 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -437,27 +422,17 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>569</b> unit tests passing</span>
+        <span><b>776</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
-        <span><b>29</b> tunable preferences</span>
+        <span><b>30</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
       </div>
     </div>
 
-    <div class="hero-art" aria-hidden="true">
-      <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="c">## ~/Inbox/   (watched)</span>
-  <span class="v">drop:</span> <span class="k">smith-2024-attention.pdf</span>
-      <span class="arrow">│</span>
-      <span class="arrow">▼  scan (5s)</span>
-      <span class="arrow">▼  hash + dedup</span>
-      <span class="arrow">▼  fetch metadata</span>
-      <span class="arrow">▼  rename via template</span>
-<span class="c">## Zotero: Library › Research › ML</span>
-  <span class="v">item:</span> <span class="k">Smith, J. (2024). Attention…</span>
-  <span class="v">file:</span> <span class="k">Smith - 2024 - Attention.pdf</span>
-<span class="c">## ~/Inbox/Research/ML/</span>
-  <span class="v">mirrored:</span> <span class="k">Smith - 2024 - Attention.pdf</span></pre>
+    <div class="hero-art-wrap" aria-hidden="true">
+      <img class="hero-shot" src="docs/res/teaser.png"
+           alt="Zotero with the Watch Folder settings pane and setup wizard open"
+           loading="eager" decoding="async">
     </div>
   </div>
 </header>
@@ -1003,8 +978,8 @@ footer .fine {
       <li>
         <span class="status done">Done</span>
         <div>
-          <b>v2.6.2 — settings UX: clearer pickers + WebDAV guidance</b>
-          <span class="meta">Sync-mode and PDF-storage pickers are now clickable cards with a "✓ current" badge, so the active choice is obvious. A "★ Best for WebDAV / cloud sync" badge + hint banner steer cloud-sync users to "Store PDFs in Zotero", with clearer stored / linked / mirror descriptions. Readability fixes for dark themes, plus a new public docs/ folder (DEVELOPERS.md + a visual architecture.md).</span>
+          <b>v2.6.3 — launch-readiness: data-safety fixes + settings UX + docs</b>
+          <span class="meta">Data-safety hardening from a deploy-readiness audit: a transient drive/cloud drop can no longer mass-trash collections (folder-deletion pass gated behind a watch-root-availability check), the Zotero→local delete gate now fails closed, Windows-reserved collection names are sanitized before mirroring, and a "Delete permanently" choice is never persisted as a standing default. Plus the settings UX (clickable mode/storage cards with a "✓ current" badge, a "★ Best for WebDAV / cloud sync" badge + hint), readability fixes, and a revamped README + public docs/ folder (DEVELOPERS.md + visual architecture.md).</span>
         </div>
       </li>
       <li>
@@ -1068,7 +1043,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (711 passing, 23 files)</span>
+<span class="c"># unit tests (776 passing, 25 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1098,7 +1073,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.6.2 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-05-29
+      GPL-3.0 · v2.6.3 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-16
     </div>
   </div>
 </footer>

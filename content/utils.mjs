@@ -184,3 +184,46 @@ export function relativePath(absolutePath, root) {
   if (!a.startsWith(prefix)) return null;
   return a.slice(prefix.length);
 }
+
+/**
+ * Pure config-time guard: decide whether `watchRoot` dangerously overlaps the
+ * Zotero data directory (or its `storage/` subdir). A watch root that equals,
+ * sits inside, or is a parent of the data dir (or storage subdir) would have
+ * the plugin import/move/delete Zotero's own managed files — catastrophic.
+ *
+ * Containment is decided via `relativePath` (NOT a naive `startsWith`), so a
+ * sibling like `.../Zotero-backup` is NOT flagged against `.../Zotero`.
+ *
+ * Fails OPEN: returns `null` (no block) when `dataDir` is unresolvable or
+ * either argument is not a non-empty string, so an unknown data dir never
+ * locks a user out of configuring a watch folder.
+ *
+ * IMPORTANT: a byte-identical copy of this function lives inline in
+ * `content/preferences.js` (`browseForFolder`), which cannot import modules.
+ * If you change this, change that copy too and keep them byte-identical.
+ *
+ * @param {string} watchRoot - absolute path the user wants to watch
+ * @param {string} dataDir - Zotero data directory (Zotero.DataDirectory.dir)
+ * @returns {string|null} a human-readable reason when unsafe, else null
+ */
+export function isWatchRootUnsafe(watchRoot, dataDir) {
+  if (typeof watchRoot !== 'string' || watchRoot.length === 0) return null;
+  if (typeof dataDir !== 'string' || dataDir.length === 0) return null;
+  const norm = (s) => s.replace(/\\/g, '/').replace(/\/+$/, '');
+  const storageDir = norm(dataDir) + '/storage';
+  // Watch root equals or sits inside the data dir / storage subdir.
+  if (relativePath(watchRoot, dataDir) !== null) {
+    return 'The watch folder is inside (or equal to) the Zotero data directory. The plugin would treat Zotero\'s own managed files as imports. Choose a separate folder.';
+  }
+  if (relativePath(watchRoot, storageDir) !== null) {
+    return 'The watch folder is inside (or equal to) the Zotero "storage" directory. The plugin would treat Zotero\'s own attachment files as imports. Choose a separate folder.';
+  }
+  // Watch root is a PARENT of the data dir / storage subdir.
+  if (relativePath(dataDir, watchRoot) !== null) {
+    return 'The watch folder contains the Zotero data directory. The plugin could move or delete Zotero\'s own files. Choose a folder that does not contain your Zotero data.';
+  }
+  if (relativePath(storageDir, watchRoot) !== null) {
+    return 'The watch folder contains the Zotero "storage" directory. The plugin could move or delete Zotero\'s own attachment files. Choose a folder that does not contain your Zotero data.';
+  }
+  return null;
+}

@@ -27,7 +27,7 @@
  */
 
 import { getPref, getFileHash } from './utils.mjs';
-import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToRelativePath } from './canonicalPath.mjs';
+import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToDiskRelativePath } from './canonicalPath.mjs';
 import { getTrackingStore, createFileRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import * as baseline from './baseline.mjs';
@@ -262,7 +262,7 @@ async function _convertOneToLinked(entry, { syncRoot, watchRoot, store }) {
 
   // 1. Resolve canonical watch-folder destination.
   const canonical = await chooseCanonicalCollection(item, syncRoot.collection);
-  const relDir = canonical ? await collectionKeyToRelativePath(canonical.key) : '';
+  const relDir = canonical ? await collectionKeyToDiskRelativePath(canonical.key) : '';
   if (relDir == null) return false;
   const filename = attachment.attachmentFilename || PathUtils.filename(srcPath);
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;

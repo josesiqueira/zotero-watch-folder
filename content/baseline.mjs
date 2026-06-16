@@ -34,7 +34,7 @@
 import { getPref, setPref, getFileHash, relativePath } from './utils.mjs';
 import {
   resolveSyncRoot,
-  collectionKeyToRelativePath,
+  collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   isSpecialCollection,
 } from './canonicalPath.mjs';
@@ -126,7 +126,7 @@ export async function runBaseline(opts = {}) {
 
     // ─── B.6 — empty subcollections → empty disk folders ────────────
     for (const col of collections) {
-      const relPath = await collectionKeyToRelativePath(col.key);
+      const relPath = await collectionKeyToDiskRelativePath(col.key);
       if (relPath == null || relPath === '') continue;
       const absPath = _toAbs(watchRoot, relPath);
       try {
@@ -257,7 +257,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
       ? diskHashIndex
       : (dryRun ? null : await _buildDiskHashIndex(watchRoot));
     for (const col of collections) {
-      const relPath = await collectionKeyToRelativePath(col.key);
+      const relPath = await collectionKeyToDiskRelativePath(col.key);
       if (relPath == null || relPath === '') continue;
       const absPath = _toAbs(watchRoot, relPath);
       try {
@@ -334,7 +334,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
 
   const canonical = await chooseCanonicalCollection(item, syncRoot.collection);
   if (!canonical) return 'skipped';
-  const relDir = await collectionKeyToRelativePath(canonical.key);
+  const relDir = await collectionKeyToDiskRelativePath(canonical.key);
   if (relDir == null) return 'skipped';
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;
   const absDest = _toAbs(watchRoot, relPath);

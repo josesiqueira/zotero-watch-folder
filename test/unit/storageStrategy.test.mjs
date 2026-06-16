@@ -23,7 +23,7 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
     ...actual,
     resolveSyncRoot: vi.fn(),
     chooseCanonicalCollection: vi.fn(),
-    collectionKeyToRelativePath: vi.fn(),
+    collectionKeyToDiskRelativePath: vi.fn(),
   };
 });
 vi.mock('../../content/baseline.mjs', () => ({
@@ -42,7 +42,7 @@ vi.mock('../../content/warningSink.mjs', () => ({
 
 import * as storageStrategy from '../../content/storageStrategy.mjs';
 import { getPref, getFileHash } from '../../content/utils.mjs';
-import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToRelativePath } from '../../content/canonicalPath.mjs';
+import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToDiskRelativePath } from '../../content/canonicalPath.mjs';
 import * as baseline from '../../content/baseline.mjs';
 import { getTrackingStore } from '../../content/trackingStore.mjs';
 import { report as reportWarning } from '../../content/warningSink.mjs';
@@ -286,7 +286,7 @@ describe('UT-904: runReclaim converts only un-annotated, recoverable, parent pre
     resolveSyncRoot.mockResolvedValue({ collection: { key: 'ROOT1' }, libraryID: 1 });
     prefMap({ sourcePath: '/watch', pdfStorageStrategy: 'linked_watch_folder' });
     chooseCanonicalCollection.mockResolvedValue({ key: 'COL1' });
-    collectionKeyToRelativePath.mockResolvedValue('Methods');
+    collectionKeyToDiskRelativePath.mockResolvedValue('Methods');
     getFileHash.mockResolvedValue('HASH');
     parentItem = { key: 'PARENT', deleted: false };
     globalThis.Zotero.Items.get = vi.fn(() => parentItem);
@@ -354,7 +354,7 @@ describe('UT-905: runReclaim aborts on hash-verify mismatch', () => {
     resolveSyncRoot.mockResolvedValue({ collection: { key: 'ROOT1' }, libraryID: 1 });
     prefMap({ sourcePath: '/watch', pdfStorageStrategy: 'linked_watch_folder' });
     chooseCanonicalCollection.mockResolvedValue({ key: 'COL1' });
-    collectionKeyToRelativePath.mockResolvedValue('Methods');
+    collectionKeyToDiskRelativePath.mockResolvedValue('Methods');
     globalThis.Zotero.Attachments.linkFromFile = vi.fn(async () => ({ key: 'LINK1', setTags: vi.fn(), saveTx: vi.fn(async () => {}) }));
   });
 

@@ -27,6 +27,7 @@
 
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { STATE } from './trackingStore.mjs';
+import { isWatchRootAvailable } from './fileMissing.mjs';
 
 /**
  * Run the disk diff against the tracked collection records.
@@ -40,6 +41,19 @@ import { STATE } from './trackingStore.mjs';
  */
 export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRoot }) {
   if (!trackingStore || !watchRoot) return;
+
+  // SYNC-1: defense-in-depth — if the watch root is unreachable (transient
+  // unmount / disconnected drive), the on-disk dir set is meaningless and
+  // every tracked folder would appear deleted, mass-emitting
+  // localFolderDeleted. Bail before the record loop; emit nothing and do NOT
+  // flip any CollectionRecord here (file-record pausing remains the job of
+  // _handleExternalDeletions). The caller (watchFolder._scan) already gates
+  // on this too; this is the emitter-side backstop.
+  if (!(await isWatchRootAvailable(watchRoot))) {
+    Zotero.debug('[WatchFolder] folderEventDetector: watch root unavailable — skipping folder-deletion detection');
+    return;
+  }
+
   const dirSet = onDiskAbsDirs instanceof Set ? onDiskAbsDirs : new Set(onDiskAbsDirs || []);
 
   const records = trackingStore.getAllOfType('collection');

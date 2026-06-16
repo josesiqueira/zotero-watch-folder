@@ -32,6 +32,7 @@
 import {
   resolveSyncRoot,
   collectionKeyToRelativePath,
+  collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
 } from './canonicalPath.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
@@ -219,7 +220,12 @@ async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
   if (!newCanonical) return;
   if (newCanonical.key === record.canonicalCollectionKey) return;
 
-  const newRelPath = await collectionKeyToRelativePath(newCanonical.key);
+  // Disk-domain variant (FS-1): the new canonical path becomes a stored
+  // localPath that must round-trip against on-disk folders and match the
+  // sanitized form baseline/collectionWatcher use, so a reparent into a
+  // Windows-reserved/illegal collection name mirrors correctly. ('' / null
+  // pass through, preserving the scope/no-op gates below.)
+  const newRelPath = await collectionKeyToDiskRelativePath(newCanonical.key);
   if (newRelPath === null) return;
 
   // The filename is preserved across the canonical move — we only change

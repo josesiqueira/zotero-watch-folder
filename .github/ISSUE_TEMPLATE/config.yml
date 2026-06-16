@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User guide & FAQ
+    url: https://josesiqueira.github.io/zotero-watch-folder/
+    about: How to set it up, what each mode does, and answers to common questions — please skim this first.
+  - name: Questions & discussion
+    url: https://github.com/josesiqueira/zotero-watch-folder/discussions
+    about: For "how do I…" or "is this expected?" — use Discussions rather than a bug report.

@@ -31,7 +31,7 @@
  */
 
 import {
-  collectionKeyToRelativePath,
+  collectionKeyToDiskRelativePath,
   isSpecialCollection,
   resolveSyncRoot,
   invalidateCanonicalPathCache,
@@ -281,7 +281,11 @@ async function _dispatchCollection(event, ids, extraData) {
       if (!collection) continue;
       if (isSpecialCollection(collection)) continue;
 
-      const relPath = await collectionKeyToRelativePath(collection.key);
+      // Disk-domain variant: sanitizes each segment (FS-1) so the emitted
+      // createFolder/moveFolder paths — and the localPath stored from them —
+      // match the sanitized folders baseline creates and round-trip on
+      // Windows-reserved/illegal collection names. Passes '' / null through.
+      const relPath = await collectionKeyToDiskRelativePath(collection.key);
       if (relPath === null) continue; // not under sync root
 
       if (event === 'add') {

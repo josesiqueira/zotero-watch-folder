@@ -911,3 +911,69 @@ describe('UT-116: debounced save (WP-B / B3)', () => {
     await expect(savePromise).rejects.toThrow(/destroyed/i);
   });
 });
+
+// ─── UT-117 ────────────────────────────────────────────────────────────────
+
+describe('UT-117: atomic tracking-store write (DATA-3)', () => {
+  beforeEach(() => {
+    resetTrackingStore();
+    globalThis.IOUtils.writeJSON.mockClear();
+    globalThis.IOUtils.move.mockClear();
+  });
+
+  it('save() passes { tmpPath } so Gecko writes-then-renames atomically', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.save();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    const [path, , opts] = globalThis.IOUtils.writeJSON.mock.calls[0];
+    expect(path).toBe('/fake/tracking.json');
+    expect(opts).toEqual({ tmpPath: '/fake/tracking.json.tmp' });
+  });
+
+  it('flush() is also atomic — passes the same { tmpPath }', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.flush();
+    expect(globalThis.IOUtils.writeJSON).toHaveBeenCalledTimes(1);
+    const [, , opts] = globalThis.IOUtils.writeJSON.mock.calls[0];
+    expect(opts).toEqual({ tmpPath: '/fake/tracking.json.tmp' });
+  });
+
+  it('tmp path is a same-directory sibling of dataFile (rename stays intra-FS)', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/dir/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.save();
+    const [, , opts] = globalThis.IOUtils.writeJSON.mock.calls[0];
+    // Same directory ⇒ rename is atomic (no cross-filesystem copy).
+    expect(opts.tmpPath.startsWith('/fake/dir/')).toBe(true);
+    expect(opts.tmpPath).toBe('/fake/dir/tracking.json.tmp');
+  });
+
+  it('the geckoMocks atomic write emulates write-tmp-then-move onto the final path', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    await store.save();
+    // The mock honors tmpPath by renaming the tmp sibling onto the target.
+    expect(globalThis.IOUtils.move).toHaveBeenCalledTimes(1);
+    expect(globalThis.IOUtils.move).toHaveBeenCalledWith(
+      '/fake/tracking.json.tmp',
+      '/fake/tracking.json',
+    );
+  });
+
+  it('a failed write still REJECTS and leaves the store dirty (contract guard)', async () => {
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    globalThis.IOUtils.writeJSON.mockRejectedValueOnce(new Error('disk full'));
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    expect(store.isDirty).toBe(true);
+    await expect(store.save()).rejects.toThrow('disk full');
+    // Dirty flag is only cleared on a successful write.
+    expect(store.isDirty).toBe(true);
+  });
+});

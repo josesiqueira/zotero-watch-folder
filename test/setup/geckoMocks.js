@@ -79,10 +79,28 @@ globalThis.IOUtils = {
     lastModified: Date.now(),
     path,
   })),
-  read: vi.fn(async () => new Uint8Array([1, 2, 3])),
+  // Honors { offset, maxBytes } slicing against a default backing buffer so
+  // IMPORT-1's _looksLikeCompletePdf header/tail reads behave like Gecko's
+  // IOUtils.read. Tests that need specific bytes override this with
+  // mockImplementation/mockResolvedValue.
+  read: vi.fn(async (_path, opts = {}) => {
+    const backing = new Uint8Array([1, 2, 3]);
+    const offset = Number.isInteger(opts.offset) ? opts.offset : 0;
+    const end = Number.isInteger(opts.maxBytes)
+      ? Math.min(backing.length, offset + opts.maxBytes)
+      : backing.length;
+    return backing.slice(Math.min(offset, backing.length), end);
+  }),
   readJSON: vi.fn(async () => ({})),
   readUTF8: vi.fn(async () => ''),
-  writeJSON: vi.fn(async () => {}),
+  // Honors { tmpPath } for DATA-3's atomic write: emulate Gecko's
+  // write-to-temp-then-rename by writing the tmp sibling and moving it onto
+  // the final path. Plain no-op when no tmpPath is supplied.
+  writeJSON: vi.fn(async (path, _data, opts = {}) => {
+    if (opts && opts.tmpPath) {
+      await globalThis.IOUtils.move(opts.tmpPath, path);
+    }
+  }),
   writeUTF8: vi.fn(async () => {}),
   getChildren: vi.fn(async () => []),
   makeDirectory: vi.fn(async () => {}),

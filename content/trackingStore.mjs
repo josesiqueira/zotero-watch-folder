@@ -829,7 +829,7 @@ export class TrackingStore {
         collections: Array.from(this._collections.values()),
         tombstones: this._tombstones.slice(),
       };
-      await IOUtils.writeJSON(this.dataFile, data);
+      await IOUtils.writeJSON(this.dataFile, data, { tmpPath: `${this.dataFile}.tmp` });
       this._dirty = false;
       Zotero.debug(`[WatchFolder] TrackingStore: saved (files=${data.files.length} collections=${data.collections.length} tombstones=${data.tombstones.length})`);
     } catch (e) {

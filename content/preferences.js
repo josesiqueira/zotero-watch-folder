@@ -28,6 +28,49 @@
         Zotero.Prefs.set(PREF_PREFIX + name, value, true);
     }
 
+    // ───────────────────────────────────────────────────────────────────
+    // DATA-4: BYTE-IDENTICAL INLINE COPIES of `relativePath` and
+    // `isWatchRootUnsafe` from `content/utils.mjs`. This prefs script runs
+    // inside a Cu.Sandbox and CANNOT `import` modules, so the guard is
+    // duplicated verbatim. If you change `isWatchRootUnsafe` (or its
+    // `relativePath` dependency) in utils.mjs, update these copies and keep
+    // them byte-identical. (`export ` is the only intentional difference.)
+    // ───────────────────────────────────────────────────────────────────
+    function relativePath(absolutePath, root) {
+      if (typeof absolutePath !== 'string' || typeof root !== 'string') return null;
+      // Normalize backslashes (Windows) to forward slashes; strip trailing slash on root.
+      const norm = (s) => s.replace(/\\/g, '/');
+      const a = norm(absolutePath);
+      let r = norm(root);
+      if (r.endsWith('/')) r = r.slice(0, -1);
+      if (a === r) return '';
+      const prefix = r + '/';
+      if (!a.startsWith(prefix)) return null;
+      return a.slice(prefix.length);
+    }
+
+    function isWatchRootUnsafe(watchRoot, dataDir) {
+      if (typeof watchRoot !== 'string' || watchRoot.length === 0) return null;
+      if (typeof dataDir !== 'string' || dataDir.length === 0) return null;
+      const norm = (s) => s.replace(/\\/g, '/').replace(/\/+$/, '');
+      const storageDir = norm(dataDir) + '/storage';
+      // Watch root equals or sits inside the data dir / storage subdir.
+      if (relativePath(watchRoot, dataDir) !== null) {
+        return 'The watch folder is inside (or equal to) the Zotero data directory. The plugin would treat Zotero\'s own managed files as imports. Choose a separate folder.';
+      }
+      if (relativePath(watchRoot, storageDir) !== null) {
+        return 'The watch folder is inside (or equal to) the Zotero "storage" directory. The plugin would treat Zotero\'s own attachment files as imports. Choose a separate folder.';
+      }
+      // Watch root is a PARENT of the data dir / storage subdir.
+      if (relativePath(dataDir, watchRoot) !== null) {
+        return 'The watch folder contains the Zotero data directory. The plugin could move or delete Zotero\'s own files. Choose a folder that does not contain your Zotero data.';
+      }
+      if (relativePath(storageDir, watchRoot) !== null) {
+        return 'The watch folder contains the Zotero "storage" directory. The plugin could move or delete Zotero\'s own attachment files. Choose a folder that does not contain your Zotero data.';
+      }
+      return null;
+    }
+
     /**
      * Build the human-readable path of a collection by walking parent chain.
      * Used to show "Inbox" or "Inbox / Methods" in the sync-root display.
@@ -433,6 +476,7 @@
         setPref('mode', newMode);
         Zotero.debug(`[Watch Folder] Mode changed via prefs UI: ${current} → ${newMode}`);
         refreshModeRadio(); // move the highlight + re-assert the radio to the new value
+        refreshDeletionUI(); // show/hide the Mode-3-only deletion-disposition group live
     }
 
     // ─── PDF storage strategy (orthogonal to sync mode) ───────────────────
@@ -491,6 +535,52 @@
         setPref('pdfStorageStrategy', value);
         Zotero.debug(`[Watch Folder] PDF storage strategy changed: ${current} → ${value}`);
         refreshStorageStrategyUI();
+    }
+
+    // ─── Mode-3 deletion disposition (diskDeleteOnTrash) ─────────────────
+    // The set of dispositions the user may *persist* from the prefs pane.
+    // 'permanent' is deliberately OMITTED — it is destructive and must never
+    // become the standing every-batch policy from a single click (see
+    // watchFolder._promptDiskDelete). A 'permanent' value can still arrive via
+    // about:config or an old build; refreshDeletionUI() surfaces a revert row
+    // in that case.
+    const DELETION_DISPOSITIONS = ['ask', 'plugin_trash', 'os_trash', 'never'];
+
+    function getDiskDeleteOnTrashPref() {
+        return getPref('diskDeleteOnTrash') || 'plugin_trash';
+    }
+
+    function refreshDeletionUI() {
+        // diskDeleteOnTrash is only consumed in Mode 3 — hide the whole group
+        // otherwise so Mode 1 / Mode 2 users aren't shown an inert control.
+        const group = document.getElementById('watch-folder-deletion-group');
+        const mode = getPref('mode') || 'mode1';
+        const showGroup = mode === 'mode3';
+        if (group) group.hidden = !showGroup;
+        if (!showGroup) return;
+
+        const current = getDiskDeleteOnTrashPref();
+        const radio = document.getElementById('watch-folder-deletion-radio');
+        if (radio && DELETION_DISPOSITIONS.includes(current)) radio.value = current;
+        // When current === 'permanent', no card carries wf-sel (it isn't in the
+        // grid) and the warn/revert row is revealed instead.
+        _markSelectedCard('wf-deletion-opt-', DELETION_DISPOSITIONS, current);
+
+        const warn = document.getElementById('watch-folder-deletion-permanent-warn');
+        if (warn) warn.hidden = current !== 'permanent';
+    }
+
+    /**
+     * Persist a deletion disposition. Rejects any value not in
+     * DELETION_DISPOSITIONS — notably 'permanent', which the UI never offers.
+     */
+    function changeDiskDeleteOnTrash(value) {
+        if (!DELETION_DISPOSITIONS.includes(value)) return;
+        const current = getDiskDeleteOnTrashPref();
+        if (value === current) { refreshDeletionUI(); return; }
+        setPref('diskDeleteOnTrash', value);
+        Zotero.debug(`[Watch Folder] Deletion disposition changed: ${current} → ${value}`);
+        refreshDeletionUI();
     }
 
     async function reclaimStorage() {
@@ -720,6 +810,18 @@
         if (result === fp.returnOK) {
             const selectedPath = fp.file;
             if (selectedPath) {
+                // DATA-4: reject a watch root overlapping the Zotero data/storage dir.
+                // Fails open when the data dir is unresolvable. Leaves the existing
+                // sourcePath + input untouched on a reason.
+                const pathStr = (typeof selectedPath === 'object' && selectedPath.path)
+                    ? selectedPath.path : String(selectedPath);
+                const dataDir = Zotero?.DataDirectory?.dir;
+                const unsafeReason = isWatchRootUnsafe(pathStr, dataDir);
+                if (unsafeReason) {
+                    try { Zotero.logError(`[Watch Folder] Rejected unsafe watch root "${pathStr}" overlapping Zotero data dir "${dataDir}" — ${unsafeReason}`); } catch (_) {}
+                    Services.prompt.alert(window, 'Watch Folder — Unsafe folder', unsafeReason);
+                    return;
+                }
                 setPref('sourcePath', selectedPath);
                 const pathInput = document.getElementById('watch-folder-source-path');
                 if (pathInput) pathInput.value = selectedPath;
@@ -960,6 +1062,7 @@
             refreshSyncRootDisplay();
             refreshModeRadio();
             refreshStorageStrategyUI();
+            refreshDeletionUI();
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
@@ -1013,6 +1116,8 @@
         changeStorageStrategy,
         reclaimStorage,
         buildRepairMirror,
+        // Mode-3 deletion disposition (diskDeleteOnTrash).
+        changeDiskDeleteOnTrash,
         onLoad: init,
     };
 

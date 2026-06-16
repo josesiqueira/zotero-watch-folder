@@ -166,6 +166,27 @@ describe('UT-302: collection add → createFolder under sync root', () => {
     expect(action.payload.relativePath).toBe('Methods/Sub');
     expect(action.payload.parentCollectionKey).toBe('SUB1');
   });
+
+  it('UT-302-FS1: a live-added collection with a Windows-reserved/illegal name emits a SANITIZED relativePath', async () => {
+    // FS-1 live path: the dispatcher uses collectionKeyToDiskRelativePath so
+    // a collection created after baseline to e.g. "CON" / "Re:port?" cannot
+    // feed a raw illegal segment into makeDirectory on Windows. (Real
+    // canonicalPath sanitize runs here — this suite does not mock it.)
+    const sub = { id: 201, key: 'SUB9', name: 'Re:port?', libraryID: 1, parentID: 100 };
+    makeCollectionRegistry([SYNC_ROOT, sub]);
+    prefStubs({ syncRootCollectionKey: 'ROOT1', syncRootLibraryID: 1 });
+
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+    await getObs().notify('add', 'collection', [201], {});
+
+    const action = mirrorExecutor.execute.mock.calls[0][0];
+    expect(action.type).toBe('createFolder');
+    // ':' and '?' are Windows-reserved → replaced; the raw name never reaches disk.
+    expect(action.payload.relativePath).toBe('Re_port_');
+    expect(action.payload.relativePath).not.toContain(':');
+    expect(action.payload.relativePath).not.toContain('?');
+  });
 });
 
 // ─── UT-310 (A4 fix) ───────────────────────────────────────────────────────

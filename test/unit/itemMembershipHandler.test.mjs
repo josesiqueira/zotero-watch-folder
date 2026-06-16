@@ -27,6 +27,7 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
     ...actual,
     resolveSyncRoot: vi.fn(),
     collectionKeyToRelativePath: vi.fn(),
+    collectionKeyToDiskRelativePath: vi.fn(),
     chooseCanonicalCollection: vi.fn(),
   };
 });
@@ -45,6 +46,7 @@ import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import {
   resolveSyncRoot,
   collectionKeyToRelativePath,
+  collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
 } from '../../content/canonicalPath.mjs';
 import { getPref } from '../../content/utils.mjs';
@@ -88,6 +90,11 @@ beforeEach(() => {
   Zotero.Items.get = vi.fn();
   resolveSyncRoot.mockResolvedValue({ collection: SYNC_ROOT, libraryID: 1 });
   collectionKeyToRelativePath.mockResolvedValue('Methods');
+  // FS-1: the canonical recompute path now uses the disk-sanitized variant.
+  // Delegate it to the raw mock so every collectionKeyToRelativePath.mock*
+  // setup in the tests drives both (sanitize is a no-op on the clean test
+  // names: '', 'Methods', 'OldFolder', 'NewFolder').
+  collectionKeyToDiskRelativePath.mockImplementation((k) => collectionKeyToRelativePath(k));
   chooseCanonicalCollection.mockResolvedValue(null);
 });
 
@@ -222,6 +229,12 @@ describe('UT-504: add triggers moveItem when canonical changes', () => {
         newCanonicalCollectionKey: 'NEWC',
       },
     });
+    // FS-1 revert guard: the canonical recompute MUST resolve the new path via
+    // the disk-sanitized variant (so a reparent into a Windows-reserved name
+    // mirrors safely). If this line is reverted to the raw
+    // collectionKeyToRelativePath, the disk fn is never called here and this
+    // assertion fails — keeping the live-path fix from silently rotting.
+    expect(collectionKeyToDiskRelativePath).toHaveBeenCalledWith('NEWC');
   });
 
   it('does NOT emit moveItem when newCanonical equals current', async () => {

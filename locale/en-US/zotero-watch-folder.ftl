@@ -62,6 +62,21 @@ watch-folder-pref-storage-restore = If this computer is lost, install Zotero and
 watch-folder-pref-storage-reclaim = Reclaim Zotero Storage Space…
 watch-folder-pref-storage-build-mirror = Build/Repair Watch Folder Mirror…
 
+# ─── Deletion disposition (Mode 3 only) ──────────────────────────
+watch-folder-pref-section-deletion = When a source file is deleted
+watch-folder-pref-deletion-explainer = In "Mirror with safe delete" mode, when you move an item to Zotero's bin the plugin can also act on the matching file in your watch folder. Choose what happens to that source file. (Permanent deletion is never saved as a standing choice — if you ever pick it from the prompt, it applies to that one batch only.)
+watch-folder-pref-deletion-recommended-badge = ★ Recommended
+watch-folder-pref-deletion-ask-label = Ask me each time
+watch-folder-pref-deletion-ask-desc = Show a prompt every time files are removed, so you decide per batch.
+watch-folder-pref-deletion-plugin-trash-label = Move to plugin trash (recoverable)
+watch-folder-pref-deletion-plugin-trash-desc = Move the file into a .zotero-watch-trash folder under your watch root. Fully recoverable, and it stays on the same drive or network share as the original — the safe default.
+watch-folder-pref-deletion-os-trash-label = Move to system trash
+watch-folder-pref-deletion-os-trash-desc = Move the file to your operating system's Trash / Recycle Bin. Recoverable from there, but may not work on network shares or external drives.
+watch-folder-pref-deletion-never-label = Leave the file on disk
+watch-folder-pref-deletion-never-desc = Never touch the source file. Zotero's bin and your watch folder can drift apart, but nothing on disk is ever removed by the plugin.
+watch-folder-pref-deletion-permanent-warn = Your current setting permanently deletes source files with no way to recover them. This is not offered here because it is unsafe as a standing choice.
+watch-folder-pref-deletion-revert = Switch to recoverable plugin trash
+
 # ─── Attention rows (only shown when non-zero) ────────────────────
 watch-folder-pref-warnings = Sync warnings:
 watch-folder-pref-warnings-view = View

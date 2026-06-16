@@ -651,40 +651,43 @@ async function _zoteroCollectionDeleted(payload) {
       }
     }
 
-    // Per-child conflict gate (spec risk #1b). Before moving the whole
-    // folder into plugin trash, verify EVERY tracked child file is unchanged
-    // since last sync. We only block on genuine content drift (`hash-drifted`)
-    // — a missing or baseline-less child isn't user-edited content at risk, so
-    // it doesn't veto the whole folder. Any drift aborts the entire move and
-    // flips the drifted records to CONFLICT_BLOCKED; we never trash bytes the
-    // user edited locally (spec: "verify every tracked local child file is
-    // unchanged before moving the folder").
+    // Per-child conflict gate (spec risk #1b) — FAIL-CLOSED. Before moving the
+    // whole folder into plugin trash, verify EVERY tracked child file can be
+    // PROVEN unchanged since last sync (`gate.ok`). Any non-ok outcome —
+    // proven drift, a missing baseline hash, a read/IO error, or a hash
+    // failure — blocks the whole move; the only exception is `missing-file`
+    // (the child is already gone from disk, so there are no local bytes to
+    // protect). Any blocked child aborts the entire folder move and flips the
+    // blocked records to CONFLICT_BLOCKED; we never trash a child we cannot
+    // confirm is unchanged.
     if (_store) {
       const prefix = oldRelativePath + '/';
       const children = _store.getAllOfType('file').filter((r) =>
         r.localPath === oldRelativePath
         || (typeof r.localPath === 'string' && r.localPath.startsWith(prefix)));
-      const drifted = [];
+      const blocked = [];
       for (const child of children) {
         let childAbs;
         try { childAbs = _absPath(child.localPath); } catch (_e) { continue; }
         const gate = await canSafelyMove(child, childAbs);
-        if (!gate.ok && gate.reason === 'hash-drifted') drifted.push(child);
+        if (gate.ok) continue;
+        if (gate.reason === 'missing-file') continue;
+        blocked.push({ child, reason: gate.reason });
       }
-      if (drifted.length > 0) {
-        for (const child of drifted) {
+      if (blocked.length > 0) {
+        for (const { child, reason } of blocked) {
           _store.update(child.localPath, { state: STATE.CONFLICT_BLOCKED });
           reportWarning({
             category: WARNING_CATEGORY.CONFLICT_BLOCKED,
             actionType: 'deleteFolder',
             collectionKey,
             path: child.localPath,
-            reason: 'hash-drifted',
-            message: `Refused to trash folder "${oldRelativePath}" — child file "${child.localPath}" was edited locally since last sync. Resolve the conflict first.`,
+            reason,
+            message: `Refused to trash folder "${oldRelativePath}" — child file "${child.localPath}" could not be confirmed unchanged (${reason}). Resolve the conflict first.`,
           });
         }
         try { await _store.save(); } catch (_e) { /* logged */ }
-        return { ok: false, reason: 'conflict-blocked', conflictedCount: drifted.length };
+        return { ok: false, reason: 'conflict-blocked', conflictedCount: blocked.length };
       }
     }
 

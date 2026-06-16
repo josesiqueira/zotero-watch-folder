@@ -16,7 +16,15 @@ vi.mock('../../content/mirrorExecutor.mjs', () => ({
   execute: vi.fn(async () => ({ ok: true })),
 }));
 
+// SYNC-1: the detector now imports isWatchRootAvailable from fileMissing.mjs
+// to bail early on an unreachable root. Default to true so the existing
+// UT-601..606 deletion scenarios still run; UT-607a overrides per-test.
+vi.mock('../../content/fileMissing.mjs', () => ({
+  isWatchRootAvailable: vi.fn(async () => true),
+}));
+
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
+import { isWatchRootAvailable } from '../../content/fileMissing.mjs';
 import { detectFolderEvents } from '../../content/folderEventDetector.mjs';
 
 function makeStore(records = []) {
@@ -30,6 +38,9 @@ beforeEach(() => {
   Zotero.debug = vi.fn();
   Zotero.logError = vi.fn();
   IOUtils.exists = vi.fn(async () => false);
+  // Restore the default available-root behavior after clearAllMocks wiped
+  // any per-test mockResolvedValueOnce/mockImplementation.
+  isWatchRootAvailable.mockResolvedValue(true);
 });
 
 // ─── UT-601 ────────────────────────────────────────────────────────────────
@@ -188,6 +199,66 @@ describe('UT-607: skips records already in OUT_OF_SCOPE_SUPPRESSED', () => {
     });
     expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
     expect(mirrorExecutor.execute.mock.calls[0][0].payload.collectionKey).toBe('A');
+  });
+});
+
+// ─── UT-607a / UT-607b (SYNC-1) ────────────────────────────────────────────
+
+describe('UT-607a: bails when the watch root is unavailable', () => {
+  it('emits zero deleteFolder actions despite missing-on-disk records', async () => {
+    isWatchRootAvailable.mockResolvedValue(false);
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'Methods', state: 'clean' },
+      { type: 'collection', zoteroCollectionKey: 'B', localPath: 'Inbox', state: 'clean' },
+    ];
+    // Disk set collapsed to just the root — exactly the unmount symptom.
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(isWatchRootAvailable).toHaveBeenCalledWith('/watch');
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    // It returns before the record loop — no existence probing either.
+    expect(IOUtils.exists).not.toHaveBeenCalled();
+    expect(Zotero.debug).toHaveBeenCalledWith(
+      expect.stringContaining('watch root unavailable'),
+    );
+  });
+
+  it('does NOT flip any CollectionRecord state when the root is unavailable', async () => {
+    isWatchRootAvailable.mockResolvedValue(false);
+    const update = vi.fn();
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'Methods', state: 'clean' },
+    ];
+    const store = { ...makeStore(records), update };
+    await detectFolderEvents({
+      trackingStore: store,
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(records[0].state).toBe('clean');
+  });
+});
+
+describe('UT-607b: regression — available root still detects deletions', () => {
+  it('fires two localFolderDeleted for two missing folders (UT-601 still holds)', async () => {
+    isWatchRootAvailable.mockResolvedValue(true);
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'Methods', state: 'clean' },
+      { type: 'collection', zoteroCollectionKey: 'B', localPath: 'Inbox', state: 'clean' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
+    expect(calls.length).toBe(2);
+    expect(calls.map((c) => c.payload.collectionKey).sort()).toEqual(['A', 'B']);
+    expect(calls.every((c) => c.type === 'localFolderDeleted')).toBe(true);
   });
 });
 

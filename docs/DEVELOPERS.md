@@ -1,5 +1,9 @@
 # Developer & technical reference
 
+[![Zotero target version](https://img.shields.io/badge/Zotero-7%2F8%2F9-CC2936?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
+[![Latest release](https://img.shields.io/github/v/release/josesiqueira/zotero-watch-folder?style=flat-square&logo=github&label=release)](https://github.com/josesiqueira/zotero-watch-folder/releases/latest)
+[![License: GPL v3](https://img.shields.io/github/license/josesiqueira/zotero-watch-folder?style=flat-square)](../LICENSE)
+
 Everything under the hood: architecture, the full feature set described technically, every preference, the build pipeline, and the test layout. If you just want to *use* the plugin, the [README](../README.md) and the [user guide](https://josesiqueira.github.io/zotero-watch-folder/) are the friendlier reads.
 
 > **Working on the code with an AI agent?** Read [`CLAUDE.md`](../CLAUDE.md) first. It holds the load-bearing invariants and "don't touch without understanding" notes that this document deliberately does not repeat.
@@ -34,6 +38,7 @@ Mode can be switched at runtime — `syncCoordinator` registers an observer on t
 - **Two-way folder ↔ collection mirroring (Modes 2/3).** Subfolders become subcollections and vice-versa. Renames and moves propagate in both directions. Disk-side changes flow through `folderEventDetector` + rename detection; Zotero-side changes flow through `collectionWatcher` + `itemMembershipHandler`. All filesystem mutations funnel through a single `mirrorExecutor` guarded by per-key promise-chain locks (`collection:<key>` / `attachment:<key>`).
 - **Content-hash deduplication.** Full-file SHA-256 (`HASH_VERSION = 2`). Re-importing the same bytes is recognised and skipped. Hashes are stamped into each item's `Extra` field (`watchfolder-hash:<sha256>`) so dedup survives a tracking-store wipe and travels across machines via Zotero sync. A module-level LRU hash cache keyed by `(path, size, mtime)` avoids redundant disk reads on steady-state scans.
 - **Recoverable trash + six-case restore matrix (Mode 3).** Deletions on either side move files into `.zotero-watch-trash/` under the watch root (sync-root-relative subpath preserved, collision-suffixed). Restoring covers: single attachment, parent with multiple attachments, re-attach to a live parent when the attachment was purged, collision handling with a `.restored.<timestamp>` suffix, and whole-folder restore from the settings pane. Tombstone records make hash-based re-linking possible after a trash.
+  - **`permanent` is one-time-only, never saved (v2.6.3).** Choosing "Delete permanently" from `_promptDiskDelete` is honored for that single batch (the function's return value), but the "Don't ask again" persist branch downgrades it to `plugin_trash` before writing `diskDeleteOnTrash` and shows a one-time advisory alert — a single click can never arm an unattended every-batch permanent delete. The Mode-3 deletion-disposition picker in `preferences.{xhtml,js}` (`changeDiskDeleteOnTrash`, `DELETION_DISPOSITIONS`) offers only `ask` / `plugin_trash` / `os_trash` / `never`; if `diskDeleteOnTrash` already holds `permanent` (about:config or an old build) the pane surfaces a warn + "Switch to recoverable plugin trash" revert row.
 - **Conflict gate.** Before any sync mutation, `canSafelyMove` checks for content drift (annotations, edits). On drift it refuses, flips the record to `conflict-blocked`, and surfaces it for explicit resolution. No sync op ever silently overwrites edited content.
 - **Bulk-delete protection.** `bulkGuard` flags operations affecting more than 10 files **or** more than 20% of tracked items and prompts before proceeding. Headless / no-UI contexts **refuse** rather than silently execute.
 - **Drive-disconnect safety.** If the watch root becomes unreachable (e.g. an unmounted removable drive), the plugin globally pauses instead of interpreting "everything is missing" as "trash everything."
@@ -99,7 +104,7 @@ Version lives in **both** `package.json` and `manifest.json` — keep them in sy
 
 ## Tests
 
-Vitest unit suite — **711 passing across 23 files** (zero skipped; strict no-skipped-tests rule). Config in `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, and `crypto.subtle`.
+Vitest unit suite — **776 passing across 25 files** (zero skipped; strict no-skipped-tests rule). Config in `vitest.config.mjs` (globals, Node env). `test/setup/geckoMocks.js` stubs `Zotero`, `IOUtils`, `PathUtils`, `Services`, `Components`, `ChromeUtils`, and `crypto.subtle`.
 
 To add coverage: create `test/unit/<module>.test.mjs`, import the module under test from `../../content/<module>.mjs`, and mock dependencies per-file with `vi.mock(...)`, resetting in `beforeEach`. Tests that mock `getFileHash` across multiple scenarios must `hashCache.clear()` in `beforeEach` — the cache is a real module singleton, not a per-test mock.
 

@@ -31,7 +31,7 @@ vi.mock('../../content/canonicalPath.mjs', async () => {
   return {
     ...actual,
     resolveSyncRoot: vi.fn(),
-    collectionKeyToRelativePath: vi.fn(),
+    collectionKeyToDiskRelativePath: vi.fn(),
     chooseCanonicalCollection: vi.fn(),
     isSpecialCollection: vi.fn(() => false),
   };
@@ -46,7 +46,7 @@ import { TrackingStore, STATE } from '../../content/trackingStore.mjs';
 import { getPref, setPref, getFileHash } from '../../content/utils.mjs';
 import {
   resolveSyncRoot,
-  collectionKeyToRelativePath,
+  collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   isSpecialCollection,
 } from '../../content/canonicalPath.mjs';
@@ -87,7 +87,7 @@ beforeEach(() => {
   IOUtils.stat = vi.fn(async () => ({ type: 'regular', size: 4096, lastModified: 1700000000000 }));
   prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: '' });
   resolveSyncRoot.mockResolvedValue(SYNC_ROOT);
-  collectionKeyToRelativePath.mockResolvedValue('');
+  collectionKeyToDiskRelativePath.mockResolvedValue('');
   chooseCanonicalCollection.mockResolvedValue(null);
   isSpecialCollection.mockReturnValue(false);
   getFileHash.mockResolvedValue('hash1');
@@ -159,7 +159,7 @@ describe('UT-904: B.6 mkdir empty subcollections', () => {
       if (parentID === 100) return [sub1, sub2];
       return [];
     });
-    collectionKeyToRelativePath.mockImplementation(async (k) => {
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => {
       if (k === 'SUB1') return 'Methods';
       if (k === 'SUB2') return 'Refs';
       return '';
@@ -187,7 +187,7 @@ describe('UT-905: B.6 adopt — existing folder gets tracking but no mkdir', () 
     const sub = { id: 200, key: 'SUB1', name: 'Methods', libraryID: 1, parentID: 100, getChildItems: () => [] };
     SYNC_ROOT.collection.getChildItems = () => [];
     Zotero.Collections.getByParent.mockImplementation((parentID) => (parentID === 100 ? [sub] : []));
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
     Zotero.Collections.get.mockImplementation((id) => (id === 100 ? SYNC_ROOT.collection : null));
     IOUtils.exists.mockResolvedValue(true); // folder already on disk
 
@@ -214,7 +214,7 @@ describe('UT-906: B.2 copy Zotero attachment to canonical path', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
     IOUtils.exists.mockImplementation(async (p) => p === '/zotero-storage/ABCD/paper.pdf');
     Zotero.Collections.get.mockReturnValue({ key: 'SUB1' });
 
@@ -253,7 +253,7 @@ describe('UT-907: B.2 adopt when destination file exists', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
     // Destination already exists.
     IOUtils.exists.mockResolvedValue(true);
     getFileHash.mockResolvedValueOnce('disk-hash');
@@ -283,7 +283,7 @@ describe('UT-908: B.2 source unavailable warning', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     const store = await makeStore();
     const result = await runBaseline({ trackingStore: store });
@@ -301,7 +301,7 @@ describe('UT-909: dryRun', () => {
     const sub = { id: 200, key: 'SUB1', name: 'X', libraryID: 1, parentID: 100, getChildItems: () => [] };
     SYNC_ROOT.collection.getChildItems = () => [];
     Zotero.Collections.getByParent.mockImplementation((parentID) => (parentID === 100 ? [sub] : []));
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'X' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'X' : ''));
 
     const store = await makeStore();
     const result = await runBaseline({ trackingStore: store, dryRun: true });
@@ -339,7 +339,7 @@ describe('UT-912: B.7 hash-based reconcile', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     // The CANONICAL destination /watch/Methods/paper.pdf does NOT exist.
     // But disk has /watch/elsewhere/paper.pdf with matching content hash.
@@ -381,7 +381,7 @@ describe('UT-912: B.7 hash-based reconcile', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     IOUtils.exists.mockImplementation(async (p) => p === '/zotero-storage/ABC/paper.pdf');
     scanFolderRecursive.mockResolvedValue([
@@ -411,7 +411,7 @@ describe('UT-912: B.7 hash-based reconcile', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att1, att2];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     IOUtils.exists.mockImplementation(async (p) => p.startsWith('/zotero-storage') || p === '/watch/disk-copy.pdf');
     scanFolderRecursive.mockResolvedValue([{ path: '/watch/disk-copy.pdf', name: 'disk-copy.pdf' }]);
@@ -432,7 +432,7 @@ describe('UT-912: B.7 hash-based reconcile', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     scanFolderRecursive.mockResolvedValue([{ path: '/watch/other.pdf', name: 'other.pdf' }]);
     await runBaseline({ trackingStore: await makeStore(), dryRun: true });
@@ -460,7 +460,7 @@ describe('UT-913: B.7 size pre-filter (WP-C #3)', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     IOUtils.exists.mockImplementation(async (p) => p === '/zotero-storage/ABC/paper.pdf');
     scanFolderRecursive.mockResolvedValue([
@@ -496,7 +496,7 @@ describe('UT-913: B.7 size pre-filter (WP-C #3)', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     IOUtils.exists.mockImplementation(async (p) => {
       if (p === '/watch/elsewhere/paper.pdf') return true;
@@ -534,7 +534,7 @@ describe('UT-913: B.7 size pre-filter (WP-C #3)', () => {
     };
     SYNC_ROOT.collection.getChildItems = () => [att];
     chooseCanonicalCollection.mockResolvedValue({ key: 'SUB1', libraryID: 1 });
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     IOUtils.exists.mockImplementation(async (p) => {
       if (p === '/watch/x.pdf') return true;
@@ -561,7 +561,7 @@ describe('UT-911: special collections are skipped during enumeration', () => {
     SYNC_ROOT.collection.getChildItems = () => [];
     Zotero.Collections.getByParent.mockImplementation((parentID) => (parentID === 100 ? [trash, sub] : []));
     isSpecialCollection.mockImplementation((c) => c.key === 'TRSH');
-    collectionKeyToRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) => (k === 'SUB1' ? 'Methods' : ''));
 
     const store = await makeStore();
     const result = await runBaseline({ trackingStore: store });

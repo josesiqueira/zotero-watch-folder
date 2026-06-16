@@ -13,6 +13,7 @@ import * as suppressionResolver from './suppressionResolver.mjs';
 import * as baseline from './baseline.mjs';
 import * as storageStrategy from './storageStrategy.mjs';
 import * as hashCache from './_hashCache.mjs';
+import { isWatchRootUnsafe } from './utils.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
 // sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy}.
@@ -125,7 +126,8 @@ export async function runSetupWizard(window) {
     });
     if (xhtmlResult && xhtmlResult.opened) {
         if (xhtmlResult.canceled) return false;
-        await _commitWizardResult({
+        const committed = await _commitWizardResult({
+            window,
             watchFolder: xhtmlResult.watchFolder,
             syncRootKey: xhtmlResult.syncRootKey,
             syncRootLibraryID: xhtmlResult.syncRootLibraryID,
@@ -134,7 +136,7 @@ export async function runSetupWizard(window) {
             syncRootLabel: xhtmlResult.syncRootLabel,
             storageStrategy: xhtmlResult.storageStrategy,
         });
-        return true;
+        return committed;
     }
 
     // ─── Modal-sequence fallback (pre-v2.4 path) ─────────────────
@@ -201,7 +203,8 @@ export async function runSetupWizard(window) {
     );
     if (confirm !== 0) return false;
 
-    await _commitWizardResult({
+    const committed = await _commitWizardResult({
+        window,
         watchFolder,
         syncRootKey: syncRootChoice.key,
         syncRootLibraryID: syncRootChoice.libraryID,
@@ -210,7 +213,7 @@ export async function runSetupWizard(window) {
         syncRootLabel: syncRootChoice.label,
         storageStrategy: storageChoice.key,
     });
-    return true;
+    return committed;
 }
 
 /**
@@ -286,9 +289,27 @@ async function _runSetupWizardXHTML(parentWindow) {
 /**
  * Common commit path for both the XHTML wizard and the modal-sequence
  * fallback. Writes the 6 prefs + starts services.
+ *
+ * DATA-4: before committing, reject a watch root that dangerously overlaps the
+ * Zotero data directory (or its `storage/` subdir). Fails open when the data
+ * dir is unresolvable. On a reason, alerts the user and aborts WITHOUT writing
+ * any pref or starting services.
+ *
+ * @returns {Promise<boolean>} true if committed, false if blocked.
  * @private
  */
-async function _commitWizardResult({ watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy }) {
+async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy }) {
+    const dataDir = Zotero?.DataDirectory?.dir;
+    const unsafeReason = isWatchRootUnsafe(watchFolder, dataDir);
+    if (unsafeReason) {
+        try { Zotero.logError(`[WatchFolder] Setup blocked: unsafe watch root "${watchFolder}" overlaps Zotero data dir "${dataDir}" — ${unsafeReason}`); } catch (_) {}
+        try {
+            if (Services && Services.prompt) {
+                Services.prompt.alert(window || null, "Watch Folder — Unsafe folder", unsafeReason);
+            }
+        } catch (_) {}
+        return false;
+    }
     setPref("sourcePath", watchFolder);
     setPref("syncRootCollectionKey", syncRootKey);
     setPref("syncRootLibraryID", syncRootLibraryID);
@@ -305,6 +326,7 @@ async function _commitWizardResult({ watchFolder, syncRootKey, syncRootLibraryID
         Zotero.logError(`[WatchFolder] runSetupWizard: failed to start services - ${e.message}`);
     }
     Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} root=${syncRootKey} label=${syncRootLabel} mode=${modeKey}/${modeLabel})`);
+    return true;
 }
 
 function _modeLabelFor(modeKey) {

@@ -366,12 +366,22 @@ export class WatchFolderService {
           && typeof this._syncCoordinator.isRunning === 'function'
           && this._syncCoordinator.isRunning()) {
         try {
-          const onDiskAbsDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
-          await this._syncCoordinator.notifyScanCycle({
-            scannedFiles: files,
-            onDiskAbsDirs,
-            watchRoot: watchPath,
-          });
+          // SYNC-1: never run the folder-deletion pass when the watch root
+          // is unreachable (transient unmount / disconnected drive). On an
+          // unavailable root the on-disk dir set collapses and every tracked
+          // folder would look deleted → mass-trash. Gate behind the same
+          // availability check used by _handleExternalDeletions.
+          const rootAvailable = await isWatchRootAvailable(watchPath);
+          if (!rootAvailable) {
+            Zotero.debug('[WatchFolder] Watch root unavailable — skipping folder-deletion scan');
+          } else {
+            const onDiskAbsDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
+            await this._syncCoordinator.notifyScanCycle({
+              scannedFiles: files,
+              onDiskAbsDirs,
+              watchRoot: watchPath,
+            });
+          }
         } catch (e) {
           Zotero.debug(`[WatchFolder] SyncCoordinator scan-cycle notify failed: ${e.message}`);
         }
@@ -1286,17 +1296,23 @@ export class WatchFolderService {
 
   /**
    * Wait for a file to become stable (not being written to)
-   * Checks file size twice with a delay
+   * Requires BOTH size AND lastModified to match across two consecutive
+   * reads, then confirms the bytes look like a complete PDF before
+   * declaring the file stable. This defends against partial cloud-sync
+   * (pCloud / WebDAV) downloads that briefly present a non-final size.
+   * On non-convergence the gate returns false (no size>0 fallback) so the
+   * file is deferred to the next poll rather than imported partial.
    * @private
    * @param {string} filePath - Path to the file
    * @param {number} [maxAttempts=3] - Maximum check attempts
-   * @returns {Promise<boolean>} True if file is stable
+   * @returns {Promise<boolean>} True if file is stable and looks complete
    */
   async _waitForFileStable(filePath, maxAttempts = 3) {
     const STABILITY_DELAY = 1000; // 1 second between checks
 
     try {
       let previousSize = -1;
+      let previousMtime = -1;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         // Check if file still exists
@@ -1308,13 +1324,23 @@ export class WatchFolderService {
         // Get file info
         const info = await IOUtils.stat(filePath);
         const currentSize = info.size;
+        const currentMtime = info.lastModified;
 
-        // If size matches previous, file is stable
-        if (currentSize === previousSize) {
+        // Stable only when BOTH size AND mtime match the previous read
+        if (currentSize === previousSize && currentMtime === previousMtime) {
+          // For PDFs, confirm the bytes look complete (header + EOF) before
+          // accepting. Other allowed types (epub, djvu, …) have no cheap
+          // universal completeness marker — size+mtime convergence IS the
+          // stability signal for them, so don't run the PDF check or they'd
+          // never import.
+          if (filePath.toLowerCase().endsWith('.pdf')) {
+            return await this._looksLikeCompletePdf(filePath, currentSize);
+          }
           return true;
         }
 
         previousSize = currentSize;
+        previousMtime = currentMtime;
 
         // Wait before next check (unless last attempt)
         if (attempt < maxAttempts - 1) {
@@ -1322,12 +1348,71 @@ export class WatchFolderService {
         }
       }
 
-      // Assume stable after max attempts if size is non-zero
-      const finalInfo = await IOUtils.stat(filePath);
-      return finalInfo.size > 0;
+      // Never converged on a stable size+mtime: defer to the next poll.
+      Zotero.debug(`[WatchFolder] Stability check: ${filePath} never converged on size+mtime; deferring`);
+      return false;
 
     } catch (e) {
       Zotero.debug(`[WatchFolder] Stability check error: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Sanity-check that a file's bytes look like a complete PDF: a `%PDF-`
+   * header and a `%%EOF` marker within the last 1024 bytes. Uses raw byte
+   * reads (NOT SHA-256 hashing — does not touch HASH_VERSION or _hashCache).
+   * A transient read failure or vanished file returns false (defer), never
+   * throws.
+   * @private
+   * @param {string} filePath - Path to the file
+   * @param {number} size - Stable file size from stat()
+   * @returns {Promise<boolean>} True if the bytes look like a complete PDF
+   */
+  async _looksLikeCompletePdf(filePath, size) {
+    const HEADER = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+    const EOF = [0x25, 0x25, 0x45, 0x4f, 0x46];    // "%%EOF"
+    const TAIL_BYTES = 1024;
+
+    try {
+      if (!Number.isFinite(size) || size < HEADER.length) {
+        return false;
+      }
+
+      // Header: first 5 bytes must be "%PDF-"
+      const head = await IOUtils.read(filePath, { maxBytes: HEADER.length });
+      if (!head || head.length < HEADER.length) {
+        return false;
+      }
+      for (let i = 0; i < HEADER.length; i++) {
+        if (head[i] !== HEADER[i]) {
+          return false;
+        }
+      }
+
+      // Tail: last <=1024 bytes must contain "%%EOF"
+      const tailLen = Math.min(TAIL_BYTES, size);
+      const offset = size - tailLen;
+      const tail = await IOUtils.read(filePath, { offset, maxBytes: tailLen });
+      if (!tail || tail.length === 0) {
+        return false;
+      }
+      for (let i = 0; i + EOF.length <= tail.length; i++) {
+        let match = true;
+        for (let j = 0; j < EOF.length; j++) {
+          if (tail[i + j] !== EOF[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          return true;
+        }
+      }
+      return false;
+
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] PDF completeness check error: ${e.message}`);
       return false;
     }
   }
@@ -1487,14 +1572,17 @@ export class WatchFolderService {
           // Mode 2 never trashes the local file; no conflict gate needed.
           canonicalDiskPath = abs;
         } else if (exists) {
-          // Conflict gate (spec risk #1a): only trash the local file if its
-          // bytes still match the last-synced hash. If the user edited the
-          // file locally since last sync, trashing it on a Zotero-side trash
-          // would destroy those edits — block instead. We only veto on proven
-          // drift; a record with no baseline hash falls through to the prior
-          // behavior (can't detect an edit, so don't presume one).
+          // Conflict gate (spec risk #1a) — FAIL-CLOSED: only trash the local
+          // file when the gate can PROVE its bytes still match the last-synced
+          // hash (`gate.ok`). Any other outcome — proven drift, a missing
+          // baseline hash, a read/IO error, or a hash failure — blocks the
+          // delete and flips the record to CONFLICT_BLOCKED for manual
+          // resolution. Deleting a file we cannot confirm is unchanged risks
+          // destroying local edits, so we presume conflict, not safety.
+          // (`missing-file` cannot reach here: this branch is only entered
+          // when `exists` is true — see the IOUtils.exists check above.)
           const gate = await canSafelyMove(canonical, abs);
-          if (gate.ok || gate.reason !== 'hash-drifted') {
+          if (gate.ok) {
             canonicalDiskPath = abs;
           } else {
             conflictBlocked = true;
@@ -1505,8 +1593,8 @@ export class WatchFolderService {
                 actionType: 'zotero-trash',
                 attachmentKey: key,
                 path: canonical.localPath,
-                reason: 'hash-drifted',
-                message: `Zotero item trashed, but local file "${canonical.localPath}" was edited since last sync — NOT trashed. Resolve the conflict via the prefs pane.`,
+                reason: gate.reason,
+                message: `Zotero item trashed, but local file "${canonical.localPath}" could not be confirmed unchanged (${gate.reason}) — NOT trashed. Resolve the conflict via the prefs pane.`,
               });
             } catch (_e) { /* sink unavailable */ }
           }
@@ -1917,7 +2005,25 @@ export class WatchFolderService {
                  : 'never';
 
     if (checkState.value) {
-      setPref('diskDeleteOnTrash', action);
+      // "Permanent delete" is honored for THIS batch (return value below),
+      // but it must never become the standing, every-batch policy from a
+      // single click — an unattended permanent-delete pref would silently
+      // destroy source files on every future trash with no recovery path.
+      // Persist a recoverable disposition instead and tell the user once.
+      const persisted = action === 'permanent' ? 'plugin_trash' : action;
+      setPref('diskDeleteOnTrash', persisted);
+      if (action === 'permanent') {
+        try {
+          Services.prompt.alert(
+            window,
+            'Zotero Watch Folder',
+            'Permanent delete applies to this batch only — it is never saved '
+            + 'as your standing choice.\n\nFuture source files will be moved '
+            + 'to the recoverable plugin trash instead. You can change this '
+            + 'in the plugin preferences.'
+          );
+        } catch (_) { /* alert is advisory; ignore UI failures */ }
+      }
     }
     return action;
   }

@@ -1141,9 +1141,13 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
   });
 
   it('Mode 3 disk-deletes ONLY the canonical path; drops shadows from tracking without disk action', async () => {
+    // DATA-1 fail-closed: the canonical-delete path now requires the conflict
+    // gate to PROVE the file is unchanged, so the record carries a
+    // lastSyncedHash and getFileHash returns the matching value.
+    utils.getFileHash.mockResolvedValue('H1');
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
-      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     await service._handleZoteroTrash([42]);
@@ -1167,9 +1171,12 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
       if (k === 'diskDeleteOnTrash') return 'never';
       return undefined;
     });
+    // DATA-1 fail-closed: the canonical file passes the conflict gate (clean),
+    // so action='never' keeps it on disk and SUPPRESSES (not CONFLICT_BLOCKS).
+    utils.getFileHash.mockResolvedValue('H1');
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
-      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'A2.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     await service._handleZoteroTrash([42]);
@@ -1230,6 +1237,68 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     expect(store.remove).not.toHaveBeenCalledWith('A.pdf');
   });
 
+  // ── DATA-1: the conflict gate is FAIL-CLOSED (delete only on gate.ok). ──
+  // A record we cannot PROVE is unchanged is never disk-deleted; it is kept
+  // and flipped to CONFLICT_BLOCKED with the real gate reason surfaced.
+
+  it('DATA-1: BLOCKS a canonical with NO baseline hash (fail-closed, was fail-open)', async () => {
+    // No lastSyncedHash → canSafelyMove returns invalid-record. Pre-DATA-1
+    // this fell through to a disk delete; now it must be blocked.
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+    utils.getFileHash.mockResolvedValue('whatever'); // irrelevant — no baseline
+    const reportSpy = vi.spyOn(warningSinkMod, 'report');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+    expect(store.remove).not.toHaveBeenCalledWith('A.pdf');
+    expect(reportSpy).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: 'zotero-trash',
+      attachmentKey: 'ATT001',
+      reason: 'invalid-record',
+    }));
+  });
+
+  it('DATA-1: BLOCKS when the hash cannot be computed (hash-failed, fail-closed)', async () => {
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+    utils.getFileHash.mockResolvedValue(null); // hash unavailable
+    const reportSpy = vi.spyOn(warningSinkMod, 'report');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+    expect(reportSpy).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: 'zotero-trash',
+      reason: 'hash-failed',
+    }));
+  });
+
+  it('DATA-1: green path — proven-unchanged canonical is permanently deleted', async () => {
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+    utils.getFileHash.mockResolvedValue('H1'); // matches baseline
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleZoteroTrash([42]);
+
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledTimes(1);
+    expect(globalThis.IOUtils.remove).toHaveBeenCalledWith('/watch/A.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A.pdf');
+    expect(store.update).not.toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+  });
+
   it('skips non-attachment items WITHOUT child attachments', async () => {
     // A plain non-attachment item with no children is silently dropped.
     globalThis.Zotero.Items.get = vi.fn((id) => ({
@@ -1252,9 +1321,11 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     // state but never get their own trash event. The handler must
     // walk parent.getAttachments(true) and include each attachment
     // key, otherwise parent-level trashes silently leak past Mode 3.
+    // DATA-1 fail-closed: both canonical files must pass the conflict gate.
+    utils.getFileHash.mockResolvedValue('H1');
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean' },
-      { type: 'file', localPath: 'B.pdf', canonicalLocalPath: 'B.pdf', zoteroAttachmentKey: 'ATTB', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean', lastSyncedHash: 'H1' },
+      { type: 'file', localPath: 'B.pdf', canonicalLocalPath: 'B.pdf', zoteroAttachmentKey: 'ATTB', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     const attA = { id: 501, key: 'ATTA', isAttachment: () => true };
@@ -1283,8 +1354,10 @@ describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite',
     // Selective restore (RST.4) and partial trashes mean some children
     // may already be `deleted=true` before the parent trash. They must
     // still be picked up so disk + tracking are kept consistent.
+    // DATA-1 fail-closed: the canonical file must pass the conflict gate.
+    utils.getFileHash.mockResolvedValue('H1');
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATTA', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     const attA = { id: 501, key: 'ATTA', isAttachment: () => true };
@@ -1436,6 +1509,9 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
     // stale hash computed by another describe.
     const hc091 = await import('../../content/_hashCache.mjs');
     hc091.clear();
+    // DATA-1 fail-closed: every canonical-delete in this block must pass the
+    // conflict gate, so the on-disk hash matches the record's lastSyncedHash.
+    utils.getFileHash.mockResolvedValue('H1');
 
     const watchFolderMod = await import('../../content/watchFolder.mjs');
     service = new watchFolderMod.WatchFolderService();
@@ -1500,7 +1576,7 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
   it('falls back to OS trash when plugin_trash returns null', async () => {
     service._moveToPluginTrash = vi.fn(async () => null);
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     await service._handleZoteroTrash([42]);
@@ -1519,7 +1595,7 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
       return undefined;
     });
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     await service._handleZoteroTrash([42]);
@@ -1538,7 +1614,7 @@ describe('UT-091: _handleZoteroTrash plugin_trash action + tombstone', () => {
       return undefined;
     });
     store._records.push(
-      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean' },
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
     );
 
     await service._handleZoteroTrash([42]);
@@ -1861,6 +1937,12 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
       if (k === 'diskDeleteOnTrash') return 'plugin_trash';
       return undefined;
     });
+    // DATA-1 fail-closed: bulk-guard fixtures carry a baseline hash and the
+    // on-disk hash matches, so the conflict gate passes and the batch flows.
+    const hc094 = await import('../../content/_hashCache.mjs');
+    hc094.clear();
+    utils.getFileHash.mockResolvedValue('H');
+
     const watchFolderMod = await import('../../content/watchFolder.mjs');
     service = new watchFolderMod.WatchFolderService();
 
@@ -1876,6 +1958,11 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
         return true;
       }),
       removeByAttachmentKey: vi.fn(),
+      update: vi.fn((path, updates) => {
+        const r = records.find(x => x.localPath === path);
+        if (r) Object.assign(r, updates);
+        return !!r;
+      }),
       add: vi.fn(),
       save: vi.fn(async () => {}),
       flush: vi.fn(async () => {}),
@@ -1896,7 +1983,7 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
     for (let i = 0; i < 15; i++) {
       store._records.push({
         type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
-        zoteroAttachmentKey: `K${i}`, state: 'clean',
+        zoteroAttachmentKey: `K${i}`, state: 'clean', lastSyncedHash: 'H',
       });
       ids.push(100 + i);
     }
@@ -1919,7 +2006,7 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
     for (let i = 0; i < 15; i++) {
       store._records.push({
         type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
-        zoteroAttachmentKey: `K${i}`, state: 'clean',
+        zoteroAttachmentKey: `K${i}`, state: 'clean', lastSyncedHash: 'H',
       });
       ids.push(100 + i);
     }
@@ -1945,7 +2032,7 @@ describe('UT-094: _handleZoteroTrash bulk guard', () => {
     for (let i = 0; i < 20; i++) {
       store._records.push({
         type: 'file', localPath: `f${i}.pdf`, canonicalLocalPath: `f${i}.pdf`,
-        zoteroAttachmentKey: i < 2 ? `K${i}` : `O${i}`, state: 'clean',
+        zoteroAttachmentKey: i < 2 ? `K${i}` : `O${i}`, state: 'clean', lastSyncedHash: 'H',
       });
     }
     const items = new Map();
@@ -2377,5 +2464,370 @@ describe('UT-056: WatchFolderService.destroy uses flush() for shutdown writes', 
     await service.destroy();
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(service._trackingStore).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-608 (SYNC-1): _scan gates the folder-deletion notify behind
+// isWatchRootAvailable. A transient unmount (root unreachable) must NOT run
+// the folderEventDetector pass, which would otherwise see a collapsed disk
+// dir set and mass-trash every tracked folder. Defense-in-depth: the call
+// site (here) AND the emitter (folderEventDetector) both check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-608: _scan skips the folder-deletion notify when watch root is unavailable', () => {
+  let service;
+  let watchFolderMod;
+  let fileMissing;
+  let fileScanner;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'mode') return 'mode2';
+      return undefined;
+    });
+    fileMissing = await import('../../content/fileMissing.mjs');
+    fileMissing.isWatchRootAvailable.mockResolvedValue(true);
+    fileScanner = await import('../../content/fileScanner.mjs');
+    fileScanner.scanFolderRecursive.mockResolvedValue([]); // empty scan → no per-file work
+
+    watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+
+    // Coordinator wired + running so the A2 hook is reached.
+    service._syncCoordinator = {
+      isRunning: vi.fn(() => true),
+      notifyScanCycle: vi.fn(async () => {}),
+    };
+
+    // Isolate the notify block: stub the surrounding _scan collaborators.
+    vi.spyOn(service, '_detectFolderRenames').mockResolvedValue(undefined);
+    vi.spyOn(service, '_ensureCollectionsForExistingFolders').mockResolvedValue(undefined);
+    vi.spyOn(service, '_handleExternalDeletions').mockResolvedValue(undefined);
+    vi.spyOn(service, '_listSubdirectories').mockResolvedValue(['/watch/Methods']);
+    service._trackingStore = { hasPath: vi.fn(() => false) };
+    globalThis.Zotero.debug = vi.fn();
+  });
+
+  it('root unavailable → notifyScanCycle and _listSubdirectories are NOT called + debug log', async () => {
+    fileMissing.isWatchRootAvailable.mockResolvedValue(false);
+
+    await service._scan();
+
+    expect(fileMissing.isWatchRootAvailable).toHaveBeenCalledWith('/watch');
+    expect(service._syncCoordinator.notifyScanCycle).not.toHaveBeenCalled();
+    expect(service._listSubdirectories).not.toHaveBeenCalled();
+    expect(globalThis.Zotero.debug).toHaveBeenCalledWith(
+      expect.stringContaining('Watch root unavailable'),
+    );
+  });
+
+  it('root available → notifyScanCycle called once with watchRoot === watchPath', async () => {
+    fileMissing.isWatchRootAvailable.mockResolvedValue(true);
+
+    await service._scan();
+
+    expect(service._listSubdirectories).toHaveBeenCalledWith('/watch');
+    expect(service._syncCoordinator.notifyScanCycle).toHaveBeenCalledTimes(1);
+    const arg = service._syncCoordinator.notifyScanCycle.mock.calls[0][0];
+    expect(arg.watchRoot).toBe('/watch');
+    expect(arg.onDiskAbsDirs instanceof Set).toBe(true);
+    expect(arg.onDiskAbsDirs.has('/watch')).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-IMPORT-1: _waitForFileStable + _looksLikeCompletePdf
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// IMPORT-1 hardens the import-gate against partial cloud-sync (pCloud /
+// WebDAV) downloads. The gate now requires BOTH size AND lastModified to
+// match across two consecutive reads, then sanity-checks the bytes for a
+// `%PDF-` header and a `%%EOF` marker within the last 1024 bytes. The old
+// `size > 0` fallback is gone — non-convergence returns false (defer to the
+// next poll). The sanity check uses raw byte reads, NOT SHA-256, so it does
+// not touch HASH_VERSION or _hashCache.
+describe('UT-IMPORT-1: _waitForFileStable hardened against partial cloud downloads', () => {
+  let service;
+
+  // Build a Uint8Array that starts with "%PDF-" and ends with "%%EOF".
+  function buildPdf({ withEof = true, header = '%PDF-', pad = 32 } = {}) {
+    const enc = new TextEncoder();
+    const head = enc.encode(header);
+    const body = new Uint8Array(pad); // zero-filled filler
+    const tail = enc.encode(withEof ? '\n%%EOF\n' : '\nstartxref\n0\n');
+    const out = new Uint8Array(head.length + body.length + tail.length);
+    out.set(head, 0);
+    out.set(body, head.length);
+    out.set(tail, head.length + body.length);
+    return out;
+  }
+
+  // Wire IOUtils.read to slice the given backing buffer per { offset, maxBytes }.
+  function backReadWith(buf) {
+    globalThis.IOUtils.read = vi.fn(async (_path, opts = {}) => {
+      const offset = Number.isInteger(opts.offset) ? opts.offset : 0;
+      const end = Number.isInteger(opts.maxBytes)
+        ? Math.min(buf.length, offset + opts.maxBytes)
+        : buf.length;
+      return buf.slice(Math.min(offset, buf.length), end);
+    });
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    // Tests below do not mock getFileHash (they call the gate directly), but
+    // clear the module-level hash cache anyway to keep the singleton clean.
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) =>
+      k === 'sourcePath' ? '/watch' : (k === 'mode' ? 'mode1' : undefined));
+    // delay is a no-op vi.fn() per the top-level mock, so the loop runs fast.
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.debug = vi.fn();
+  });
+
+  it('UT-IMPORT-1a: steady size but changing mtime never converges → false', async () => {
+    const pdf = buildPdf();
+    backReadWith(pdf);
+    let n = 0;
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular',
+      size: pdf.length,        // size is steady
+      lastModified: 1000 + (n++), // but mtime ticks every read
+    }));
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1b: stable size+mtime + complete PDF bytes → true', async () => {
+    const pdf = buildPdf({ withEof: true });
+    backReadWith(pdf);
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular',
+      size: pdf.length,
+      lastModified: 4242, // constant across reads
+    }));
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(true);
+  });
+
+  it('UT-IMPORT-1j: non-PDF allowed type (.epub) passes on size+mtime, PDF check skipped', async () => {
+    // Regression guard: the %PDF-/%%EOF sanity check must NOT be applied to
+    // non-pdf allowed types (epub/djvu/…), or they would defer forever and
+    // never import — silently breaking the advertised multi-type support.
+    const epubBytes = new TextEncoder().encode('PK\x03\x04 not-a-pdf at all');
+    backReadWith(epubBytes);
+    const looksSpy = vi.spyOn(service, '_looksLikeCompletePdf');
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular', size: epubBytes.length, lastModified: 4242, // constant
+    }));
+
+    const ok = await service._waitForFileStable('/watch/book.epub', 3);
+    expect(ok).toBe(true);
+    expect(looksSpy).not.toHaveBeenCalled(); // PDF check skipped for non-pdf
+  });
+
+  it('UT-IMPORT-1k: a .pdf with the same non-PDF bytes still gets the PDF check (→ false)', async () => {
+    // The extension gate must not weaken the check for actual PDFs.
+    const notPdf = new TextEncoder().encode('PK\x03\x04 not-a-pdf at all');
+    backReadWith(notPdf);
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular', size: notPdf.length, lastModified: 4242,
+    }));
+    const ok = await service._waitForFileStable('/watch/mislabeled.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1c: stable file but truncated (no %%EOF in tail) → false', async () => {
+    const pdf = buildPdf({ withEof: false }); // header present, no %%EOF
+    backReadWith(pdf);
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular',
+      size: pdf.length,
+      lastModified: 4242,
+    }));
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1d: stable file but header not %PDF- → false', async () => {
+    const notPdf = buildPdf({ header: '%XYZ-', withEof: true });
+    backReadWith(notPdf);
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular',
+      size: notPdf.length,
+      lastModified: 4242,
+    }));
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1e: still growing after maxAttempts → false (old size>0 fallback gone)', async () => {
+    const pdf = buildPdf();
+    backReadWith(pdf);
+    let size = 100;
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular',
+      size: (size += 50), // grows on every read — never stable
+      lastModified: 4242,
+    }));
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1f: file vanishes mid-check → false', async () => {
+    const pdf = buildPdf();
+    backReadWith(pdf);
+    globalThis.IOUtils.stat = vi.fn(async () => ({
+      type: 'regular', size: pdf.length, lastModified: 4242,
+    }));
+    // Exists on the first poll, gone on the second.
+    let calls = 0;
+    globalThis.IOUtils.exists = vi.fn(async () => (++calls) < 2);
+
+    const ok = await service._waitForFileStable('/watch/a.pdf', 3);
+    expect(ok).toBe(false);
+  });
+
+  it('UT-IMPORT-1g: stat/read throws → false, no throw', async () => {
+    globalThis.IOUtils.stat = vi.fn(async () => { throw new Error('EIO transient'); });
+
+    await expect(service._waitForFileStable('/watch/a.pdf', 3)).resolves.toBe(false);
+  });
+
+  it('UT-IMPORT-1g2: _looksLikeCompletePdf swallows read errors → false', async () => {
+    globalThis.IOUtils.read = vi.fn(async () => { throw new Error('read failed'); });
+    await expect(service._looksLikeCompletePdf('/watch/a.pdf', 4096)).resolves.toBe(false);
+  });
+
+  it('UT-IMPORT-1h: _looksLikeCompletePdf rejects a size smaller than the header', async () => {
+    backReadWith(buildPdf());
+    await expect(service._looksLikeCompletePdf('/watch/a.pdf', 3)).resolves.toBe(false);
+  });
+
+  it('UT-IMPORT-1i: tail window caps at 1024 bytes (%%EOF beyond the window → false)', async () => {
+    // %%EOF sits at the very start; the rest is >1024 bytes of filler, so the
+    // last-1024-byte tail window does not contain %%EOF.
+    const enc = new TextEncoder();
+    const head = enc.encode('%PDF-');
+    const eof = enc.encode('%%EOF');
+    const filler = new Uint8Array(2048);
+    const buf = new Uint8Array(head.length + eof.length + filler.length);
+    buf.set(head, 0);
+    buf.set(eof, head.length);
+    buf.set(filler, head.length + eof.length);
+    backReadWith(buf);
+
+    await expect(service._looksLikeCompletePdf('/watch/a.pdf', buf.length)).resolves.toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UX-1 — _promptDiskDelete must never PERSIST 'permanent'
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The "Delete permanently" choice is honored for the single batch (the return
+// value), but the "Don't ask again" persist branch must downgrade it to
+// 'plugin_trash' before writing the pref, and surface a one-time advisory
+// alert. Safe dispositions persist verbatim with no alert. This guards the
+// data-safety invariant: one click can never arm an unattended every-batch
+// permanent delete.
+describe('UT-096: _promptDiskDelete never persists permanent', () => {
+  let service;
+  let utils;
+  let setPrefMock;
+
+  // confirmEx button result → action mapping (see _promptDiskDelete):
+  //   0 → 'plugin_trash', 1 → 'never', 2 → 'permanent'
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    utils = await import('../../content/utils.mjs');
+    setPrefMock = utils.setPref;
+    // pdfStorageStrategy unset → defaults to 'stored' (no linked-warning path).
+    utils.getPref.mockImplementation(() => undefined);
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    // Provide a window so the prompt path runs (not the no-UI 'never' fallback).
+    service._pickWindow = vi.fn(() => ({}));
+
+    globalThis.Services.prompt.confirmEx = vi.fn();
+    globalThis.Services.prompt.alert = vi.fn();
+  });
+
+  const targets = [{ itemID: 1, path: '/watch/a.pdf' }];
+
+  it('UT-096a: permanent + "don\'t ask again" → returns permanent, persists plugin_trash, alerts once', () => {
+    // Button 2 (permanent) with the "don't ask again" checkbox ticked.
+    globalThis.Services.prompt.confirmEx.mockImplementation(
+      (win, title, msg, flags, b0, b1, b2, check, checkState) => {
+        checkState.value = true;
+        return 2;
+      }
+    );
+
+    const action = service._promptDiskDelete(targets);
+
+    expect(action).toBe('permanent'); // this batch still honors permanent
+    expect(setPrefMock).toHaveBeenCalledTimes(1);
+    expect(setPrefMock).toHaveBeenCalledWith('diskDeleteOnTrash', 'plugin_trash');
+    expect(globalThis.Services.prompt.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it('UT-096b: safe value (plugin_trash) + checkbox → persists verbatim, no alert', () => {
+    globalThis.Services.prompt.confirmEx.mockImplementation(
+      (win, title, msg, flags, b0, b1, b2, check, checkState) => {
+        checkState.value = true;
+        return 0; // plugin_trash
+      }
+    );
+
+    const action = service._promptDiskDelete(targets);
+
+    expect(action).toBe('plugin_trash');
+    expect(setPrefMock).toHaveBeenCalledTimes(1);
+    expect(setPrefMock).toHaveBeenCalledWith('diskDeleteOnTrash', 'plugin_trash');
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
+  });
+
+  it('UT-096c: permanent WITHOUT checkbox → returns permanent, no setPref, no alert', () => {
+    globalThis.Services.prompt.confirmEx.mockImplementation(
+      (win, title, msg, flags, b0, b1, b2, check, checkState) => {
+        checkState.value = false; // "don't ask again" NOT ticked
+        return 2; // permanent
+      }
+    );
+
+    const action = service._promptDiskDelete(targets);
+
+    expect(action).toBe('permanent');
+    expect(setPrefMock).not.toHaveBeenCalled();
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
+  });
+
+  it('UT-096d: no UI available → returns never, no setPref, no alert', () => {
+    service._pickWindow = vi.fn(() => null);
+
+    const action = service._promptDiskDelete(targets);
+
+    expect(action).toBe('never');
+    expect(setPrefMock).not.toHaveBeenCalled();
+    expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
   });
 });

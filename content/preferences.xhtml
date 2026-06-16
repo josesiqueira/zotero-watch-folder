@@ -209,6 +209,65 @@
     </hbox>
   </groupbox>
 
+  <!-- ─── Deletion disposition (Mode 3 only) ─────────────────────── -->
+  <groupbox id="watch-folder-deletion-group" hidden="true">
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-deletion"/></label>
+    <html:p data-l10n-id="watch-folder-pref-deletion-explainer"
+            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+
+    <!-- Warn + revert row, shown only when diskDeleteOnTrash currently
+         holds the dangerous 'permanent' value (set via about:config or an
+         older build). The card grid below deliberately omits 'permanent'. -->
+    <vbox id="watch-folder-deletion-permanent-warn" hidden="true"
+          style="margin: 0 0 10px 0; padding: 8px 11px; background: #5c2b2b;
+                 border-radius: 5px;">
+      <html:p data-l10n-id="watch-folder-pref-deletion-permanent-warn"
+              style="margin: 0 0 6px 0; font-size: 0.95em; color: #ffffff;
+                     font-weight: 600; line-height: 1.45;"/>
+      <hbox>
+        <button id="watch-folder-deletion-revert-btn"
+                data-l10n-id="watch-folder-pref-deletion-revert"
+                oncommand="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')"/>
+      </hbox>
+    </vbox>
+
+    <radiogroup id="watch-folder-deletion-radio" style="margin: 4px 0 0 8px;">
+      <vbox class="wf-opt" id="wf-deletion-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('ask')">
+        <hbox align="center">
+          <radio value="ask" data-l10n-id="watch-folder-pref-deletion-ask-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-deletion-ask-desc"
+                class="wf-opt-desc"/>
+      </vbox>
+      <vbox class="wf-opt" id="wf-deletion-opt-plugin_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')">
+        <hbox align="center">
+          <radio value="plugin_trash" data-l10n-id="watch-folder-pref-deletion-plugin-trash-label"/>
+          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-deletion-plugin-trash-desc"
+                class="wf-opt-desc"/>
+      </vbox>
+      <vbox class="wf-opt" id="wf-deletion-opt-os_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('os_trash')">
+        <hbox align="center">
+          <radio value="os_trash" data-l10n-id="watch-folder-pref-deletion-os-trash-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-deletion-os-trash-desc"
+                class="wf-opt-desc"/>
+      </vbox>
+      <vbox class="wf-opt" id="wf-deletion-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('never')">
+        <hbox align="center">
+          <radio value="never" data-l10n-id="watch-folder-pref-deletion-never-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-deletion-never-desc"
+                class="wf-opt-desc"/>
+      </vbox>
+    </radiogroup>
+  </groupbox>
+
   <!-- ─── File Naming ────────────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>

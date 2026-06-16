@@ -1413,6 +1413,83 @@ describe('UT-424: zoteroCollectionDeleted per-child local-hash gate', () => {
     expect(store.getByLocalPath('Methods/b.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
   });
 
+  // ── DATA-1: per-child gate is FAIL-CLOSED — any child the gate cannot ──
+  // prove unchanged aborts the whole move (was: only proven `hash-drifted`).
+
+  it('DATA-1: a child with NO baseline hash aborts the move (fail-closed)', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    // Child with no lastSyncedHash → canSafelyMove → invalid-record. Pre-DATA-1
+    // this did NOT veto; now it must block the whole folder move.
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: null, state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    IOUtils.exists.mockResolvedValue(true);
+
+    const result = await execute({
+      type: 'zoteroCollectionDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'conflict-blocked', conflictedCount: 1 });
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(store.getCollectionRecord('SUB1')).not.toBe(null);
+    expect(store.getByLocalPath('Methods/a.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
+  });
+
+  it('DATA-1: a child whose hash cannot be computed aborts the move (hash-failed)', async () => {
+    hashCache.clear();
+    getFileHash.mockResolvedValue(null); // hash unavailable for the on-disk file
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    store.add(createFileRecord({
+      localPath: 'Methods/a.pdf', canonicalLocalPath: 'Methods/a.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'H1', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    IOUtils.exists.mockResolvedValue(true);
+
+    const result = await execute({
+      type: 'zoteroCollectionDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'conflict-blocked', conflictedCount: 1 });
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(store.getByLocalPath('Methods/a.pdf').state).toBe(STATE.CONFLICT_BLOCKED);
+  });
+
+  it('DATA-1: a missing-file child does NOT veto; the move proceeds', async () => {
+    const store = await makeStore();
+    store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
+    // Clean present child + a child whose file is already gone from disk.
+    store.add(createFileRecord({
+      localPath: 'Methods/present.pdf', canonicalLocalPath: 'Methods/present.pdf',
+      zoteroAttachmentKey: 'K1', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'Methods/gone.pdf', canonicalLocalPath: 'Methods/gone.pdf',
+      zoteroAttachmentKey: 'K2', lastSyncedHash: 'fakehash', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    // Folder + present child exist; gone child does NOT → missing-file (exempt).
+    IOUtils.exists.mockImplementation(async (p) =>
+      p === '/watch/Methods' || p === '/watch/Methods/present.pdf');
+
+    const result = await execute({
+      type: 'zoteroCollectionDeleted',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.trashPath).toBe('.zotero-watch-trash/Methods');
+    expect(IOUtils.move).toHaveBeenCalled();
+    // The missing-file child was not flipped to CONFLICT_BLOCKED.
+    expect(store.getByLocalPath('Methods/gone.pdf')).toBe(null); // dropped with the subtree
+  });
+
   it('deleteFolder remains a back-compat alias for zoteroCollectionDeleted', async () => {
     const store = await makeStore();
     store.add(createCollectionRecord({ localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN }));
