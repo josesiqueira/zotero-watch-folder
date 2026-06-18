@@ -506,17 +506,29 @@ export function isSpecialCollection(collection) {
   if (!collection) return false;
   // treeViewID is the only reliable virtual marker exposed by Zotero 7+;
   // ordinary Zotero.Collection objects don't carry it.
+  //
+  // SOLE-BOUNDARY hardening (v2.7): under library scope this filter is the only
+  // thing keeping a virtual view from being mirrored/deleted as if it were a
+  // real folder, so it must be airtight. Zotero forms a tree-view id as a
+  // LETTER + id (real collections are "C<id>"; the virtual roots are
+  // "D<lib>"/"U<lib>"/"T<lib>"/"P<lib>", saved searches "S<id>", feeds
+  // "F<id>", library rows "L<id>"). Match by PREFIX, not exact string — the
+  // old `=== 'T'` exact check missed the real-world "T1" form.
   const tvid = collection.treeViewID;
-  if (typeof tvid === 'string') {
-    // Library-virtual roots
-    if (tvid === 'D' || tvid === 'U' || tvid === 'T' || tvid === 'P') return true;
-    // Saved searches: "S<id>"
-    if (tvid.startsWith('S')) return true;
+  if (typeof tvid === 'string' && tvid.length > 0) {
+    const marker = tvid[0];
+    // D Duplicates, U Unfiled, T Trash/Bin, P My Publications, S saved search,
+    // F feed, L library root. Anything not 'C' (a real collection) that carries
+    // a known virtual marker is special.
+    if ('DUTPSFL'.includes(marker)) return true;
   }
   // Some Zotero builds expose explicit boolean markers
   if (collection.isVirtual === true) return true;
   // My Publications library is exposed via `Zotero.Libraries.publicationsLibraryID`;
-  // if a collection lives there, treat it as special.
+  // a collection living there is the My Publications virtual view, not a real
+  // collection. (Items flagged "in My Publications" still live in the user
+  // library and sync via their normal collection / Unfiled location — writable,
+  // never blocked; this only prevents a DUPLICATE "My Publications" folder.)
   try {
     const pubLib = Zotero.Libraries?.publicationsLibraryID;
     if (pubLib && collection.libraryID === pubLib) return true;

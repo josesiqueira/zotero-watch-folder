@@ -272,6 +272,26 @@ describe('UT-204: isSpecialCollection', () => {
   it('returns true when collection lives in publicationsLibraryID', () => {
     expect(isSpecialCollection({ libraryID: 4, name: 'PubChild' })).toBe(true);
   });
+
+  // v2.7 sole-boundary hardening: Zotero forms virtual tree-view ids as
+  // LETTER + id (e.g. "T1" = Trash of library 1). The old exact-match check
+  // missed these — they must still be treated as special.
+  it('returns true for SUFFIXED virtual roots (D1 / U1 / T1 / P1 / S45)', () => {
+    expect(isSpecialCollection({ treeViewID: 'D1' })).toBe(true);
+    expect(isSpecialCollection({ treeViewID: 'U1' })).toBe(true);
+    expect(isSpecialCollection({ treeViewID: 'T1' })).toBe(true);
+    expect(isSpecialCollection({ treeViewID: 'P1' })).toBe(true);
+    expect(isSpecialCollection({ treeViewID: 'S45' })).toBe(true);
+  });
+
+  it('returns true for feed (F) and library-root (L) tree rows', () => {
+    expect(isSpecialCollection({ treeViewID: 'F2' })).toBe(true);
+    expect(isSpecialCollection({ treeViewID: 'L1' })).toBe(true);
+  });
+
+  it('returns FALSE for a real collection tree row (C<id>) — only "C" is real', () => {
+    expect(isSpecialCollection({ treeViewID: 'C123', key: 'ABC', name: 'Methods' })).toBe(false);
+  });
 });
 
 // ─── UT-205 ────────────────────────────────────────────────────────────────
