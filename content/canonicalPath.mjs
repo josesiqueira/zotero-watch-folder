@@ -35,6 +35,48 @@ export class SyncRootMissingError extends Error {
 }
 
 /**
+ * Thrown in `scopeMode === 'library'` when the configured library can't be
+ * resolved (e.g. a stale group-library id). The library-mode analogue of
+ * {@link SyncRootMissingError} — callers already catch SyncRootMissingError
+ * and pause cleanly; this extends it so the existing catch sites cover both
+ * without rewiring every consumer.
+ */
+export class LibraryUnavailableError extends SyncRootMissingError {
+  constructor(message) {
+    super(message);
+    this.name = 'LibraryUnavailableError';
+  }
+}
+
+/**
+ * Sentinel returned by `relativePathToCollection('')` / `chooseCanonicalCollection`
+ * in `scopeMode === 'library'` to mean "the library root / Unfiled Items" — an
+ * item in NO collection, mirrored to the watch-folder root. Distinct from
+ * `null` (which means "skip / resolution failed"): a UNFILED result is a VALID,
+ * actionable target (import with no collection), whereas `null` is a non-result.
+ * A frozen unique object so callers compare by identity (`=== UNFILED`).
+ *
+ * @type {{readonly isUnfiled: true}}
+ */
+export const UNFILED = Object.freeze({ isUnfiled: true });
+
+/**
+ * The scope model. `'collection'` = the legacy single-sync-root model (one
+ * chosen collection anchors everything). `'library'` = the whole-library
+ * mirror (root → Unfiled, every top-level collection → a top-level folder).
+ *
+ * During the 2.7.0 build the default stays `'collection'` so the existing
+ * suite + installs are unchanged while library mode is built alongside; the
+ * default flips to `'library'` (and the collection path is removed) once the
+ * whole-library feature is complete and verified (task #53).
+ *
+ * @returns {'library'|'collection'}
+ */
+export function getScopeMode() {
+  return getPref('scopeMode') === 'library' ? 'library' : 'collection';
+}
+
+/**
  * Path-traversal defense (security finding 2026-05-27 audit, MEDIUM).
  *
  * Collection names come from Zotero, which lets the user rename a collection
@@ -160,6 +202,28 @@ export function invalidateCanonicalPathCache() {
  *   cannot be resolved (deleted, wrong library, etc).
  */
 export async function resolveSyncRoot() {
+  // ── scopeMode === 'library' — the whole-library anchor (2.7.0) ──
+  // Return a library-root descriptor instead of a chosen collection.
+  // `collection: null` + `isLibraryRoot: true`; callers branch on the flag
+  // rather than dereferencing `syncRoot.collection.key`. No collection lookup;
+  // the only input is the library id. A missing library (stale group id)
+  // throws LibraryUnavailableError (a SyncRootMissingError subclass) so the
+  // existing catch→pause contract still applies.
+  if (getScopeMode() === 'library') {
+    const libraryID = getPref('syncRootLibraryID') || Zotero.Libraries.userLibraryID;
+    try {
+      const lib = Zotero.Libraries.get ? Zotero.Libraries.get(libraryID) : true;
+      if (!lib) {
+        throw new LibraryUnavailableError(`Library ${libraryID} not found — pausing sync.`);
+      }
+    } catch (e) {
+      if (e instanceof LibraryUnavailableError) throw e;
+      throw new LibraryUnavailableError(`Library ${libraryID} could not be resolved: ${e?.message ?? e}`);
+    }
+    return { collection: null, libraryID, isLibraryRoot: true };
+  }
+
+  // ── scopeMode === 'collection' — legacy single-sync-root (unchanged) ──
   const key = getPref('syncRootCollectionKey');
   if (!key) return null;
   const libraryID = getPref('syncRootLibraryID') || Zotero.Libraries.userLibraryID;
@@ -203,6 +267,26 @@ export async function collectionKeyToRelativePath(collectionKey) {
   const libraryID = syncRoot.libraryID;
   const target = await Zotero.Collections.getByLibraryAndKeyAsync(libraryID, collectionKey);
   if (!target) return null;
+
+  // ── Library mode: walk up to a TOP-LEVEL collection (no parent = success) ──
+  if (syncRoot.isLibraryRoot) {
+    if (isSpecialCollection(target)) return null; // special views never become folders
+    const segs = [];
+    let c = target;
+    for (let i = 0; i < 1024 && c; i++) {
+      if (isSpecialCollection(c)) return null;
+      if (isUnsafeCollectionNameSegment(c.name)) {
+        try { Zotero.logError(`[WatchFolder] canonicalPath(library): unsafe segment ${JSON.stringify(c.name)} in chain for ${target.key}`); } catch (_e) { /* */ }
+        return null;
+      }
+      segs.push(c.name);
+      if (!c.parentID) return segs.reverse().join('/'); // reached top level → success
+      c = Zotero.Collections.get(c.parentID);
+    }
+    return null; // depth cap / broken chain
+  }
+
+  // ── Collection mode (legacy, unchanged) ──
   if (target.key === syncRoot.collection.key) return '';
 
   const segments = [];
@@ -322,6 +406,39 @@ export async function collectionKeyToRelativePathCached(collectionKey, libraryID
 export async function relativePathToCollection(relativePathStr, { createIfMissing = false } = {}) {
   const syncRoot = await resolveSyncRoot();
   if (!syncRoot) return null;
+
+  // ── Library mode: '' → UNFILED; first segment → a TOP-LEVEL collection ──
+  if (syncRoot.isLibraryRoot) {
+    if (relativePathStr === '' || relativePathStr == null) return UNFILED;
+    const segs = relativePathStr.split('/').filter(s => s.trim() !== '');
+    if (segs.length === 0) return UNFILED;
+    for (const seg of segs) {
+      if (isUnsafeCollectionNameSegment(seg)) {
+        try { Zotero.logError(`[WatchFolder] canonicalPath(library): refusing unsafe segment ${JSON.stringify(seg)} in ${JSON.stringify(relativePathStr)}`); } catch (_e) { /* */ }
+        return null;
+      }
+    }
+    const libraryID = syncRoot.libraryID;
+    let parent = null; // null parent = the library root (top level)
+    for (const name of segs) {
+      const siblings = (parent === null)
+        ? (Zotero.Collections.getByLibrary(libraryID) || []).filter(c => !c.parentID && !isSpecialCollection(c))
+        : (Zotero.Collections.getByParent(parent.id, libraryID) || []);
+      const found = siblings.find(c => c.name === name);
+      if (found) { parent = found; continue; }
+      if (!createIfMissing) return null;
+      const created = new Zotero.Collection();
+      created.libraryID = libraryID;
+      created.name = name;
+      if (parent) created.parentID = parent.id; // top-level collections get NO parentID
+      await created.saveTx();
+      Zotero.debug(`[WatchFolder] canonicalPath(library): created ${parent ? 'subcollection' : 'top-level collection'} "${name}"`);
+      parent = created;
+    }
+    return parent;
+  }
+
+  // ── Collection mode (legacy, unchanged) ──
   if (relativePathStr === '' || relativePathStr == null) return syncRoot.collection;
 
   const segments = relativePathStr.split('/').filter(s => s.trim() !== '');
@@ -429,7 +546,30 @@ export function isSpecialCollection(collection) {
  * @returns {Promise<object|null>} The chosen Zotero.Collection, or null.
  */
 export async function chooseCanonicalCollection(item, syncRootCollection, opts = {}) {
-  if (!item || !syncRootCollection) return null;
+  if (!item) return null;
+
+  // ── Library mode: syncRootCollection is null (the whole library is the root).
+  // An item in no qualifying real collection is Unfiled → return the UNFILED
+  // sentinel (distinct from null = "skip"). Otherwise the priority rules below
+  // run identically, scoped library-wide via collectionKeyToRelativePath. ──
+  const libraryMode = getScopeMode() === 'library';
+  if (libraryMode) {
+    const ids = (typeof item.getCollections === 'function') ? item.getCollections() : [];
+    if (!ids || ids.length === 0) return UNFILED;
+    const cand = [];
+    for (const id of ids) {
+      const c = Zotero.Collections.get(id);
+      if (!c) continue;
+      if (isSpecialCollection(c)) continue;
+      const relPath = await collectionKeyToRelativePath(c.key);
+      if (relPath === null) continue; // special/unsafe segment in chain
+      cand.push({ collection: c, relPath });
+    }
+    if (cand.length === 0) return UNFILED; // only special/unsafe memberships → loose at root
+    return _pickCanonicalAmong(cand, opts);
+  }
+
+  if (!syncRootCollection) return null;
   const libraryID = syncRootCollection.libraryID;
   const ids = (typeof item.getCollections === 'function') ? item.getCollections() : [];
   if (!ids || ids.length === 0) return null;
@@ -446,6 +586,19 @@ export async function chooseCanonicalCollection(item, syncRootCollection, opts =
     candidates.push({ collection: c, relPath });
   }
   if (candidates.length === 0) return null;
+  return _pickCanonicalAmong(candidates, opts);
+}
+
+/**
+ * Apply the canonical-selection priority (steps 1-5) to an already-filtered,
+ * non-empty candidate list of `{ collection, relPath }`. Shared by both the
+ * library-mode and collection-mode branches of chooseCanonicalCollection.
+ *
+ * @param {Array<{collection: object, relPath: string}>} candidates
+ * @param {{existingTrackingRecord?: object, userPreferredKey?: string}} opts
+ * @returns {object} The chosen Zotero.Collection.
+ */
+function _pickCanonicalAmong(candidates, opts = {}) {
   if (candidates.length === 1) return candidates[0].collection;
 
   // 1) Existing tracked canonical.
@@ -461,14 +614,9 @@ export async function chooseCanonicalCollection(item, syncRootCollection, opts =
     if (match) return match.collection;
   }
 
-  // 3) First-seen — `item.getCollections()` returns IDs in insertion order
-  // in modern Zotero, so the first qualifying candidate maps to first-seen.
-  // (If a future Zotero version reorders these, we'll still pick a stable
-  // candidate; falling through to rule 4 catches the ambiguity.)
-  if (candidates.length > 0) {
-    // Resolve ties downstream; rule 3 is satisfied if a unique first-seen
-    // exists. Otherwise rule 4 picks the shortest path.
-  }
+  // 3) First-seen — `item.getCollections()` returns IDs in insertion order in
+  // modern Zotero, so the first qualifying candidate maps to first-seen. Ties
+  // fall through to rule 4 (shortest path) below.
 
   // 4) Shortest path.
   let best = candidates[0];

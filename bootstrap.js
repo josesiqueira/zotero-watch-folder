@@ -108,7 +108,8 @@ function _initDefaultPrefs() {
   _set("diskDeleteSync",         "auto"); // "auto" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
 
   // v2.0 sync model — sync root + mode
-  _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured.
+  _set("scopeMode",             "collection"); // 'collection' (single sync-root) | 'library' (whole-library mirror). Flips to 'library' when 2.7.0 lands.
+  _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured. Used only in scopeMode 'collection'.
   _set("syncRootLibraryID",      1);       // Default = user library. Forward-compat for group libraries.
   _set("mode",                   "mode1"); // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
   _set("setupCompleted",         false);   // Gates whether the normal poll loop runs; setup wizard runs until true.

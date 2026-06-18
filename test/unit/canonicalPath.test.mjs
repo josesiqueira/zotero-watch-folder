@@ -22,6 +22,9 @@ import {
   collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   SyncRootMissingError,
+  LibraryUnavailableError,
+  UNFILED,
+  getScopeMode,
 } from '../../content/canonicalPath.mjs';
 
 /**
@@ -46,6 +49,10 @@ function makeCollectionRegistry(collections) {
   Zotero.Collections.get = vi.fn((id) => byID.get(id) ?? null);
   Zotero.Collections.getByParent = vi.fn((parentID, libraryID) =>
     collections.filter(c => c.parentID === parentID && c.libraryID === libraryID),
+  );
+  // Library-mode (scopeMode 'library') needs the full library listing.
+  Zotero.Collections.getByLibrary = vi.fn((libraryID) =>
+    collections.filter(c => c.libraryID === libraryID),
   );
   return { byID, byKey };
 }
@@ -645,5 +652,187 @@ describe('UT-208: isUnsafeCollectionNameSegment regression (sanitize is a separa
     expect(isUnsafeCollectionNameSegment('CON')).toBe(false);
     expect(isUnsafeCollectionNameSegment('Methods.')).toBe(false);
     expect(isUnsafeCollectionNameSegment('Re: port?')).toBe(false);
+  });
+});
+
+// ─── UT-209: whole-library scope mode (scopeMode 'library', 2.7.0) ──────────
+// The four path helpers must branch on scopeMode. With scopeMode 'library',
+// the sync root is the whole library: '' → UNFILED (loose at root), every
+// top-level collection is a top-level folder, nested mirrors nested, and the
+// canonical chooser returns UNFILED (not null) for an item in no real
+// collection. Collection-mode tests above prove the legacy path is untouched.
+
+describe('UT-209: getScopeMode', () => {
+  it('returns "library" only when the pref is exactly "library"', () => {
+    resetPrefs({ scopeMode: 'library' });
+    expect(getScopeMode()).toBe('library');
+  });
+  it('defaults to "collection" for unset / any other value', () => {
+    resetPrefs({});
+    expect(getScopeMode()).toBe('collection');
+    resetPrefs({ scopeMode: 'collection' });
+    expect(getScopeMode()).toBe('collection');
+    resetPrefs({ scopeMode: 'nonsense' });
+    expect(getScopeMode()).toBe('collection');
+  });
+});
+
+describe('UT-209: resolveSyncRoot (library mode)', () => {
+  it('returns a library-root descriptor (collection: null, isLibraryRoot: true)', async () => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: 1 });
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => ({ libraryID: 1 })) };
+    const root = await resolveSyncRoot();
+    expect(root).toMatchObject({ collection: null, libraryID: 1, isLibraryRoot: true });
+  });
+
+  it('falls back to userLibraryID when syncRootLibraryID is unset', async () => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: undefined });
+    Zotero.Libraries = { userLibraryID: 7, get: vi.fn(() => ({ libraryID: 7 })) };
+    const root = await resolveSyncRoot();
+    expect(root.libraryID).toBe(7);
+  });
+
+  it('throws LibraryUnavailableError (a SyncRootMissingError) when the library is gone', async () => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: 9 });
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => null) };
+    await expect(resolveSyncRoot()).rejects.toBeInstanceOf(LibraryUnavailableError);
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => null) };
+    await expect(resolveSyncRoot()).rejects.toBeInstanceOf(SyncRootMissingError);
+  });
+});
+
+describe('UT-209: relativePathToCollection (library mode)', () => {
+  let collections;
+  beforeEach(() => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: 1 });
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => ({ libraryID: 1 })) };
+    collections = [
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+      { id: 11, key: 'SUB',  name: 'Alpha',    libraryID: 1, parentID: 10 },
+    ];
+    makeCollectionRegistry(collections);
+  });
+
+  it('maps "" and null to the UNFILED sentinel (loose at the watch-folder root)', async () => {
+    expect(await relativePathToCollection('')).toBe(UNFILED);
+    expect(await relativePathToCollection(null)).toBe(UNFILED);
+  });
+
+  it('resolves an existing top-level collection by its first segment', async () => {
+    const c = await relativePathToCollection('Projects');
+    expect(c.key).toBe('PROJ');
+  });
+
+  it('resolves a nested path under a top-level collection', async () => {
+    const c = await relativePathToCollection('Projects/Alpha');
+    expect(c.key).toBe('SUB');
+  });
+
+  it('returns null for a missing path when createIfMissing is false', async () => {
+    expect(await relativePathToCollection('Ghost')).toBe(null);
+    expect(await relativePathToCollection('Projects/Ghost')).toBe(null);
+  });
+
+  it('creates a TOP-LEVEL collection with NO parentID when createIfMissing=true', async () => {
+    let nextId = 200;
+    globalThis.Zotero.Collection = vi.fn(function () {
+      const self = {
+        name: '', libraryID: 0, parentID: null,
+        saveTx: vi.fn(async () => {
+          self.id = nextId++;
+          self.key = 'NEW' + self.id;
+          collections.push(self);
+          makeCollectionRegistry(collections);
+        }),
+      };
+      return self;
+    });
+    const c = await relativePathToCollection('Topics', { createIfMissing: true });
+    expect(c.name).toBe('Topics');
+    expect(c.parentID).toBe(null); // top-level → no parent
+    expect(globalThis.Zotero.Collection).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an unsafe segment (path traversal) → null', async () => {
+    expect(await relativePathToCollection('../escape')).toBe(null);
+  });
+});
+
+describe('UT-209: collectionKeyToRelativePath (library mode)', () => {
+  beforeEach(() => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: 1 });
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => ({ libraryID: 1 })) };
+  });
+
+  it('returns the bare name for a top-level collection (no-parent = success terminator)', async () => {
+    makeCollectionRegistry([
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+    ]);
+    expect(await collectionKeyToRelativePath('PROJ')).toBe('Projects');
+  });
+
+  it('returns the full reversed chain for a nested collection', async () => {
+    makeCollectionRegistry([
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+      { id: 11, key: 'SUB',  name: 'Alpha',    libraryID: 1, parentID: 10 },
+      { id: 12, key: 'DEEP', name: 'Beta',     libraryID: 1, parentID: 11 },
+    ]);
+    expect(await collectionKeyToRelativePath('DEEP')).toBe('Projects/Alpha/Beta');
+  });
+
+  it('returns null for a special/virtual collection (never becomes a folder)', async () => {
+    makeCollectionRegistry([
+      { id: 99, key: 'DUP', name: 'Duplicates', libraryID: 1, parentID: null, isVirtual: true },
+    ]);
+    expect(await collectionKeyToRelativePath('DUP')).toBe(null);
+  });
+
+  it('returns null when any ancestor in the chain is unsafe', async () => {
+    makeCollectionRegistry([
+      { id: 10, key: 'BAD',  name: '..',    libraryID: 1, parentID: null },
+      { id: 11, key: 'SUB',  name: 'Alpha', libraryID: 1, parentID: 10 },
+    ]);
+    expect(await collectionKeyToRelativePath('SUB')).toBe(null);
+  });
+});
+
+describe('UT-209: chooseCanonicalCollection (library mode)', () => {
+  beforeEach(() => {
+    resetPrefs({ scopeMode: 'library', syncRootLibraryID: 1 });
+    Zotero.Libraries = { userLibraryID: 1, get: vi.fn(() => ({ libraryID: 1 })) };
+  });
+
+  it('returns UNFILED for an item in NO collections (loose at root)', async () => {
+    makeCollectionRegistry([]);
+    const item = { getCollections: () => [] };
+    // syncRootCollection is null in library mode — callers pass syncRoot.collection.
+    expect(await chooseCanonicalCollection(item, null)).toBe(UNFILED);
+  });
+
+  it('returns UNFILED when the only membership is a special/virtual collection', async () => {
+    makeCollectionRegistry([
+      { id: 99, key: 'DUP', name: 'Duplicates', libraryID: 1, parentID: null, isVirtual: true },
+    ]);
+    const item = { getCollections: () => [99] };
+    expect(await chooseCanonicalCollection(item, null)).toBe(UNFILED);
+  });
+
+  it('returns the real collection for a single qualifying membership', async () => {
+    makeCollectionRegistry([
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+    ]);
+    const item = { getCollections: () => [10] };
+    const c = await chooseCanonicalCollection(item, null);
+    expect(c.key).toBe('PROJ');
+  });
+
+  it('picks the shortest path among multiple top-level/nested memberships', async () => {
+    makeCollectionRegistry([
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+      { id: 11, key: 'SUB',  name: 'Alpha',    libraryID: 1, parentID: 10 },
+    ]);
+    const item = { getCollections: () => [11, 10] }; // nested + top-level
+    const c = await chooseCanonicalCollection(item, null);
+    expect(c.key).toBe('PROJ'); // shorter path wins
   });
 });

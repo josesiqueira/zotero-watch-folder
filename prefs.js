@@ -19,7 +19,8 @@ pref("extensions.zotero.watchFolder.diskDeleteOnTrash", "ask");  // "ask" | "plu
 pref("extensions.zotero.watchFolder.diskDeleteSync", "auto");  // "auto" | "never" — when a file is externally deleted from the watch folder, auto-move the matching Zotero item to the bin and show a popup ("auto") or do nothing ("never"). No-op in Mode 1; consumed by v2.1/v2.2.
 
 // v2.0 sync model — sync root + mode
-pref("extensions.zotero.watchFolder.syncRootCollectionKey", "");  // 8-char Zotero collection key. Empty = not yet configured (setup wizard required).
+pref("extensions.zotero.watchFolder.scopeMode", "collection");  // 'collection' (single sync-root) | 'library' (whole-library mirror). Default flips to 'library' when the 2.7.0 whole-library feature is complete.
+pref("extensions.zotero.watchFolder.syncRootCollectionKey", "");  // 8-char Zotero collection key. Empty = not yet configured (setup wizard required). Used only in scopeMode 'collection'.
 pref("extensions.zotero.watchFolder.syncRootLibraryID", 1);  // Default = user library. Forward-compat for group libraries.
 pref("extensions.zotero.watchFolder.mode", "mode1");  // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
 pref("extensions.zotero.watchFolder.setupCompleted", false);  // Gates whether the normal poll loop runs; setup wizard runs until true.
