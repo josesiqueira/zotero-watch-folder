@@ -445,6 +445,20 @@ async function _reinstate(record, ctx) {
     }
   } catch (_e) { /* fall back to attachment */ }
 
+  // Library scope: there is no single sync-root collection to re-add the item
+  // to. "Reinstate" simply lifts the suppression — the item resumes syncing as
+  // an Unfiled item at the watch-folder root (no Zotero collection mutation).
+  if (syncRoot.isLibraryRoot) {
+    const snapshot = _snapshotFileRecord(record);
+    store.update(record.localPath, {
+      state: STATE.CLEAN,
+      canonicalCollectionKey: record.canonicalCollectionKey ?? null,
+    });
+    const saveResult = await _saveWithFileRollback(store, record.localPath, snapshot, record);
+    if (!saveResult.ok) return saveResult;
+    return { ok: true };
+  }
+
   try {
     await Zotero.DB.executeTransaction(async () => {
       target.addToCollection(syncRoot.collection.id);
@@ -552,6 +566,23 @@ async function _reinstateCollection(record, ctx) {
     live = await Zotero.Collections.getByLibraryAndKeyAsync(syncRoot.libraryID, record.zoteroCollectionKey);
   } catch (_e) { /* fall through to create */ }
 
+  // Resolve the parent the recreated collection should hang under. Collection
+  // scope: always the sync-root collection. Library scope: derived from the
+  // folder's path — a top-level folder gets NO parent (top-level collection);
+  // a nested folder resolves/creates its parent-folder collection.
+  let parentID; // undefined = top-level
+  let parentKey = null;
+  if (!syncRoot.isLibraryRoot) {
+    parentID = syncRoot.collection.id;
+    parentKey = syncRoot.collection.key;
+  } else {
+    const parentPath = _parentPath(record.localPath);
+    if (parentPath) {
+      const parentColl = await relativePathToCollection(parentPath, { createIfMissing: true }).catch(() => null);
+      if (parentColl && parentColl.id) { parentID = parentColl.id; parentKey = parentColl.key; }
+    }
+  }
+
   let newKey = record.zoteroCollectionKey;
   if (!live) {
     const name = _lastSegment(record.localPath) || record.localPath || 'Untitled';
@@ -560,7 +591,7 @@ async function _reinstateCollection(record, ctx) {
         const c = new Zotero.Collection();
         c.libraryID = syncRoot.libraryID;
         c.name = name;
-        c.parentID = syncRoot.collection.id;
+        if (typeof parentID === 'number') c.parentID = parentID; // top-level: leave unset
         await c.save();
         return c;
       });
@@ -579,7 +610,7 @@ async function _reinstateCollection(record, ctx) {
     store.add({
       ...snapshot,
       zoteroCollectionKey: newKey,
-      parentCollectionKey: syncRoot.collection.key,
+      parentCollectionKey: parentKey,
       state: STATE.CLEAN,
     });
   } else {
@@ -588,7 +619,7 @@ async function _reinstateCollection(record, ctx) {
     store.removeCollectionRecord(oldKey);
     store.add({
       ...snapshot,
-      parentCollectionKey: syncRoot.collection.key,
+      parentCollectionKey: parentKey,
       state: STATE.CLEAN,
     });
   }
@@ -797,6 +828,19 @@ function _lastSegment(p) {
   if (typeof p !== 'string') return '';
   const parts = p.split('/').filter((s) => s.trim() !== '');
   return parts[parts.length - 1] || '';
+}
+
+/**
+ * The parent relative path of a sync-root-relative folder path, or '' if the
+ * folder is top-level. e.g. 'Projects/Alpha/Beta' → 'Projects/Alpha';
+ * 'Projects' → ''. Used in library scope to resolve a recreated collection's
+ * parent.
+ */
+function _parentPath(p) {
+  if (typeof p !== 'string') return '';
+  const parts = p.split('/').filter((s) => s.trim() !== '');
+  parts.pop();
+  return parts.join('/');
 }
 
 /**

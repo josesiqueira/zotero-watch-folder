@@ -665,6 +665,7 @@ async function _enumerateLibrary(syncRoot) {
  * where attachments is an array of `{ attachment, item }`.
  */
 export async function enumerateSyncRootAttachments(syncRoot) {
+  if (syncRoot?.isLibraryRoot) return _enumerateLibrary(syncRoot);
   return _enumerateUnderSyncRoot(syncRoot);
 }
 

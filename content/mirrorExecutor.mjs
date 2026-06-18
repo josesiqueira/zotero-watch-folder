@@ -36,7 +36,7 @@ import { getPref, getFileHash } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { collectionKeyToRelativePath, resolveSyncRoot, getScopeMode } from './canonicalPath.mjs';
-import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
+import { isBulkDelete, confirmBulkDelete, confirmFirstLibraryDelete } from './bulkGuard.mjs';
 import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
@@ -577,6 +577,14 @@ async function _zoteroCollectionDeleted(payload) {
       return { ok: false, reason: 'warn-only-mode2' };
     }
 
+    // First-arm whole-library-delete gate: the first Mode-3 deletion under
+    // library scope must be explicitly acknowledged (whole-library blast
+    // radius). Refuses if declined or no UI — fail-safe.
+    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+      Zotero.debug(`[WatchFolder] mirrorExecutor: zoteroCollectionDeleted ${oldRelativePath || collectionKey} blocked — library-scale deletion not acknowledged`);
+      return { ok: false, reason: 'library-delete-not-acknowledged' };
+    }
+
     // Mode 3 — safe-delete: recursive move into plugin trash, drop the
     // collection record + child file records. The contained files are
     // NOT individually tombstoned (the Zotero attachments weren't
@@ -815,6 +823,12 @@ async function _localFolderDeleted(payload) {
         message: `Local folder removal suppressed (Mode 2): "${oldRelativePath || collectionKey}" — Zotero collection kept.`,
       });
       return { ok: false, reason: 'warn-only-mode2' };
+    }
+
+    // First-arm whole-library-delete gate (see _zoteroCollectionDeleted).
+    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+      Zotero.debug(`[WatchFolder] mirrorExecutor: localFolderDeleted ${oldRelativePath || collectionKey} blocked — library-scale deletion not acknowledged`);
+      return { ok: false, reason: 'library-delete-not-acknowledged' };
     }
 
     // Mode 3 — propagate the deletion to Zotero.
