@@ -596,6 +596,24 @@ export class TrackingStore {
   }
 
   /**
+   * All FileRecords currently flagged MISSING — i.e. the local file
+   * disappeared from disk while in Mode 1 / Mode 2, where the deletion
+   * is NOT propagated to Zotero (the Zotero item is intentionally
+   * preserved per the no-delete contract). These records exist so the
+   * prefs UI can surface them and let the user stop tracking the
+   * (now-gone) local file without touching the Zotero item.
+   * @returns {FileRecord[]}
+   */
+  getMissingFiles() {
+    this._ensureInitialized();
+    const out = [];
+    for (const rec of this._files.values()) {
+      if (rec.state === STATE.MISSING) out.push(rec);
+    }
+    return out;
+  }
+
+  /**
    * Find a tombstone by content hash. Used by the v2.2 restore matrix
    * (RST.3): when the scanner sees a new file whose hash matches a
    * tombstone, the import flow re-links to the Zotero attachment

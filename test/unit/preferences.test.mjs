@@ -175,3 +175,91 @@ describe('UX-1 preferences: deletion-disposition picker', () => {
     expect(document.get('wf-deletion-opt-plugin_trash').classList.contains('wf-sel')).toBe(true);
   });
 });
+
+// ─── Storage report / Empty trash / Missing files ───────────────────────────
+
+describe('Storage report + Empty Zotero trash + Missing files', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // confirmEx + button-flag constants used by emptyZoteroTrash.
+    Services.prompt.confirmEx = vi.fn(() => 0); // default: confirm
+    Services.prompt.alert = vi.fn();
+    Services.prompt.BUTTON_POS_0 = 1;
+    Services.prompt.BUTTON_POS_1 = 1 << 8;
+    Services.prompt.BUTTON_TITLE_IS_STRING = 1;
+    Services.prompt.BUTTON_TITLE_CANCEL = 2;
+  });
+
+  function withApi(extra = {}) {
+    Zotero.WatchFolder = {
+      storageStrategy: {
+        accountingReport: vi.fn(async () => ({
+          ok: true, zoteroItemCount: 3, storedCount: 2, linkedCount: 1,
+          storedBytes: 2048, watchFolderFileCount: 4, watchFolderBytes: 4096,
+          trashedAttachmentCount: 2, trashedBytes: 8192,
+        })),
+        emptyZoteroTrash: vi.fn(async () => ({ ok: true })),
+      },
+      suppressionResolver: {},
+      ...extra,
+    };
+  }
+
+  it('exposes the new handlers on WatchFolderPrefs', () => {
+    const { prefs } = loadPrefs({});
+    expect(typeof prefs.showStorageReport).toBe('function');
+    expect(typeof prefs.emptyZoteroTrash).toBe('function');
+    expect(typeof prefs.stopTrackingMissing).toBe('function');
+  });
+
+  it('showStorageReport calls accountingReport and reveals the output', async () => {
+    withApi();
+    const { prefs, document } = loadPrefs({});
+    await prefs.showStorageReport();
+    expect(Zotero.WatchFolder.storageStrategy.accountingReport).toHaveBeenCalled();
+    const out = document.get('watch-folder-storage-report-output');
+    expect(out.hidden).toBe(false);
+    expect(String(out.value)).toMatch(/Stored in Zotero/);
+  });
+
+  it('emptyZoteroTrash requires confirm BEFORE calling the API', async () => {
+    withApi();
+    Services.prompt.confirmEx = vi.fn(() => 1); // user cancels
+    const { prefs } = loadPrefs({});
+    await prefs.emptyZoteroTrash();
+    expect(Services.prompt.confirmEx).toHaveBeenCalled();
+    expect(Zotero.WatchFolder.storageStrategy.emptyZoteroTrash).not.toHaveBeenCalled();
+  });
+
+  it('emptyZoteroTrash calls the API when confirmed', async () => {
+    withApi();
+    Services.prompt.confirmEx = vi.fn(() => 0); // user confirms
+    const { prefs } = loadPrefs({});
+    await prefs.emptyZoteroTrash();
+    expect(Zotero.WatchFolder.storageStrategy.emptyZoteroTrash).toHaveBeenCalled();
+  });
+
+  it('stopTrackingMissing passes the STRING localPath to the resolver (not the record object)', async () => {
+    const stop = vi.fn(async () => ({ ok: true }));
+    withApi({ suppressionResolver: { stopTrackingMissing: stop, listMissing: () => [] } });
+    const { prefs } = loadPrefs({});
+    // the resolver requires a string; passing a record object would be rejected as invalid-path
+    await prefs.stopTrackingMissing({ localPath: 'x.pdf' });
+    expect(stop).toHaveBeenCalledWith('x.pdf');
+  });
+
+  it('stopTrackingMissing also accepts a bare string path', async () => {
+    const stop = vi.fn(async () => ({ ok: true }));
+    withApi({ suppressionResolver: { stopTrackingMissing: stop, listMissing: () => [] } });
+    const { prefs } = loadPrefs({});
+    await prefs.stopTrackingMissing('y.pdf');
+    expect(stop).toHaveBeenCalledWith('y.pdf');
+  });
+
+  it('stopTrackingMissing alerts (no throw) when the API is absent', async () => {
+    withApi({ suppressionResolver: {} }); // no stopTrackingMissing
+    const { prefs } = loadPrefs({});
+    await expect(prefs.stopTrackingMissing({ localPath: 'x.pdf' })).resolves.toBeUndefined();
+    expect(Services.prompt.alert).toHaveBeenCalled();
+  });
+});

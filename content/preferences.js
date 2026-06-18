@@ -641,6 +641,204 @@
         }
     }
 
+    // ─── Storage report + Empty Zotero trash + Missing files ─────────────
+
+    /**
+     * Human-readable byte size. 0 → "0 B"; scales B/KB/MB/GB.
+     */
+    function formatBytes(n) {
+        const bytes = Number(n) || 0;
+        if (bytes <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        let v = bytes;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${i === 0 ? v : v.toFixed(1)} ${units[i]}`;
+    }
+
+    /**
+     * Show the read-only storage accounting report. Computed on demand only
+     * (never on prefs open) by Zotero.WatchFolder.storageStrategy.accountingReport().
+     */
+    async function showStorageReport() {
+        const api = _storageStrategyAPI();
+        const out = document.getElementById('watch-folder-storage-report-output');
+        if (!api || typeof api.accountingReport !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Storage tools not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            const r = await api.accountingReport();
+            if (!r || !r.ok) {
+                if (out) {
+                    out.value = 'Set up a watch folder and sync root first.';
+                    out.textContent = 'Set up a watch folder and sync root first.';
+                    out.hidden = false;
+                }
+                return;
+            }
+            const lines = [
+                `Zotero attachments under sync root: ${r.zoteroItemCount}`,
+                `  • Stored in Zotero: ${r.storedCount} (${formatBytes(r.storedBytes)})`,
+                `  • Linked to watch folder: ${r.linkedCount}`,
+                `Watch folder on disk: ${r.watchFolderFileCount} file(s) (${formatBytes(r.watchFolderBytes)})`,
+                `Trashed Zotero attachments with files: ${r.trashedAttachmentCount} (${formatBytes(r.trashedBytes)})`,
+            ];
+            const text = lines.join('\n');
+            if (out) {
+                out.value = text;
+                out.textContent = text;
+                out.hidden = false;
+            }
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Storage report failed: ${e?.message ?? e}`);
+        }
+    }
+
+    /**
+     * Permanently empty Zotero's trash, library-wide. Requires an explicit
+     * confirmEx warning before acting, and surfaces the reclaimable trashed-
+     * bytes figure from the accounting report so the user sees what they free.
+     */
+    async function emptyZoteroTrash() {
+        const api = _storageStrategyAPI();
+        if (!api || typeof api.emptyZoteroTrash !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Storage tools not available — plugin not fully loaded?');
+            return;
+        }
+        // Best-effort figure for the warning; never blocks the action if it fails.
+        let trashedNote = '';
+        try {
+            if (typeof api.accountingReport === 'function') {
+                const r = await api.accountingReport();
+                if (r && r.ok && r.trashedAttachmentCount > 0) {
+                    trashedNote = `\n\nThis frees about ${formatBytes(r.trashedBytes)} from `
+                        + `${r.trashedAttachmentCount} trashed attachment(s) under your sync root.`;
+                }
+            }
+        } catch (_e) { /* non-fatal */ }
+
+        // Cancel (button 1) is the DEFAULT-focused button — for an
+        // irreversible, library-wide permanent delete a stray Enter must not
+        // trigger it. The destructive "Empty trash permanently" is button 0.
+        const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+            + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+            + Services.prompt.BUTTON_POS_1_DEFAULT;
+        const pressed = Services.prompt.confirmEx(
+            window,
+            'Empty Zotero trash?',
+            'This PERMANENTLY empties your ENTIRE Zotero trash, library-wide — '
+            + 'every item you have moved to the bin, not just files from this plugin. '
+            + 'This cannot be undone.' + trashedNote,
+            flags,
+            'Empty trash permanently',
+            null, null, null, {}
+        );
+        if (pressed !== 0) return; // cancelled
+
+        try {
+            const result = await api.emptyZoteroTrash();
+            if (result && result.ok) {
+                Services.prompt.alert(window, 'Watch Folder', 'Zotero trash emptied.');
+            } else {
+                const reason = result && result.reason === 'empty-trash-api-unavailable'
+                    ? 'This Zotero build does not expose an empty-trash API. Empty the trash from Zotero’s own interface instead.'
+                    : `Could not empty trash${result && result.error ? ': ' + result.error : '.'}`;
+                Services.prompt.alert(window, 'Watch Folder', reason);
+            }
+            await refreshMissingFilesDisplay();
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Empty trash failed: ${e?.message ?? e}`);
+        }
+    }
+
+    /**
+     * Refresh the "Files removed from disk (kept in Zotero)" list. Calls
+     * suppressionResolver.listMissing() defensively (the API is provided by
+     * another module and may be absent on older builds). Each entry gets a
+     * "Stop tracking" button wired to stopTrackingMissing.
+     */
+    async function refreshMissingFilesDisplay() {
+        const group = document.getElementById('watch-folder-missing-files-group');
+        const list = document.getElementById('watch-folder-missing-files-list');
+        if (!group || !list) return;
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        let entries = [];
+        if (resolver && typeof resolver.listMissing === 'function') {
+            try {
+                const r = resolver.listMissing();
+                entries = (r && typeof r.then === 'function') ? await r : r;
+            } catch (_e) { entries = []; }
+        }
+        if (!Array.isArray(entries)) entries = [];
+
+        // Clear previous children.
+        while (list.firstChild) list.removeChild(list.firstChild);
+
+        if (entries.length === 0) {
+            group.hidden = true;
+            return;
+        }
+        group.hidden = false;
+
+        for (const entry of entries) {
+            const path = (entry && (entry.localPath || entry.path)) || String(entry);
+            const row = document.createXULElement
+                ? document.createXULElement('hbox')
+                : document.createElement('hbox');
+            if (row.setAttribute) row.setAttribute('align', 'center');
+
+            const lbl = document.createXULElement
+                ? document.createXULElement('label')
+                : document.createElement('label');
+            if (lbl.setAttribute) lbl.setAttribute('value', path);
+            lbl.value = path;
+            row.appendChild(lbl);
+
+            const btn = document.createXULElement
+                ? document.createXULElement('button')
+                : document.createElement('button');
+            if (btn.setAttribute) btn.setAttribute('label', 'Stop tracking');
+            // Pass the STRING localPath — the resolver requires a string and
+            // rejects a record object with {ok:false, reason:'invalid-path'}.
+            btn.addEventListener('command', () => { stopTrackingMissing(path); });
+            row.appendChild(btn);
+
+            list.appendChild(row);
+        }
+    }
+
+    /**
+     * Stop tracking a missing file via the tracking-only resolver
+     * stopTrackingMissing (provided by another module). Guarded by typeof.
+     */
+    async function stopTrackingMissing(pathOrEntry) {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver || typeof resolver.stopTrackingMissing !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Stop-tracking unavailable — plugin not fully loaded?');
+            return;
+        }
+        // Normalize to the string localPath the resolver requires (a record
+        // object would be rejected as invalid-path).
+        const path = (typeof pathOrEntry === 'string')
+            ? pathOrEntry
+            : (pathOrEntry && (pathOrEntry.localPath || pathOrEntry.path));
+        if (!path) {
+            Services.prompt.alert(window, 'Watch Folder', 'Could not stop tracking: no file path.');
+            return;
+        }
+        try {
+            const result = await resolver.stopTrackingMissing(path);
+            if (result && result.ok === false) {
+                Services.prompt.alert(window, 'Watch Folder',
+                    `Could not stop tracking: ${result.reason || ''}${result.error ? '\n' + result.error : ''}`);
+            }
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        await refreshMissingFilesDisplay();
+    }
+
     /**
      * Toggle the Advanced section's visibility + caret arrow.
      */
@@ -1067,6 +1265,9 @@
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
             refreshTrashedFoldersDisplay();
+            // Missing-files list is computed on open; the storage REPORT is not
+            // (it walks disk + enumerates trash, so only on explicit request).
+            refreshMissingFilesDisplay();
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
@@ -1118,6 +1319,10 @@
         buildRepairMirror,
         // Mode-3 deletion disposition (diskDeleteOnTrash).
         changeDiskDeleteOnTrash,
+        // Storage report + Empty Zotero trash + Missing files.
+        showStorageReport,
+        emptyZoteroTrash,
+        stopTrackingMissing,
         onLoad: init,
     };
 

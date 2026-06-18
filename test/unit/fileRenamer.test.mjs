@@ -3,8 +3,8 @@
  * Covers: UT-005 (buildFilename template substitution), UT-006 (separator cleanup),
  *         UT-007 (validatePattern), UT-008 (getTemplateVariables)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { buildFilename, validatePattern, getTemplateVariables } from '../../content/fileRenamer.mjs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { buildFilename, validatePattern, getTemplateVariables, formatPartialDate } from '../../content/fileRenamer.mjs';
 
 /**
  * Create a minimal mock Zotero Item
@@ -192,12 +192,13 @@ describe('UT-007: validatePattern — valid and invalid patterns', () => {
 // ─── UT-008 ──────────────────────────────────────────────────────────────────
 
 describe('UT-008: getTemplateVariables — completeness', () => {
-  it('returns an object with exactly the 8 documented keys', () => {
+  it('returns an object with exactly the 9 documented keys', () => {
     const vars = getTemplateVariables();
     const expectedKeys = [
       'firstCreator',
       'creators',
       'year',
+      'date',
       'title',
       'shortTitle',
       'DOI',
@@ -205,5 +206,107 @@ describe('UT-008: getTemplateVariables — completeness', () => {
       'publicationTitle',
     ];
     expect(Object.keys(vars).sort()).toEqual(expectedKeys.sort());
+  });
+});
+
+// ─── UT-DATEFMT-1 ─────────────────────────────────────────────────────────────
+
+describe('UT-DATEFMT-1: formatPartialDate — partial-date formatting', () => {
+  let originalDate;
+
+  beforeEach(() => {
+    originalDate = globalThis.Zotero.Date;
+    // Local stub: parse a few canonical raw strings into Zotero's
+    // 0-indexed-month {year, month, day} shape.
+    globalThis.Zotero.Date = {
+      strToDate: vi.fn((raw) => {
+        if (!raw) return {};
+        switch (raw) {
+          case '2021-03-09':
+            // March (0-indexed 2), day 9
+            return { year: 2021, month: 2, day: 9 };
+          case '2021-03':
+            return { year: 2021, month: 2 };
+          case '2021':
+            return { year: 2021 };
+          default:
+            // Garbage: no recognizable parts
+            return {};
+        }
+      }),
+    };
+  });
+
+  afterEach(() => {
+    globalThis.Zotero.Date = originalDate;
+  });
+
+  // UT-DATEFMT-1a — full date dd.mm.yyyy
+  it('formats a full date "2021-03-09" -> "09.03.2021"', () => {
+    expect(formatPartialDate('2021-03-09')).toBe('09.03.2021');
+  });
+
+  // UT-DATEFMT-1b — year + month -> mm.yyyy
+  it('formats year+month "2021-03" -> "03.2021"', () => {
+    expect(formatPartialDate('2021-03')).toBe('03.2021');
+  });
+
+  // UT-DATEFMT-1c — year only -> yyyy
+  it('formats year-only "2021" -> "2021"', () => {
+    expect(formatPartialDate('2021')).toBe('2021');
+  });
+
+  // UT-DATEFMT-1d — empty / garbage -> ''
+  it('returns "" for empty input', () => {
+    expect(formatPartialDate('')).toBe('');
+  });
+
+  it('returns "" for unparseable garbage', () => {
+    expect(formatPartialDate('not a date')).toBe('');
+  });
+
+  // UT-DATEFMT-1e — zero-padding single-digit month/day
+  it('zero-pads single-digit day and month', () => {
+    globalThis.Zotero.Date.strToDate = vi.fn(() => ({ year: 2021, month: 0, day: 5 }));
+    expect(formatPartialDate('whatever')).toBe('05.01.2021');
+  });
+});
+
+// ─── UT-DATEFMT-2 ─────────────────────────────────────────────────────────────
+
+describe('UT-DATEFMT-2: {date} token wiring + validation', () => {
+  let originalDate;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    Zotero.Prefs.get.mockReturnValue(null);
+    originalDate = globalThis.Zotero.Date;
+    globalThis.Zotero.Date = {
+      strToDate: vi.fn((raw) =>
+        raw === '2021-03-09' ? { year: 2021, month: 2, day: 9 } : {}
+      ),
+    };
+  });
+
+  afterEach(() => {
+    globalThis.Zotero.Date = originalDate;
+  });
+
+  // UT-DATEFMT-2a — pattern containing {date} validates
+  it('validatePattern accepts a pattern containing {date}', () => {
+    const r = validatePattern('{firstCreator} - {date} - {title}');
+    expect(r.valid).toBe(true);
+    expect(r.errors).toHaveLength(0);
+  });
+
+  // UT-DATEFMT-2b — buildFilename renders {date} from item.getField('date')
+  it('renders {date} sourced from the item publication date', () => {
+    const item = makeMockItem({
+      creators: [{ lastName: 'Smith' }],
+      date: '2021-03-09',
+      title: 'Deep Learning',
+    });
+    const result = buildFilename(item, '{firstCreator} - {date} - {title}');
+    expect(result).toBe('Smith - 09.03.2021 - Deep Learning');
   });
 });

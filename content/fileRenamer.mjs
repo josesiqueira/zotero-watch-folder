@@ -11,12 +11,53 @@ import { getPref, sanitizeFilename } from './utils.mjs';
  * - {firstCreator} - First author's last name
  * - {creators} - All authors (comma-separated last names)
  * - {year} - Publication year
+ * - {date} - Publication date (dd.mm.yyyy, degrades to mm.yyyy or yyyy)
  * - {title} - Full title
  * - {shortTitle} - First 50 characters of title
  * - {DOI} - DOI value
  * - {itemType} - Item type (journalArticle, etc.)
  * - {publicationTitle} - Journal/conference name
  */
+
+/**
+ * Format a raw publication date into a dd.mm.yyyy string, degrading
+ * gracefully when parts are missing:
+ *   - day + month + year -> "dd.mm.yyyy"
+ *   - month + year       -> "mm.yyyy"
+ *   - year only          -> "yyyy"
+ *   - unparseable/empty  -> ""
+ * Day and month are zero-padded to 2 digits. Zotero months are 0-indexed
+ * (Zotero.Date.strToDate), so we add 1 for display.
+ * @param {string} raw - Raw publication date field value
+ * @returns {string} Formatted partial date or empty string
+ */
+export function formatPartialDate(raw) {
+  if (!raw || typeof Zotero === 'undefined' || !Zotero.Date?.strToDate) return '';
+
+  let parsed;
+  try {
+    parsed = Zotero.Date.strToDate(raw);
+  } catch (e) {
+    return '';
+  }
+  if (!parsed) return '';
+
+  // Year is required for any output.
+  const year = parsed.year;
+  if (year === undefined || year === null || year === '') return '';
+  const yyyy = String(year);
+
+  // Zotero months are 0-indexed; add 1 for display.
+  const hasMonth = parsed.month !== undefined && parsed.month !== null && parsed.month !== '';
+  if (!hasMonth) return yyyy;
+  const mm = String(Number(parsed.month) + 1).padStart(2, '0');
+
+  const hasDay = parsed.day !== undefined && parsed.day !== null && parsed.day !== '';
+  if (!hasDay) return `${mm}.${yyyy}`;
+  const dd = String(Number(parsed.day)).padStart(2, '0');
+
+  return `${dd}.${mm}.${yyyy}`;
+}
 
 /**
  * Get first creator's last name
@@ -78,6 +119,7 @@ export function buildFilename(item, pattern = null) {
     firstCreator: getFirstCreator(item),
     creators: getAllCreators(item),
     year: item.getField('year') || item.getField('date')?.substring(0, 4) || '',
+    date: formatPartialDate(item.getField('date')),
     title: item.getField('title') || '',
     shortTitle: (item.getField('title') || '').substring(0, 50),
     DOI: item.getField('DOI') || '',
@@ -222,6 +264,7 @@ export function getTemplateVariables() {
     firstCreator: 'First author\'s last name',
     creators: 'All authors (comma-separated last names)',
     year: 'Publication year',
+    date: 'Publication date (dd.mm.yyyy, degrades to mm.yyyy or yyyy)',
     title: 'Full title',
     shortTitle: 'First 50 characters of title',
     DOI: 'DOI value',

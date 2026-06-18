@@ -1147,6 +1147,69 @@ export class WatchFolderService {
       }
     }
 
+    // ── 2b. Empty-folder rename candidates (conservative structural match) ─
+    //
+    // The hash matcher below can't help an EMPTY tracked folder (no files →
+    // no hash anchor → it would bail and let _ensureCollectionsForExisting
+    // Folders create a brand-new collection). For that case we fall back to
+    // an UNAMBIGUOUS structural match: an empty tracked collection that
+    // vanished is treated as renamed ONLY when, under the SAME parent dir,
+    // there is exactly one such orphan AND exactly one new untracked empty
+    // directory. Any ambiguity (≥2 orphans, ≥2 new empty dirs, or a
+    // candidate dir that actually holds files) falls through to create-new.
+    //
+    // `dirsWithFiles` = every on-disk dir that has ≥1 scanned file under it
+    // (itself or a descendant); used to reject non-empty candidate dirs.
+    const dirsWithFiles = new Set(scannedByAbsDir.keys());
+    const trackedDirsAll = new Set(
+      collectionRecords.map(r => r._absLocalPath).filter(Boolean),
+    );
+    const parentOf = (absDir) => {
+      const idx = absDir.lastIndexOf('/');
+      return idx <= 0 ? '' : absDir.slice(0, idx);
+    };
+    // New untracked empty dirs grouped by parent: parentAbs → [absDir, …]
+    const newEmptyDirsByParent = new Map();
+    for (const absDir of onDiskDirs) {
+      if (absDir === watchPath) continue;
+      if (trackedDirsAll.has(absDir)) continue; // already tracked
+      if (dirsWithFiles.has(absDir)) continue;  // holds files → not an empty candidate
+      const par = parentOf(absDir);
+      if (!newEmptyDirsByParent.has(par)) newEmptyDirsByParent.set(par, []);
+      newEmptyDirsByParent.get(par).push(absDir);
+    }
+    // Empty orphaned (missing) collections grouped by parent. "Empty" =
+    // no tracked file (with a hash) resolves to or under the missing path.
+    // Computed once up front so the per-orphan 1:1 guard sees an accurate
+    // orphan count regardless of loop order.
+    const allTrackedFileAbs = this._trackingStore.getAllOfType('file')
+      .filter(f => f.lastSyncedHash)
+      .map(f => this._resolveTrackedAbs(f.localPath, watchPath));
+    const missingHasTrackedFiles = (absPath) => {
+      const prefix = absPath + '/';
+      return allTrackedFileAbs.some(a => a === absPath || a.startsWith(prefix));
+    };
+    // Only ACTIVE collection records participate in empty-folder rename
+    // matching. Dead records (OUT_OF_SCOPE_SUPPRESSED / USER_DETACHED /
+    // CONFLICT_BLOCKED / PAUSED / RECOVERABLE / MISSING) linger in the store
+    // forever and would otherwise poison the 1:1 orphan count — a single
+    // leftover dead orphan under the same parent silently disables a
+    // legitimate empty-folder rename for its siblings, causing the mode-3
+    // deletion pass to trash-and-recreate the collection (loses the key).
+    const DEAD_COLL_STATES = new Set([
+      STATE.OUT_OF_SCOPE_SUPPRESSED, STATE.USER_DETACHED, STATE.CONFLICT_BLOCKED,
+      STATE.PAUSED, STATE.RECOVERABLE, STATE.MISSING,
+    ]);
+    const isActiveColl = (r) => !DEAD_COLL_STATES.has(r.state);
+    const emptyMissingByParent = new Map();
+    for (const r of missing) {
+      if (!isActiveColl(r)) continue; // dead orphans must not poison the count
+      if (missingHasTrackedFiles(r._absLocalPath)) continue; // not empty
+      const par = parentOf(r._absLocalPath);
+      if (!emptyMissingByParent.has(par)) emptyMissingByParent.set(par, []);
+      emptyMissingByParent.get(par).push(r);
+    }
+
     // ── 3. For each missing record, find a candidate ─────────────────────
     //
     // Matching is *tail-aware*: a candidate dir is only a valid rename
@@ -1177,7 +1240,21 @@ export class WatchFolderService {
         trackedShape.set(f.lastSyncedHash, tail);
       }
       if (trackedShape.size === 0) {
-        Zotero.debug(`[WatchFolder] Folder ${oldPath} missing but no tracked file hashes under it — skip`);
+        // Empty-folder case: no hash anchor. Try the conservative structural
+        // matcher — rename in place ONLY on an unambiguous 1:1 match (exactly
+        // one empty orphan AND exactly one new untracked empty dir under the
+        // SAME parent). Any ambiguity falls through to create-new behavior.
+        const par = parentOf(oldPath);
+        const orphans = emptyMissingByParent.get(par) || [];
+        const newEmpties = newEmptyDirsByParent.get(par) || [];
+        if (isActiveColl(collRecord) && orphans.length === 1 && newEmpties.length === 1
+            && orphans[0].zoteroCollectionKey === collRecord.zoteroCollectionKey) {
+          const target = newEmpties[0];
+          Zotero.debug(`[WatchFolder] Empty-folder rename detected (1:1): ${oldPath} → ${target}`);
+          await this._renameTrackedCollection(collRecord, target);
+        } else {
+          Zotero.debug(`[WatchFolder] Folder ${oldPath} missing but no tracked file hashes under it — skip (empty-folder match ambiguous: ${orphans.length} orphan(s), ${newEmpties.length} new empty dir(s))`);
+        }
         continue;
       }
 
@@ -2290,8 +2367,10 @@ export class WatchFolderService {
 
     // ── Trash branch ──────────────────────────────────────────────────────
     // Mode 1 + Mode 2: never propagate disk deletions to Zotero. Mark
-    // the tracking record as `missing` so subsequent scans don't re-detect
-    // and the user can resolve via the suppression UX. Mode 2 also emits
+    // the tracking record as `missing` so subsequent scans don't re-detect.
+    // Missing-from-disk records are surfaced in the prefs "Files removed
+    // from disk" panel; they are NOT routed through the suppression-resolver
+    // UX. Otherwise the only trace is the warning log. Mode 2 also emits
     // a warningSink entry so the user sees the event (bug #33 fix —
     // previously the Mode-3 modal alert fired in Mode 2 too, blocking
     // the bridge and creating modal popups for every deleted file).

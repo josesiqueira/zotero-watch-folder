@@ -406,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.6.3 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.6.4 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -422,7 +422,7 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>776</b> unit tests passing</span>
+        <span><b>813</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
         <span><b>30</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
@@ -978,6 +978,13 @@ footer .fine {
       <li>
         <span class="status done">Done</span>
         <div>
+          <b>v2.6.4 — storage tools, missing-files panel, date token + a rename fix</b>
+          <span class="meta">From a multi-agent review of live testing feedback: a <b>storage report</b> (items / stored vs linked / bytes / how much your Zotero trash is holding), an <b>Empty Zotero trash</b> button to reclaim that space (permanent, library-wide, behind a Cancel-default confirm), a <b>"Files removed from disk"</b> panel to forget tracking entries for deleted files, and a <b>{date}</b> filename token (publication date, dd.mm.yyyy). Plus a data-safety fix: renaming an empty folder no longer trashes-and-recreates its Zotero collection when an old suppressed record lingers. The "7 files → 4 imported" dedup and "one item, all copies on disk" behaviors are working as designed — content-hash dedup + shadow records.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
           <b>v2.6.3 — launch-readiness: data-safety fixes + settings UX + docs</b>
           <span class="meta">Data-safety hardening from a deploy-readiness audit: a transient drive/cloud drop can no longer mass-trash collections (folder-deletion pass gated behind a watch-root-availability check), the Zotero→local delete gate now fails closed, Windows-reserved collection names are sanitized before mirroring, and a "Delete permanently" choice is never persisted as a standing default. Plus the settings UX (clickable mode/storage cards with a "✓ current" badge, a "★ Best for WebDAV / cloud sync" badge + hint), readability fixes, and a revamped README + public docs/ folder (DEVELOPERS.md + visual architecture.md).</span>
         </div>
@@ -1043,7 +1050,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (776 passing, 25 files)</span>
+<span class="c"># unit tests (813 passing, 25 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1073,7 +1080,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.6.3 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-16
+      GPL-3.0 · v2.6.4 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-18
     </div>
   </div>
 </footer>

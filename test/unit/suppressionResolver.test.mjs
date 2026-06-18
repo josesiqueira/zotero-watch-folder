@@ -48,6 +48,8 @@ import {
   resolveCollection,
   resolveConflict,
   listSuppressed,
+  listMissing,
+  stopTrackingMissing,
   RESOLUTION_ACTION,
   COLLECTION_RESOLUTION_ACTION,
   CONFLICT_RESOLUTION_ACTION,
@@ -882,5 +884,108 @@ describe('UT-831: restoreTrashedFolder', () => {
       '/watch/Methods',
       { recursive: true, ignoreAbsent: true }
     );
+  });
+});
+
+// ─── UT-MISSING-1 (UX-MISSING-1 backend) ─────────────────────────────────────
+
+describe('UT-MISSING-1: listMissing', () => {
+  it('returns only MISSING file records', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({ localPath: 'clean.pdf', zoteroAttachmentKey: 'A', state: STATE.CLEAN }));
+    store.add(createFileRecord({ localPath: 'm1.pdf', zoteroAttachmentKey: 'M1', state: STATE.MISSING }));
+    store.add(createFileRecord({ localPath: 'm2.pdf', zoteroAttachmentKey: 'M2', state: STATE.MISSING }));
+    store.add(createFileRecord({ localPath: 'sup.pdf', zoteroAttachmentKey: 'S', state: STATE.OUT_OF_SCOPE_SUPPRESSED }));
+    const list = listMissing(store);
+    expect(list.map((r) => r.zoteroAttachmentKey).sort()).toEqual(['M1', 'M2']);
+  });
+
+  it('tolerates an uninitialized / shapeless store (returns [])', async () => {
+    expect(listMissing({})).toEqual([]);
+    const store = new TrackingStore(); // not initialized → getMissingFiles throws
+    expect(listMissing(store)).toEqual([]);
+  });
+});
+
+describe('UT-MISSING-1: stopTrackingMissing is tracking-only', () => {
+  it('removes the tracking record and persists it', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'm1.pdf', zoteroAttachmentKey: 'M1', zoteroItemKey: 'PA1',
+      lastSyncedHash: 'h1', state: STATE.MISSING,
+    });
+    store.add(rec);
+    const saveSpy = vi.spyOn(store, 'save');
+
+    const result = await stopTrackingMissing('m1.pdf', { store });
+    expect(result.ok).toBe(true);
+    expect(store.getByLocalPath('m1.pdf')).toBe(null);
+    expect(saveSpy).toHaveBeenCalled();
+  });
+
+  it('NEVER calls any Zotero item delete/trash/erase API', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'm1.pdf', zoteroAttachmentKey: 'M1', state: STATE.MISSING,
+    });
+    store.add(rec);
+
+    // Instrument every plausible Zotero deletion entry-point so we can
+    // prove the action is tracking-only.
+    const deleted = vi.fn();
+    const eraseTx = vi.fn(async () => {});
+    const itemErase = vi.fn(async () => {});
+    Zotero.Items.get = vi.fn(() => ({
+      get deleted() { deleted(); return false; },
+      set deleted(_v) { deleted(); },
+      eraseTx,
+      erase: itemErase,
+      isInTrash: vi.fn(() => false),
+    }));
+    Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({
+      eraseTx, erase: itemErase,
+      set deleted(_v) { deleted(); },
+    }));
+    Zotero.Items.trashTx = vi.fn(async () => {});
+    Zotero.Items.erase = vi.fn(async () => {});
+
+    const result = await stopTrackingMissing('m1.pdf', { store });
+    expect(result.ok).toBe(true);
+    // The Zotero item must never be touched.
+    expect(deleted).not.toHaveBeenCalled();
+    expect(eraseTx).not.toHaveBeenCalled();
+    expect(itemErase).not.toHaveBeenCalled();
+    expect(Zotero.Items.trashTx).not.toHaveBeenCalled();
+    expect(Zotero.Items.erase).not.toHaveBeenCalled();
+    expect(Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
+    expect(Zotero.Items.get).not.toHaveBeenCalled();
+    // No tombstone either — this is a forget, not a soft-delete.
+    expect(store.getAllOfType('tombstone').length).toBe(0);
+  });
+
+  it('rolls back (record restored) when save() fails', async () => {
+    const store = await makeStore();
+    const rec = createFileRecord({
+      localPath: 'm1.pdf', zoteroAttachmentKey: 'M1', state: STATE.MISSING,
+    });
+    store.add(rec);
+    vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('disk full'));
+
+    const result = await stopTrackingMissing('m1.pdf', { store });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('save-failed');
+    // Record restored by rollback.
+    const restored = store.getByLocalPath('m1.pdf');
+    expect(restored).toBeTruthy();
+    expect(restored.state).toBe(STATE.MISSING);
+    expect(restored.zoteroAttachmentKey).toBe('M1');
+  });
+
+  it('rejects a non-MISSING record (not-missing) and a missing path (invalid-record)', async () => {
+    const store = await makeStore();
+    store.add(createFileRecord({ localPath: 'clean.pdf', state: STATE.CLEAN }));
+    expect((await stopTrackingMissing('clean.pdf', { store })).reason).toBe('not-missing');
+    expect((await stopTrackingMissing('nope.pdf', { store })).reason).toBe('invalid-record');
+    expect((await stopTrackingMissing('', { store })).reason).toBe('invalid-path');
   });
 });

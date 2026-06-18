@@ -268,6 +268,38 @@
     </radiogroup>
   </groupbox>
 
+  <!-- ─── Storage report + maintenance ───────────────────────────── -->
+  <groupbox id="watch-folder-storage-report-group">
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-storage-report"/></label>
+    <html:p data-l10n-id="watch-folder-pref-storage-report-explainer"
+            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+
+    <hbox align="center">
+      <button id="watch-folder-storage-report-btn"
+              data-l10n-id="watch-folder-pref-storage-report-show"
+              oncommand="WatchFolderPrefs.showStorageReport()"/>
+      <button id="watch-folder-empty-trash-btn"
+              data-l10n-id="watch-folder-pref-empty-trash-btn"
+              oncommand="WatchFolderPrefs.emptyZoteroTrash()"/>
+    </hbox>
+
+    <html:pre id="watch-folder-storage-report-output"
+              hidden="true"
+              style="margin: 10px 0 0 0; padding: 10px 12px; font-size: 0.92em;
+                     line-height: 1.5; background: rgba(127,127,127,0.12);
+                     border-radius: 5px; white-space: pre-wrap;"/>
+
+    <!-- Files removed from disk but kept tracked in Zotero. Shown only
+         when the (other-agent) listMissing() API returns entries. -->
+    <vbox id="watch-folder-missing-files-group" hidden="true" style="margin-top: 12px;">
+      <label data-l10n-id="watch-folder-pref-missing-files-label"
+             style="font-weight: 600;"/>
+      <html:p data-l10n-id="watch-folder-pref-missing-files-explainer"
+              style="margin: 2px 0 6px 0; font-size: 0.9em; opacity: 0.8; line-height: 1.45;"/>
+      <vbox id="watch-folder-missing-files-list"/>
+    </vbox>
+  </groupbox>
+
   <!-- ─── File Naming ────────────────────────────────────────────── -->
   <groupbox>
     <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>

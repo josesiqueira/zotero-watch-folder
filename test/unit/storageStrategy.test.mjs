@@ -405,3 +405,115 @@ describe('UT-906: runMirror copies stored→watch and keeps stored attachments',
     );
   });
 });
+
+// ─── UT-908: accountingReport (FEAT-DASHBOARD) ───────────────────────────────
+
+describe('UT-908: accountingReport storage dashboard', () => {
+  beforeEach(() => {
+    resolveSyncRoot.mockResolvedValue({ collection: { key: 'ROOT1' }, libraryID: 1 });
+    prefMap({ sourcePath: '/watch' });
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+    globalThis.Zotero.Items.getDeleted = vi.fn(async () => []);
+    // Empty watch folder by default.
+    globalThis.IOUtils.getChildren = vi.fn(async () => []);
+  });
+
+  it('returns the expected shape and counts on mocked attachments', async () => {
+    const stored = mockAttachment({ key: 'S1', filename: 's1.pdf', stored: true, path: '/zotero/storage/S1/s1.pdf' });
+    const linked = mockAttachment({ key: 'L1', filename: 'l1.pdf', stored: false, path: '/watch/l1.pdf' });
+    baseline.enumerateSyncRootAttachments.mockResolvedValue({
+      attachments: [{ attachment: stored, item: stored }, { attachment: linked, item: linked }],
+    });
+    // stored attachment file is 2048 bytes; linked isn't counted in storedBytes.
+    globalThis.IOUtils.stat = vi.fn(async (p) => ({ size: 2048, type: 'regular' }));
+
+    const r = await storageStrategy.accountingReport();
+
+    expect(r.ok).toBe(true);
+    expect(r).toMatchObject({
+      zoteroItemCount: 2,
+      storedCount: 1,
+      linkedCount: 1,
+      storedBytes: 2048,
+      trashedAttachmentCount: 0,
+      trashedBytes: 0,
+    });
+    // The returned object is read-only (frozen).
+    expect(Object.isFrozen(r)).toBe(true);
+    expect(() => { r.storedCount = 99; }).toThrow();
+  });
+
+  it('counts trashed stored attachments that still have files', async () => {
+    baseline.enumerateSyncRootAttachments.mockResolvedValue({ attachments: [] });
+    const trashed = mockAttachment({ key: 'T1', filename: 't1.pdf', stored: true, path: '/zotero/storage/T1/t1.pdf' });
+    trashed.deleted = true;
+    trashed.isAttachment = () => true;
+    globalThis.Zotero.Items.getDeleted = vi.fn(async () => [42]);
+    globalThis.Zotero.Items.get = vi.fn(() => trashed);
+    globalThis.IOUtils.stat = vi.fn(async () => ({ size: 4096, type: 'regular' }));
+
+    const r = await storageStrategy.accountingReport();
+    expect(r.trashedAttachmentCount).toBe(1);
+    expect(r.trashedBytes).toBe(4096);
+  });
+
+  it('totals watch folder files via a recursive disk walk', async () => {
+    baseline.enumerateSyncRootAttachments.mockResolvedValue({ attachments: [] });
+    globalThis.IOUtils.getChildren = vi.fn(async (dir) => {
+      if (dir === '/watch') return ['/watch/a.pdf', '/watch/sub', '/watch/.zotero-watch-trash'];
+      if (dir === '/watch/sub') return ['/watch/sub/b.pdf'];
+      return [];
+    });
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      if (p === '/watch/sub') return { type: 'directory', size: 0 };
+      return { type: 'regular', size: 1000 };
+    });
+
+    const r = await storageStrategy.accountingReport();
+    // a.pdf + sub/b.pdf = 2 files, 2000 bytes; trash dir skipped.
+    expect(r.watchFolderFileCount).toBe(2);
+    expect(r.watchFolderBytes).toBe(2000);
+  });
+
+  it('returns ok:false with no-sync-root when none configured', async () => {
+    resolveSyncRoot.mockResolvedValue(null);
+    const r = await storageStrategy.accountingReport();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('no-sync-root');
+  });
+});
+
+// ─── UT-909: emptyZoteroTrash (FEAT-EMPTY-TRASH) ─────────────────────────────
+
+describe('UT-909: emptyZoteroTrash', () => {
+  beforeEach(() => {
+    globalThis.Zotero.Libraries = { userLibraryID: 7 };
+  });
+
+  it('calls Zotero.Items.emptyTrash with the library ID when present', async () => {
+    globalThis.Zotero.Items.emptyTrash = vi.fn(async () => {});
+    const r = await storageStrategy.emptyZoteroTrash();
+    expect(r.ok).toBe(true);
+    expect(globalThis.Zotero.Items.emptyTrash).toHaveBeenCalledWith(7);
+  });
+
+  it('passes an explicit libraryID through', async () => {
+    globalThis.Zotero.Items.emptyTrash = vi.fn(async () => {});
+    await storageStrategy.emptyZoteroTrash(99);
+    expect(globalThis.Zotero.Items.emptyTrash).toHaveBeenCalledWith(99);
+  });
+
+  it('no-ops with a clear reason when the API is absent', async () => {
+    globalThis.Zotero.Items.emptyTrash = undefined;
+    const r = await storageStrategy.emptyZoteroTrash();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('empty-trash-api-unavailable');
+  });
+
+  it('reports empty-trash-failed when the API throws', async () => {
+    globalThis.Zotero.Items.emptyTrash = vi.fn(async () => { throw new Error('boom'); });
+    const r = await storageStrategy.emptyZoteroTrash();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('empty-trash-failed');
+  });
+});

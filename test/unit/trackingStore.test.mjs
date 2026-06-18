@@ -600,6 +600,42 @@ describe('UT-113: getConflictedFiles', () => {
   });
 });
 
+// ─── UT-MISSING-1 (UX-MISSING-1 backend) ─────────────────────────────────────
+
+describe('UT-MISSING-1: getMissingFiles', () => {
+  it('returns only file records in MISSING state; excludes clean/suppressed/conflicted', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({
+      localPath: 'clean.pdf', zoteroAttachmentKey: 'A', state: STATE.CLEAN,
+    }));
+    store.add(createFileRecord({
+      localPath: 'missing1.pdf', zoteroAttachmentKey: 'M1', state: STATE.MISSING,
+    }));
+    store.add(createFileRecord({
+      localPath: 'missing2.pdf', zoteroAttachmentKey: 'M2', state: STATE.MISSING,
+    }));
+    store.add(createFileRecord({
+      localPath: 'suppressed.pdf', zoteroAttachmentKey: 'S', state: STATE.OUT_OF_SCOPE_SUPPRESSED,
+    }));
+    store.add(createFileRecord({
+      localPath: 'conflicted.pdf', zoteroAttachmentKey: 'C', state: STATE.CONFLICT_BLOCKED,
+    }));
+    expect(store.getMissingFiles().map((r) => r.zoteroAttachmentKey).sort()).toEqual(['M1', 'M2']);
+  });
+
+  it('returns an empty array when no records are MISSING', async () => {
+    const { TrackingStore, createFileRecord } = await import('../../content/trackingStore.mjs');
+    const store = new TrackingStore();
+    store.dataFile = '/tmp/x.json';
+    store._initialized = true;
+    store.add(createFileRecord({ localPath: 'clean.pdf', state: STATE.CLEAN }));
+    expect(store.getMissingFiles()).toEqual([]);
+  });
+});
+
 // ─── UT-112 ────────────────────────────────────────────────────────────────
 
 describe('UT-112: getSuppressedCollections', () => {

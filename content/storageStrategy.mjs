@@ -344,6 +344,168 @@ async function _convertOneToLinked(entry, { syncRoot, watchRoot, store }) {
   return true;
 }
 
+// ─── Accounting / storage dashboard (FEAT-DASHBOARD) ────────────────────────
+
+/**
+ * Sum the on-disk byte size of an attachment's file, if available. Pure read.
+ * Returns 0 when the file is missing/unreadable so the dashboard degrades
+ * gracefully rather than throwing.
+ */
+async function _attachmentFileBytes(att) {
+  let path = null;
+  try { path = await att.getFilePathAsync(); } catch (_e) { path = null; }
+  if (!path) return 0;
+  try { const st = await IOUtils.stat(path); return st?.size ?? 0; } catch (_e) { return 0; }
+}
+
+/**
+ * Enumerate the watch folder once and total its file count + bytes. Pure read.
+ * Skips unreadable files. Returns { count, bytes }.
+ */
+async function _watchFolderUsage(watchRoot) {
+  if (!watchRoot) return { count: 0, bytes: 0 };
+  // Minimal recursive disk walk used only by the dashboard. Skips the plugin
+  // trash dir and hidden dot-dirs. Best-effort — never throws.
+  let count = 0;
+  let bytes = 0;
+  // Depth-capped stack of [dir, depth]. IOUtils.stat dereferences symlinks,
+  // so a symlinked directory would otherwise let a symlink LOOP (or a link to
+  // /) recurse forever and wedge the prefs window. The depth cap bounds the
+  // walk so a loop terminates instead of hanging. Skip the plugin trash, the
+  // 'imported' dir (excluded from scanning per fileScanner.SKIP_DIRNAMES), and
+  // hidden dot-dirs.
+  const MAX_DEPTH = 20;
+  const stack = [[watchRoot, 0]];
+  while (stack.length) {
+    const [dir, depth] = stack.pop();
+    let entries = [];
+    try { entries = await IOUtils.getChildren(dir); } catch (_e) { entries = []; }
+    for (const child of entries) {
+      const name = PathUtils.filename(child);
+      if (name === '.zotero-watch-trash' || name === 'imported'
+          || (typeof name === 'string' && name.startsWith('.'))) continue;
+      let st = null;
+      try { st = await IOUtils.stat(child); } catch (_e) { st = null; }
+      if (!st) continue;
+      if (st.type === 'directory') {
+        if (depth < MAX_DEPTH) stack.push([child, depth + 1]);
+        continue;
+      }
+      count++;
+      bytes += st.size ?? 0;
+    }
+  }
+  return { count, bytes };
+}
+
+/**
+ * Read-only storage accounting for the prefs dashboard. Enumerates the sync
+ * root (the SAME walk previewReclaim uses) plus Zotero's trashed attachments
+ * and the watch folder on disk. Computed ONLY on explicit call — never on
+ * prefs open. Never mutates Zotero or disk.
+ *
+ * @returns {Promise<{
+ *   ok:boolean, reason?:string,
+ *   zoteroItemCount:number, storedCount:number, linkedCount:number, storedBytes:number,
+ *   watchFolderFileCount:number, watchFolderBytes:number,
+ *   trashedAttachmentCount:number, trashedBytes:number
+ * }>}
+ */
+export async function accountingReport() {
+  const empty = {
+    zoteroItemCount: 0, storedCount: 0, linkedCount: 0, storedBytes: 0,
+    watchFolderFileCount: 0, watchFolderBytes: 0,
+    trashedAttachmentCount: 0, trashedBytes: 0,
+  };
+
+  const syncRoot = await resolveSyncRoot().catch(() => null);
+  if (!syncRoot) return Object.freeze({ ok: false, reason: 'no-sync-root', ...empty });
+
+  const { attachments } = await baseline.enumerateSyncRootAttachments(syncRoot);
+  let zoteroItemCount = 0;
+  let storedCount = 0;
+  let linkedCount = 0;
+  let storedBytes = 0;
+
+  for (const { attachment } of attachments) {
+    zoteroItemCount++;
+    if (_isStoredFileAttachment(attachment)) {
+      storedCount++;
+      storedBytes += await _attachmentFileBytes(attachment);
+    } else {
+      linkedCount++;
+    }
+  }
+
+  // Trashed (item.deleted === true) attachments under the library that still
+  // have files. The sync-root walk excludes trashed items, so enumerate the
+  // library trash directly.
+  let trashedAttachmentCount = 0;
+  let trashedBytes = 0;
+  const libraryID = syncRoot.libraryID ?? (Zotero?.Libraries?.userLibraryID);
+  try {
+    let deletedIDs = [];
+    if (Zotero?.Items && typeof Zotero.Items.getDeleted === 'function') {
+      deletedIDs = (await Zotero.Items.getDeleted(libraryID, true)) || [];
+    }
+    for (const id of deletedIDs) {
+      let item = null;
+      try { item = Zotero.Items.get(id); } catch (_e) { item = null; }
+      if (!item) continue;
+      if (!(typeof item.isAttachment === 'function' && item.isAttachment())) continue;
+      if (item.deleted !== true) continue;
+      if (!_isStoredFileAttachment(item)) continue; // only stored files occupy reclaimable bytes
+      const bytes = await _attachmentFileBytes(item);
+      if (bytes <= 0) continue; // "that still have files"
+      trashedAttachmentCount++;
+      trashedBytes += bytes;
+    }
+  } catch (e) {
+    Zotero.debug(`[WatchFolder] accountingReport trash enumeration: ${e?.message ?? e}`);
+  }
+
+  const watchRoot = getPref('sourcePath');
+  const usage = await _watchFolderUsage(watchRoot);
+
+  return Object.freeze({
+    ok: true,
+    zoteroItemCount, storedCount, linkedCount, storedBytes,
+    watchFolderFileCount: usage.count, watchFolderBytes: usage.bytes,
+    trashedAttachmentCount, trashedBytes,
+  });
+}
+
+// ─── Empty Zotero trash (FEAT-EMPTY-TRASH) ──────────────────────────────────
+
+/**
+ * Permanently empty Zotero's trash for a library to reclaim space. This is a
+ * library-wide, irreversible operation handled entirely by Zotero — the plugin
+ * NEVER deletes inside the Zotero storage directory itself.
+ *
+ * Coded defensively behind a typeof guard because the exact API name must be
+ * verified on a live Zotero build (Zotero.Items.emptyTrash is the expected
+ * name on Zotero 7/8/9, but this is not assumed — absence yields a clear,
+ * non-destructive error rather than a thrown ReferenceError).
+ *
+ * @param {number} [libraryID] - defaults to the user library.
+ * @returns {Promise<{ok:boolean, reason?:string}>}
+ */
+export async function emptyZoteroTrash(libraryID) {
+  const lib = (typeof libraryID === 'number')
+    ? libraryID
+    : (Zotero?.Libraries?.userLibraryID);
+  if (!Zotero?.Items || typeof Zotero.Items.emptyTrash !== 'function') {
+    return { ok: false, reason: 'empty-trash-api-unavailable' };
+  }
+  try {
+    await Zotero.Items.emptyTrash(lib);
+    return { ok: true };
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] emptyZoteroTrash: ${e?.message ?? e}`);
+    return { ok: false, reason: 'empty-trash-failed', error: String(e?.message ?? e) };
+  }
+}
+
 // ─── Build / Repair Watch Folder Mirror (stored_plus_mirror) ────────────────
 
 /**

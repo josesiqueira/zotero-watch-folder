@@ -62,6 +62,14 @@ watch-folder-pref-storage-restore = If this computer is lost, install Zotero and
 watch-folder-pref-storage-reclaim = Reclaim Zotero Storage Space…
 watch-folder-pref-storage-build-mirror = Build/Repair Watch Folder Mirror…
 
+# ─── Storage report + maintenance ─────────────────────────────────
+watch-folder-pref-section-storage-report = Storage report and maintenance
+watch-folder-pref-storage-report-explainer = See how much space your PDFs use in Zotero and in the watch folder, and reclaim space by permanently emptying Zotero's trash. The report is calculated only when you ask for it.
+watch-folder-pref-storage-report-show = Show storage report
+watch-folder-pref-empty-trash-btn = Empty Zotero trash…
+watch-folder-pref-missing-files-label = Files removed from disk (kept in Zotero)
+watch-folder-pref-missing-files-explainer = These files are no longer in your watch folder, but the plugin is still tracking them. Use "Stop tracking" to forget a file (this does not change Zotero).
+
 # ─── Deletion disposition (Mode 3 only) ──────────────────────────
 watch-folder-pref-section-deletion = When a source file is deleted
 watch-folder-pref-deletion-explainer = In "Mirror with safe delete" mode, when you move an item to Zotero's bin the plugin can also act on the matching file in your watch folder. Choose what happens to that source file. (Permanent deletion is never saved as a standing choice — if you ever pick it from the prompt, it applies to that one batch only.)

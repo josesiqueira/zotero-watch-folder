@@ -801,6 +801,222 @@ describe('UT-054: WatchFolderService folder-rename detection (B2)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// UT-FRE: FOLDER-RENAME-EMPTY — renaming an EMPTY folder on disk should rename
+// the existing Zotero collection (conservative 1:1 structural match), NOT
+// create a new collection. The hash matcher can't help (no files → no anchor),
+// so an empty orphan is treated as renamed ONLY on an unambiguous 1:1 match
+// (exactly one empty orphan + exactly one new untracked empty dir under the
+// SAME parent). Any ambiguity falls through to the existing create-new path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-FRE: WatchFolderService empty-folder rename detection', () => {
+  let service;
+  let getPrefMock;
+  let getFileHashMock;
+
+  // Same in-memory tracking-store stub as UT-054.
+  function makeStore(initialFiles = [], initialCollections = []) {
+    const files = new Map(initialFiles.map(f => [f.localPath, f]));
+    const collections = new Map(initialCollections.map(c => [c.zoteroCollectionKey, c]));
+    return {
+      _files: files,
+      _collections: collections,
+      getAllOfType: vi.fn((t) => {
+        if (t === 'file') return [...files.values()];
+        if (t === 'collection') return [...collections.values()];
+        return [];
+      }),
+      getCollectionRecord: vi.fn((key) => collections.get(key) || null),
+      removeCollectionRecord: vi.fn((key) => collections.delete(key)),
+      remove: vi.fn((path) => files.delete(path)),
+      removeByAttachmentKey: vi.fn(),
+      update: vi.fn(),
+      add: vi.fn((rec) => {
+        if (rec.type === 'file') files.set(rec.localPath, rec);
+        else if (rec.type === 'collection') collections.set(rec.zoteroCollectionKey, rec);
+      }),
+      hasPath: vi.fn((p) => files.has(p)),
+      save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
+    };
+  }
+
+  function emptyCollection(localPath, key, parentKey = null) {
+    return { type: 'collection', localPath, zoteroCollectionKey: key, parentCollectionKey: parentKey, state: 'clean' };
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+
+    // Clear the real module-level hash cache — we mock getFileHash below.
+    const hc = await import('../../content/_hashCache.mjs');
+    hc.clear();
+
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getFileHashMock = utils.getFileHash;
+
+    const cp = await import('../../content/canonicalPath.mjs');
+    cp.resolveSyncRoot.mockResolvedValue({
+      collection: { id: 1, key: 'ROOT1' },
+      libraryID: 1,
+    });
+
+    getPrefMock.mockImplementation((k) => {
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'mode') return 'mode1';
+      return undefined;
+    });
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+  });
+
+  it('(a) renames in place on an unambiguous 1:1 match (one empty orphan + one new empty dir)', async () => {
+    service._trackingStore = makeStore([], [emptyCollection('/watch/Methods', 'COL_METHODS')]);
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    // On disk: Methods/ is gone; one new empty dir Procedures/ exists. No
+    // files anywhere, so _listSubdirectories supplies the dir set.
+    vi.spyOn(service, '_listSubdirectories').mockResolvedValue(['/watch/Procedures']);
+
+    await service._detectFolderRenames([], '/watch');
+
+    // The existing collection was renamed (NOT a new collection created).
+    expect(fakeCollection.name).toBe('Procedures');
+    expect(fakeCollection.saveTx).toHaveBeenCalledTimes(1);
+    const renamed = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(renamed).toBeTruthy();
+    expect(renamed.localPath).toBe('Procedures');
+  });
+
+  it('(b) falls through (no rename) when there are TWO new empty dirs (ambiguous target)', async () => {
+    service._trackingStore = makeStore([], [emptyCollection('/watch/Methods', 'COL_METHODS')]);
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    vi.spyOn(service, '_listSubdirectories').mockResolvedValue(['/watch/Procedures', '/watch/Protocols']);
+
+    await service._detectFolderRenames([], '/watch');
+
+    expect(fakeCollection.saveTx).not.toHaveBeenCalled();
+    const stillThere = service._trackingStore.getCollectionRecord('COL_METHODS');
+    expect(stillThere.localPath).toBe('/watch/Methods'); // unchanged
+  });
+
+  it('(c) falls through (no rename) when TWO orphaned empty collections vanish (ambiguous source)', async () => {
+    service._trackingStore = makeStore([], [
+      emptyCollection('/watch/Methods', 'COL_METHODS'),
+      emptyCollection('/watch/Results', 'COL_RESULTS'),
+    ]);
+    const colByKey = {
+      COL_METHODS: { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) },
+      COL_RESULTS: { id: 101, key: 'COL_RESULTS', name: 'Results', saveTx: vi.fn(async () => {}) },
+    };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async (lib, key) => colByKey[key] || null);
+
+    // Both gone; only one new empty dir on disk — ambiguous (which orphan?).
+    vi.spyOn(service, '_listSubdirectories').mockResolvedValue(['/watch/Procedures']);
+
+    await service._detectFolderRenames([], '/watch');
+
+    expect(colByKey.COL_METHODS.saveTx).not.toHaveBeenCalled();
+    expect(colByKey.COL_RESULTS.saveTx).not.toHaveBeenCalled();
+    expect(service._trackingStore.getCollectionRecord('COL_METHODS').localPath).toBe('/watch/Methods');
+    expect(service._trackingStore.getCollectionRecord('COL_RESULTS').localPath).toBe('/watch/Results');
+  });
+
+  it('(d) candidate new dir that HOLDS files is not an empty-match target (uses hash path instead)', async () => {
+    // The tracked Methods/ has a file; the new Procedures/ also has a file.
+    // This is the NON-empty path: the hash matcher should drive the rename,
+    // not the empty matcher. (Regression-flavored: confirms a dir with files
+    // is excluded from newEmptyDirsByParent.)
+    service._trackingStore = makeStore(
+      [{
+        type: 'file',
+        localPath: '/watch/Methods/paper.pdf',
+        canonicalLocalPath: '/watch/Methods/paper.pdf',
+        lastSyncedHash: 'H1',
+        zoteroAttachmentKey: 'AK1',
+        state: 'clean',
+      }],
+      [emptyCollection('/watch/Methods', 'COL_METHODS')],
+    );
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    const scannedFiles = [{ path: '/watch/Procedures/paper.pdf' }];
+    getFileHashMock.mockImplementation(async (p) =>
+      p === '/watch/Procedures/paper.pdf' ? 'H1' : null);
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    // Renamed via the hash matcher (not the empty matcher), exactly once.
+    expect(fakeCollection.name).toBe('Procedures');
+    expect(fakeCollection.saveTx).toHaveBeenCalledTimes(1);
+    expect(service._trackingStore.getCollectionRecord('COL_METHODS').localPath).toBe('Procedures');
+  });
+
+  it('(e) regression: non-empty hash-based rename still works unchanged', async () => {
+    service._trackingStore = makeStore(
+      [{
+        type: 'file',
+        localPath: '/watch/Methods/paper.pdf',
+        canonicalLocalPath: '/watch/Methods/paper.pdf',
+        lastSyncedHash: 'H1',
+        zoteroAttachmentKey: 'AK1',
+        state: 'clean',
+      }],
+      [emptyCollection('/watch/Methods', 'COL_METHODS')],
+    );
+    const fakeCollection = { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async () => fakeCollection);
+
+    const scannedFiles = [{ path: '/watch/Procedures/paper.pdf' }];
+    getFileHashMock.mockImplementation(async (p) =>
+      p === '/watch/Procedures/paper.pdf' ? 'H1' : null);
+
+    await service._detectFolderRenames(scannedFiles, '/watch');
+
+    expect(fakeCollection.name).toBe('Procedures');
+    const renamedFile = service._trackingStore._files.get('Procedures/paper.pdf');
+    expect(renamedFile).toBeTruthy();
+    expect(renamedFile.canonicalLocalPath).toBe('Procedures/paper.pdf');
+    expect(service._trackingStore._files.has('/watch/Methods/paper.pdf')).toBe(false);
+  });
+
+  it('(f) a DEAD suppressed orphan must NOT poison the 1:1 count (ultracode FOLDER-RENAME root cause)', async () => {
+    // One ACTIVE empty orphan (Methods, clean) + one DEAD empty orphan
+    // (DeadOld, out-of-scope-suppressed — lingers in the store forever) both
+    // missing from disk; one new empty dir (Procedures). Before the fix, the
+    // dead orphan made emptyMissingByParent['/watch'].length === 2 → the 1:1
+    // guard silently no-op'd → Methods fell through to the deletion pass and
+    // got trashed-and-recreated. The dead orphan must be excluded so the
+    // legitimate rename still fires.
+    service._trackingStore = makeStore([], [
+      emptyCollection('/watch/Methods', 'COL_METHODS'),
+      { type: 'collection', localPath: '/watch/DeadOld', zoteroCollectionKey: 'COL_DEAD',
+        parentCollectionKey: null, state: 'out-of-scope-suppressed' },
+    ]);
+    const colByKey = {
+      COL_METHODS: { id: 100, key: 'COL_METHODS', name: 'Methods', saveTx: vi.fn(async () => {}) },
+      COL_DEAD: { id: 102, key: 'COL_DEAD', name: 'DeadOld', saveTx: vi.fn(async () => {}) },
+    };
+    globalThis.Zotero.Collections.getByLibraryAndKeyAsync = vi.fn(async (lib, key) => colByKey[key] || null);
+    vi.spyOn(service, '_listSubdirectories').mockResolvedValue(['/watch/Procedures']);
+
+    await service._detectFolderRenames([], '/watch');
+
+    // The ACTIVE orphan was renamed in place (key preserved); the dead one was untouched.
+    expect(colByKey.COL_METHODS.name).toBe('Procedures');
+    expect(colByKey.COL_METHODS.saveTx).toHaveBeenCalledTimes(1);
+    expect(service._trackingStore.getCollectionRecord('COL_METHODS').localPath).toBe('Procedures');
+    expect(colByKey.COL_DEAD.saveTx).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // UT-055: empty-folder pickup (B.4 / EF.1) — disk subfolders without files
 // still get a corresponding Zotero subcollection so the local-↔-Zotero
 // folder mapping holds for users who pre-create empty folders.

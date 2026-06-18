@@ -226,6 +226,77 @@ export function listConflicted(store) {
 }
 
 /**
+ * List all FileRecords currently flagged MISSING — local files that
+ * disappeared from disk under Mode 1 / Mode 2, where the deletion is
+ * deliberately NOT propagated to Zotero. The prefs UI uses this
+ * together with `stopTrackingMissing` to surface them and let the user
+ * stop tracking the gone-from-disk file. Defaults to the singleton
+ * tracking store.
+ * @param {object} [store]
+ * @returns {Array}
+ */
+export function listMissing(store) {
+  const s = store || getTrackingStore();
+  if (!s || typeof s.getMissingFiles !== 'function') return [];
+  // The store throws if init() hasn't been called yet; tolerate that
+  // gracefully so the prefs-pane UI doesn't blow up on early load.
+  try { return s.getMissingFiles(); }
+  catch (_e) { return []; }
+}
+
+/**
+ * Stop tracking a MISSING file — TRACKING-ONLY.
+ *
+ * Removes ONLY the plugin's tracking record for the given localPath and
+ * persists the store (with snapshot + rollback on a save() failure, per
+ * the resolver contract). It NEVER touches the Zotero item: no trash, no
+ * erase, no detach, no tombstone. This upholds the Mode 1 / Mode 2
+ * no-delete contract — the file is already gone from disk, so the only
+ * thing to clean up is the now-dangling tracking entry; the Zotero
+ * attachment is intentionally preserved for the user to keep or remove
+ * themselves.
+ *
+ * Because no tombstone is written, the Zotero attachment is NOT made
+ * re-linkable by hash — this is a forget, not a soft-delete.
+ *
+ * @param {string} localPath - localPath of the MISSING FileRecord.
+ * @param {object} [opts]
+ * @param {object} [opts.store] - Test seam: override the singleton store.
+ * @returns {Promise<{ok: boolean, reason?: string, error?: string}>}
+ */
+export async function stopTrackingMissing(localPath, opts = {}) {
+  if (typeof localPath !== 'string' || !localPath) {
+    return { ok: false, reason: 'invalid-path' };
+  }
+  const store = opts.store || getTrackingStore();
+  if (!store) return { ok: false, reason: 'no-store' };
+
+  let record;
+  try { record = store.getByLocalPath(localPath); }
+  catch (_e) { record = null; }
+  if (!record || record.type !== 'file') {
+    return { ok: false, reason: 'invalid-record' };
+  }
+  if (record.state !== STATE.MISSING) {
+    return { ok: false, reason: 'not-missing' };
+  }
+
+  // Snapshot first so a failed save() can be rolled back, leaving the
+  // record exactly as it was. TRACKING-ONLY: store.remove() drops the
+  // tracking entry; there is no Zotero item delete/trash/erase here.
+  const snapshot = _snapshotFileRecord(record);
+  store.remove(localPath);
+  try {
+    await store.save();
+  } catch (saveErr) {
+    store.add({ ...snapshot });
+    _reportSaveFailure(saveErr, record);
+    return { ok: false, reason: 'save-failed', error: String(saveErr?.message ?? saveErr) };
+  }
+  return { ok: true };
+}
+
+/**
  * Apply a resolution action to a suppressed FileRecord.
  *
  * @param {object} record - FileRecord with state===OUT_OF_SCOPE_SUPPRESSED.
