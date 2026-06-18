@@ -19,7 +19,7 @@
  * @module itemAddHandler
  */
 
-import { resolveSyncRoot, collectionKeyToRelativePath } from './canonicalPath.mjs';
+import { resolveSyncRoot, collectionKeyToRelativePath, getScopeMode } from './canonicalPath.mjs';
 import { getPref } from './utils.mjs';
 import * as baseline from './baseline.mjs';
 
@@ -194,6 +194,11 @@ async function _processBatch(batch) {
  * out-of-scope collections, '' for the sync root itself).
  */
 function _itemInSyncRoot(item) {
+  // Library scope: the whole library is in scope, so every item qualifies —
+  // including Unfiled ones (no collection membership), which the sync-root
+  // walk below would reject. copyAttachmentToCanonical routes Unfiled owners
+  // to the watch-folder root via the UNFILED canonical.
+  if (getScopeMode() === 'library') return true;
   if (typeof item?.getCollections !== 'function') return false;
   const ids = item.getCollections() || [];
   for (const id of ids) {

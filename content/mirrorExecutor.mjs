@@ -35,7 +35,7 @@
 import { getPref, getFileHash } from './utils.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
-import { collectionKeyToRelativePath, resolveSyncRoot } from './canonicalPath.mjs';
+import { collectionKeyToRelativePath, resolveSyncRoot, getScopeMode } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
 import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
@@ -1142,18 +1142,27 @@ async function _removeItemMembership(payload) {
         if (rel !== null) syncRootMembershipsRemaining++;
       } catch (_e) { /* sync-root unresolvable — skip count */ }
     }
-    if (syncRootMembershipsRemaining === 0) {
+    // Library scope: losing the last collection membership does NOT take the
+    // item out of scope — the whole library is in scope, so the item is now
+    // Unfiled. Keep it syncing (state unchanged), clear the canonical key
+    // (null = Unfiled/root); itemMembershipHandler recomputes the canonical and
+    // moves the file to the watch-folder root. No suppression, no warning.
+    const libraryScope = getScopeMode() === 'library';
+    if (syncRootMembershipsRemaining === 0 && !libraryScope) {
       updates.state = STATE.OUT_OF_SCOPE_SUPPRESSED;
       if (rec.canonicalCollectionKey) {
         updates.canonicalCollectionKey = null;
       }
+    } else if (syncRootMembershipsRemaining === 0 && libraryScope) {
+      // Unfiled now — drop the canonical key, keep syncing.
+      if (rec.canonicalCollectionKey) updates.canonicalCollectionKey = null;
     } else if (rec.canonicalCollectionKey === collectionKey) {
       // Canonical was just dropped; clear it so A3 can pick a new one.
       updates.canonicalCollectionKey = null;
     }
     _store.update(rec.localPath, updates);
     try { await _store.save(); } catch (_e) { /* logged */ }
-    if (syncRootMembershipsRemaining === 0) {
+    if (syncRootMembershipsRemaining === 0 && !libraryScope) {
       reportWarning({
         category: WARNING_CATEGORY.SUPPRESSED,
         actionType: 'removeItemMembership',

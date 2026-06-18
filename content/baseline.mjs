@@ -74,6 +74,18 @@ function _baselineKey(syncRoot) {
 }
 
 /**
+ * Public accessor for the baseline idempotency key of a resolved sync root.
+ * Consumers (e.g. itemMembershipHandler's adopt-into-scope gate) must compare
+ * the persisted `baselineCompletedForRoot` pref against THIS, not against
+ * `syncRoot.collection.key` — which is null in library scope.
+ * @param {object} syncRoot
+ * @returns {string}
+ */
+export function baselineKeyFor(syncRoot) {
+  return _baselineKey(syncRoot);
+}
+
+/**
  * Has the baseline been run for the current sync root?
  * @returns {Promise<boolean>}
  */
@@ -502,7 +514,12 @@ async function _enumerateFrom(rootCollection, syncRoot) {
   const walk = async (collection) => {
     if (visited.has(collection.id)) return;
     visited.add(collection.id);
-    if (collection.key !== syncRoot.collection.key) collections.push(collection);
+    // Collection scope: exclude the sync-root collection itself (it maps to the
+    // watch-folder root, not a subfolder). Library scope: there is no root
+    // collection — every visited collection is a folder.
+    if (syncRoot.isLibraryRoot || collection.key !== syncRoot.collection.key) {
+      collections.push(collection);
+    }
 
     // Force-load child items: after a plugin reload Zotero's
     // Collection._childItems cache can be empty even when collectionItems

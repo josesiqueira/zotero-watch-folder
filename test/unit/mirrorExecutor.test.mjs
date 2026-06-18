@@ -695,6 +695,30 @@ describe('UT-413: _removeItemMembership clears canonical on last-membership-remo
   });
 });
 
+// ─── UT-418: library scope — last membership removed → Unfiled, NOT suppressed ─
+describe('UT-418: _removeItemMembership (library scope) → Unfiled, stays CLEAN', () => {
+  it('keeps the record CLEAN and clears canonical when the last collection is removed', async () => {
+    getPref.mockImplementation((key) => ({ sourcePath: '/watch', scopeMode: 'library' }[key]));
+    const store = await makeStore();
+    store.add(createFileRecord({
+      localPath: 'Projects/p.pdf', zoteroAttachmentKey: 'K1',
+      canonicalCollectionKey: 'CAN',
+      collectionMembershipKeys: ['CAN'],
+      state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+    await execute({
+      type: 'removeItemMembership',
+      payload: { attachmentKey: 'K1', collectionKey: 'CAN' },
+    });
+    const rec = store.getByLocalPath('Projects/p.pdf');
+    expect(rec.collectionMembershipKeys).toEqual([]);
+    expect(rec.canonicalCollectionKey).toBe(null);
+    // The whole library is in scope — the item is now Unfiled, not suppressed.
+    expect(rec.state).toBe(STATE.CLEAN);
+  });
+});
+
 // ─── UT-416 (Track A #3 — moveItem stale oldCanonicalPath race) ───────────
 
 describe('UT-416: _moveItem reads live canonicalLocalPath after stale payload', () => {
