@@ -26,6 +26,8 @@ pref("extensions.zotero.watchFolder.mode", "mode1");  // "mode1" | "mode2" | "mo
 pref("extensions.zotero.watchFolder.setupCompleted", false);  // Gates whether the normal poll loop runs; setup wizard runs until true.
 pref("extensions.zotero.watchFolder.localTrashFolderName", ".zotero-watch-trash");  // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
 pref("extensions.zotero.watchFolder.baselineCompletedForRoot", "");  // v2.1 Phase C: sync-root key the install-time baseline has completed against. Empty = not yet run.
+pref("extensions.zotero.watchFolder.watchRootTopLevelFingerprint", "");  // v2.7 SYNC-1: JSON {count, namesHash} of top-level dirs at last healthy scan. A >50% collapse vs this fingerprint pauses the folder-deletion pass (transient unmount / cloud-eviction guard). Empty = not yet bootstrapped.
+pref("extensions.zotero.watchFolder.mode3LibraryDeleteAcknowledged", false);  // v2.7: set true after the one-time first-arm dialog warning that Mode-3 deletes at library scope have whole-library blast radius. Until then, the first propagated deletion under scopeMode 'library' prompts.
 
 // File naming settings
 pref("extensions.zotero.watchFolder.renamePattern", "{firstCreator} - {year} - {title}");

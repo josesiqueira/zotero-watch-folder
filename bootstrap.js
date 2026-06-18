@@ -115,6 +115,8 @@ function _initDefaultPrefs() {
   _set("setupCompleted",         false);   // Gates whether the normal poll loop runs; setup wizard runs until true.
   _set("localTrashFolderName",   ".zotero-watch-trash"); // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
   _set("baselineCompletedForRoot", "");    // v2.1 Phase C: stores the sync-root key the install-time baseline has completed against. Empty = baseline not yet run (or sync root changed).
+  _set("watchRootTopLevelFingerprint", ""); // v2.7 SYNC-1: JSON {count, namesHash} of top-level dirs at last healthy scan; a >50% collapse pauses folder-deletion (transient unmount / cloud-eviction guard).
+  _set("mode3LibraryDeleteAcknowledged", false); // v2.7: true after the one-time first-arm whole-library-delete-blast-radius dialog.
 
   // File naming settings
   _set("renamePattern",          "{firstCreator} - {year} - {title}");
