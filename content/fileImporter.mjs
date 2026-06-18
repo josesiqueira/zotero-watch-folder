@@ -11,7 +11,7 @@
  */
 
 import { getPref } from './utils.mjs';
-import { resolveSyncRoot, relativePathToCollection } from './canonicalPath.mjs';
+import { resolveSyncRoot, relativePathToCollection, UNFILED } from './canonicalPath.mjs';
 import { getStorageStrategy, STRATEGY } from './storageStrategy.mjs';
 
 /**
@@ -27,6 +27,10 @@ import { getStorageStrategy, STRATEGY } from './storageStrategy.mjs';
  * @param {string} [options.storageStrategy] - Override the PDF storage
  *   strategy ('stored' | 'linked_watch_folder' | 'stored_plus_mirror').
  *   Defaults to the configured `pdfStorageStrategy` pref.
+ * @param {boolean} [options.unfiled] - Library scope only: import the file as
+ *   an Unfiled item (no collection membership). Also triggered when
+ *   `options.collection` is the UNFILED sentinel (a root drop under the watch
+ *   folder in scopeMode 'library').
  * @returns {Promise<Zotero.Item>} The created attachment item.
  */
 export async function importFile(filePath, options = {}) {
@@ -48,9 +52,23 @@ export async function importFile(filePath, options = {}) {
   // 2. Resolve target collection. Caller normally passes one; if not, fall
   //    back to the configured sync root so we never silently drop files
   //    into library root (which is dangerous per spec Rule 4).
+  //
+  //    Library scope (scopeMode 'library'): a root drop has no collection —
+  //    `options.unfiled` (or the UNFILED sentinel as `collection`) means import
+  //    with NO collection membership, landing the item in Zotero's Unfiled
+  //    view. This is intentional here (unlike collection scope, where an empty
+  //    collection list would mean library-root) — the whole library is in
+  //    scope, so Unfiled is a valid in-scope destination.
   let collection = options.collection;
   let libraryID = options.libraryID;
-  if (!collection) {
+  const unfiled = options.unfiled === true || collection === UNFILED;
+  if (unfiled) {
+    collection = null;
+    if (libraryID == null) {
+      const syncRoot = await resolveSyncRoot().catch(() => null);
+      libraryID = syncRoot?.libraryID;
+    }
+  } else if (!collection) {
     const syncRoot = await resolveSyncRoot();
     if (syncRoot) {
       collection = syncRoot.collection;

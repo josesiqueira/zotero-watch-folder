@@ -21,6 +21,7 @@ import {
   relativePathToCollection,
   collectionKeyToRelativePath,
   SyncRootMissingError,
+  UNFILED,
 } from './canonicalPath.mjs';
 import {
   classifyMissingFile,
@@ -524,13 +525,17 @@ export class WatchFolderService {
         Zotero.debug(`[WatchFolder] Sync root not configured — skipping import of ${filePath}`);
         return;
       }
-      const canonicalCollectionKey = targetCollection.key;
+      // Library scope: a root drop resolves to the UNFILED sentinel — the file
+      // becomes an Unfiled Zotero item (no collection membership). canonical
+      // collection key is null; downstream membership list is empty.
+      const isUnfiled = targetCollection === UNFILED;
+      const canonicalCollectionKey = isUnfiled ? null : targetCollection.key;
 
       // Ensure a `collection` tracking record exists for every Zotero
       // subcollection between sync root and the target. Without these
       // records, B2 folder-rename detection has nothing to compare
-      // against on subsequent scans.
-      if (this._trackingStore && relativeDir !== '') {
+      // against on subsequent scans. (Unfiled has no path → nothing to ensure.)
+      if (this._trackingStore && relativeDir !== '' && !isUnfiled) {
         const watchPath = getPref('sourcePath') || '';
         await this._ensureCollectionRecordsForPath(relativeDir, targetCollection, watchPath);
       }
@@ -749,7 +754,7 @@ export class WatchFolderService {
                     zoteroItemKey: parentKey,
                     zoteroAttachmentKey: attachment.key,
                     canonicalCollectionKey,
-                    collectionMembershipKeys: [canonicalCollectionKey],
+                    collectionMembershipKeys: canonicalCollectionKey ? [canonicalCollectionKey] : [],
                     state: STATE.CLEAN,
                   }));
                   await this._trackingStore.save();
@@ -772,8 +777,11 @@ export class WatchFolderService {
         }
       }
 
-      // Step 4: Import via fileImporter (Collection object, not name).
-      const item = await importFile(filePath, { collection: targetCollection });
+      // Step 4: Import via fileImporter (Collection object, not name). An
+      // UNFILED root drop (library scope) imports with no collection membership.
+      const item = isUnfiled
+        ? await importFile(filePath, { collection: null, unfiled: true })
+        : await importFile(filePath, { collection: targetCollection });
       if (!item || !item.key) {
         Zotero.debug(`[WatchFolder] Import failed for: ${filePath}`);
         return;
@@ -815,7 +823,7 @@ export class WatchFolderService {
           zoteroItemKey: item.parentItem?.key ?? attachmentKey,
           zoteroAttachmentKey: attachmentKey,
           canonicalCollectionKey,
-          collectionMembershipKeys: [canonicalCollectionKey],
+          collectionMembershipKeys: canonicalCollectionKey ? [canonicalCollectionKey] : [],
           state: wasDeleted ? STATE.MISSING : STATE.CLEAN,
         }));
         await this._trackingStore.save();

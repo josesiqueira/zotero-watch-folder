@@ -35,6 +35,7 @@ vi.mock('../../content/utils.mjs', () => ({
 vi.mock('../../content/canonicalPath.mjs', () => ({
   resolveSyncRoot: vi.fn(async () => null),
   relativePathToCollection: vi.fn(async () => null),
+  UNFILED: Object.freeze({ isUnfiled: true }),
 }));
 
 // ─── UT-053 ──────────────────────────────────────────────────────────────────
@@ -343,6 +344,47 @@ describe('UT-059: importFile — stored vs linked import modes (v2 API: collecti
       collections: [99],
     });
     expect(globalThis.Zotero.Attachments.importFromFile).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-061 ──────────────────────────────────────────────────────────────────
+
+describe('UT-061: importFile — library-scope Unfiled import (root drop)', () => {
+  let getPrefMock;
+  let importFile;
+  let UNFILED;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    getPrefMock = utils.getPref;
+    getPrefMock.mockImplementation((k) => k === 'pdfStorageStrategy' ? 'stored' : undefined);
+    const cp = await import('../../content/canonicalPath.mjs');
+    UNFILED = cp.UNFILED;
+    const mod = await import('../../content/fileImporter.mjs');
+    importFile = mod.importFile;
+
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+    globalThis.Zotero.Attachments.importFromFile = vi.fn(async () => ({ id: 2001 }));
+    globalThis.Zotero.Attachments.linkFromFile = vi.fn(async () => ({ id: 2002 }));
+  });
+
+  it('unfiled:true imports with NO collection membership (collections: [])', async () => {
+    const item = await importFile('/watch/loose.pdf', { unfiled: true, libraryID: 1 });
+    expect(item).toEqual({ id: 2001 });
+    expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledWith({
+      file: '/watch/loose.pdf',
+      libraryID: 1,
+      collections: [],
+    });
+  });
+
+  it('the UNFILED sentinel as `collection` is treated as an unfiled import', async () => {
+    await importFile('/watch/loose.pdf', { collection: UNFILED, libraryID: 1 });
+    expect(globalThis.Zotero.Attachments.importFromFile).toHaveBeenCalledWith(
+      expect.objectContaining({ collections: [] }),
+    );
   });
 });
 

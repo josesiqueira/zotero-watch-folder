@@ -45,6 +45,7 @@ vi.mock('../../content/canonicalPath.mjs', () => ({
   SyncRootMissingError: class SyncRootMissingError extends Error {
     constructor(m) { super(m); this.name = 'SyncRootMissingError'; }
   },
+  UNFILED: Object.freeze({ isUnfiled: true }),
 }));
 
 vi.mock('../../content/fileMissing.mjs', () => {
@@ -2428,6 +2429,89 @@ describe('UT-095: RST.5 re-attach under living parent', () => {
 
     expect(globalThis.Zotero.Attachments.importFromFile).not.toHaveBeenCalled();
     expect(store.removeTombstoneByAttachmentKey).toHaveBeenCalledWith('ATT_GONE');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-062: library scope — a root drop ('' relative dir) resolves to the UNFILED
+// sentinel and imports as an Unfiled item (no collection membership). The
+// FileRecord carries a null canonicalCollectionKey and an empty membership list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-062: _processNewFile — library-scope root drop → Unfiled item', () => {
+  let service;
+  let store;
+  let canonicalPath;
+  let fileImporterMod;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'pdfStorageStrategy') return 'stored';
+      if (k === 'duplicateCheck') return false; // skip the Extra-field dedup path
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('HASH_LOOSE');
+
+    canonicalPath = await import('../../content/canonicalPath.mjs');
+    canonicalPath.resolveSyncRoot.mockResolvedValue({
+      collection: null, libraryID: 1, isLibraryRoot: true,
+    });
+    // Library scope: a root drop ('') resolves to the UNFILED sentinel.
+    canonicalPath.relativePathToCollection.mockResolvedValue(canonicalPath.UNFILED);
+
+    fileImporterMod = await import('../../content/fileImporter.mjs');
+    fileImporterMod.importFile.mockResolvedValue({ id: 7, key: 'LOOSEATT', parentItem: undefined });
+    fileImporterMod.handlePostImportAction.mockResolvedValue({ action: 'leave', finalPath: '/watch/loose.pdf' });
+
+    const watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+    service._waitForFileStable = vi.fn(async () => true);
+    service._toRelativeForStore = (p) => p.replace(/^\/watch\//, '');
+
+    const files = [];
+    store = {
+      _files: files,
+      findByHash: vi.fn(() => null),
+      findTombstoneByHash: vi.fn(() => null),
+      add: vi.fn((r) => { if (r.type === 'file') files.push(r); }),
+      hasPath: vi.fn(() => false),
+      save: vi.fn(async () => {}),
+      flush: vi.fn(async () => {}),
+      getAllOfType: vi.fn(() => []),
+      getByAttachmentKey: vi.fn(() => null),
+      getByLocalPath: vi.fn(() => null),
+      update: vi.fn(),
+      remove: vi.fn(() => true),
+    };
+    service._trackingStore = store;
+
+    globalThis.IOUtils.stat = vi.fn(async () => ({ size: 100, lastModified: 1 }));
+    globalThis.IOUtils.exists = vi.fn(async () => true);
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+  });
+
+  it('imports with unfiled:true and no collection', async () => {
+    await service._processNewFile('/watch/loose.pdf', '');
+    expect(fileImporterMod.importFile).toHaveBeenCalledWith(
+      '/watch/loose.pdf',
+      expect.objectContaining({ collection: null, unfiled: true }),
+    );
+  });
+
+  it('adds a FileRecord with null canonicalCollectionKey and empty membership', async () => {
+    await service._processNewFile('/watch/loose.pdf', '');
+    const added = store.add.mock.calls.find(c => c[0]?.type === 'file' || c[0]?.zoteroAttachmentKey === 'LOOSEATT');
+    expect(added).toBeDefined();
+    expect(added[0]).toMatchObject({
+      localPath: 'loose.pdf',
+      zoteroAttachmentKey: 'LOOSEATT',
+      canonicalCollectionKey: null,
+      collectionMembershipKeys: [],
+      state: 'clean',
+    });
   });
 });
 
