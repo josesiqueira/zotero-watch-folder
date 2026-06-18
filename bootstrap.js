@@ -25,6 +25,16 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   // has opened the pref pane (prefs.js at XPI root is not auto-loaded).
   _initDefaultPrefs();
 
+  // v2.7 migration: the scopeMode default flipped to 'library' (whole-library
+  // mirror). An existing collection-scoped install has NO user-branch scopeMode
+  // value, so it would silently read the new default and ESCALATE its delete
+  // blast radius from one sync-root subtree to the entire library — exactly the
+  // catastrophe the whole safety layer guards against. Pin such installs to
+  // 'collection' on the USER branch so the upgrade NEVER changes their behavior.
+  // New installs (no configured sync root yet) are untouched and get 'library'.
+  // The pref-pane / wizard surfaces the opt-in switch to whole-library mode.
+  _migrateScopeModeForExistingInstall();
+
   // Load the esbuild bundle into the Zotero global scope.
   // rootURI already ends with "/", so do NOT add another slash.
   const ctx = { rootURI };
@@ -108,7 +118,7 @@ function _initDefaultPrefs() {
   _set("diskDeleteSync",         "auto"); // "auto" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
 
   // v2.0 sync model — sync root + mode
-  _set("scopeMode",             "collection"); // 'collection' (single sync-root) | 'library' (whole-library mirror). Flips to 'library' when 2.7.0 lands.
+  _set("scopeMode",             "library"); // 'library' (whole-library mirror, default since 2.7.0) | 'collection' (legacy single sync-root, internal fallback).
   _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured. Used only in scopeMode 'collection'.
   _set("syncRootLibraryID",      1);       // Default = user library. Forward-compat for group libraries.
   _set("mode",                   "mode1"); // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
@@ -139,4 +149,32 @@ function _initDefaultPrefs() {
   // Performance
   _set("adaptivePolling",        true);
   _set("maxConcurrentMetadata",  2);
+}
+
+// ---------------------------------------------------------------------------
+// v2.7 scopeMode migration. The default flipped to 'library'; this pins an
+// EXISTING collection-scoped install to 'collection' on the user branch so the
+// upgrade is behavior-preserving (no silent blast-radius escalation). Idempotent
+// and conservative: only acts when it's confident the install pre-dates 2.7.0.
+// ---------------------------------------------------------------------------
+function _migrateScopeModeForExistingInstall() {
+  try {
+    const PREFIX = "extensions.zotero.watchFolder.";
+    const user = Services.prefs.getBranch(PREFIX);
+    // Already has an explicit scopeMode choice → nothing to migrate.
+    if (user.prefHasUserValue("scopeMode")) return;
+    // Signature of a pre-2.7.0 configured install: it completed setup AND it
+    // has a sync-root collection key on the user branch. A fresh 2.7.0 install
+    // has neither, so it is left on the new 'library' default.
+    const hadSetup = user.prefHasUserValue("setupCompleted") && user.getBoolPref("setupCompleted", false);
+    const hadSyncRoot = user.prefHasUserValue("syncRootCollectionKey")
+      && (user.getCharPref("syncRootCollectionKey", "") || "").length > 0;
+    if (hadSetup && hadSyncRoot) {
+      user.setCharPref("scopeMode", "collection");
+      try { Zotero.debug("[WatchFolder] v2.7 migration: pinned existing install to scopeMode 'collection' (behavior-preserving; whole-library mode is opt-in via setup)."); }
+      catch (_e) { /* Zotero may not be ready */ }
+    }
+  } catch (e) {
+    try { Zotero.logError(`[WatchFolder] v2.7 scopeMode migration failed (leaving prefs as-is): ${e}`); } catch (_e) { /* */ }
+  }
 }
