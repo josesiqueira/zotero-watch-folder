@@ -49,6 +49,7 @@ import {
   collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   isSpecialCollection,
+  UNFILED,
 } from '../../content/canonicalPath.mjs';
 import { scanFolderRecursive } from '../../content/fileScanner.mjs';
 import * as hashCache from '../../content/_hashCache.mjs';
@@ -568,5 +569,80 @@ describe('UT-911: special collections are skipped during enumeration', () => {
 
     expect(result.mkdirs).toBe(1); // only SUB1, not TRSH
     expect(store.getCollectionRecord('TRSH')).toBe(null);
+  });
+});
+
+// ─── UT-912: whole-library baseline (scopeMode 'library') ───────────────────
+
+describe('UT-912: whole-library baseline (library scope)', () => {
+  const LIB_ROOT = { collection: null, libraryID: 1, isLibraryRoot: true };
+
+  beforeEach(() => {
+    resolveSyncRoot.mockResolvedValue(LIB_ROOT);
+    Zotero.Collections.getByLibrary = vi.fn(() => []);
+    Zotero.Items.getAll = vi.fn(async () => []);
+  });
+
+  it('idempotency key is __library__:<libraryID>, not a collection key', async () => {
+    prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: '__library__:1' });
+    const result = await runBaseline({ trackingStore: await makeStore() });
+    expect(result).toMatchObject({ baselineRan: false, skipped: 'already-completed' });
+  });
+
+  it('isBaselineNeeded is true when the stored key is a stale collection key', async () => {
+    prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: 'ROOT1' });
+    expect(await isBaselineNeeded()).toBe(true);
+  });
+
+  it('mkdirs every non-special collection in the library (top-level + nested)', async () => {
+    prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: '' });
+    Zotero.Collections.getByLibrary = vi.fn(() => [
+      { id: 10, key: 'PROJ', name: 'Projects', libraryID: 1, parentID: null },
+      { id: 11, key: 'SUB',  name: 'Alpha',    libraryID: 1, parentID: 10 },
+    ]);
+    collectionKeyToDiskRelativePath.mockImplementation(async (k) =>
+      k === 'PROJ' ? 'Projects' : k === 'SUB' ? 'Projects/Alpha' : '');
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+    expect(result.mkdirs).toBe(2);
+    expect(store.getCollectionRecord('PROJ')).not.toBe(null);
+    expect(store.getCollectionRecord('SUB')).not.toBe(null);
+  });
+
+  it('copies an Unfiled item (UNFILED canonical) to the watch-folder root', async () => {
+    prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: '' });
+    const attachment = {
+      key: 'ATTUNF', attachmentFilename: 'loose.pdf', parentItemID: 0,
+      isAttachment: () => true,
+      getFilePathAsync: async () => '/zotero/storage/ATTUNF/loose.pdf',
+      getCollections: () => [],
+    };
+    Zotero.Items.getAll = vi.fn(async () => [attachment]);
+    // Unfiled item → UNFILED canonical (no collection).
+    chooseCanonicalCollection.mockResolvedValue(UNFILED);
+    IOUtils.exists = vi.fn(async (p) =>
+      p === '/zotero/storage/ATTUNF/loose.pdf'); // src exists, dest doesn't
+
+    const store = await makeStore();
+    const result = await runBaseline({ trackingStore: store });
+
+    expect(result.copies).toBe(1);
+    // Copied to the root: dest path is <watch>/loose.pdf (no subfolder).
+    expect(IOUtils.copy).toHaveBeenCalledWith(
+      '/zotero/storage/ATTUNF/loose.pdf',
+      '/watch/loose.pdf',
+    );
+    const rec = store.getByAttachmentKey('ATTUNF');
+    expect(rec).toMatchObject({
+      localPath: 'loose.pdf',
+      canonicalCollectionKey: null,
+      state: STATE.CLEAN,
+    });
+  });
+
+  it('marks complete with the library key', async () => {
+    prefStubs({ sourcePath: '/watch', baselineCompletedForRoot: '' });
+    await runBaseline({ trackingStore: await makeStore() });
+    expect(setPref).toHaveBeenCalledWith('baselineCompletedForRoot', '__library__:1');
   });
 });
