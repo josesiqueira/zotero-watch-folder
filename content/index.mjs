@@ -129,6 +129,7 @@ export async function runSetupWizard(window) {
         const committed = await _commitWizardResult({
             window,
             watchFolder: xhtmlResult.watchFolder,
+            scopeMode: xhtmlResult.scopeMode,
             syncRootKey: xhtmlResult.syncRootKey,
             syncRootLibraryID: xhtmlResult.syncRootLibraryID,
             modeKey: xhtmlResult.mode,
@@ -206,6 +207,7 @@ export async function runSetupWizard(window) {
     const committed = await _commitWizardResult({
         window,
         watchFolder,
+        scopeMode: "library",
         syncRootKey: syncRootChoice.key,
         syncRootLibraryID: syncRootChoice.libraryID,
         modeKey: modeChoice.key,
@@ -298,7 +300,7 @@ async function _runSetupWizardXHTML(parentWindow) {
  * @returns {Promise<boolean>} true if committed, false if blocked.
  * @private
  */
-async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy }) {
+async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy, scopeMode }) {
     const dataDir = Zotero?.DataDirectory?.dir;
     const unsafeReason = isWatchRootUnsafe(watchFolder, dataDir);
     if (unsafeReason) {
@@ -310,9 +312,15 @@ async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootL
         } catch (_) {}
         return false;
     }
+    // v2.7: new setups are whole-library by default. scopeMode 'library' ignores
+    // syncRootCollectionKey, but we still persist any picked key (harmless, and
+    // it lets a user fall back to collection scope via about:config without
+    // re-picking). The collection picker is informational in library mode.
+    const effectiveScope = scopeMode === 'collection' ? 'collection' : 'library';
     setPref("sourcePath", watchFolder);
-    setPref("syncRootCollectionKey", syncRootKey);
-    setPref("syncRootLibraryID", syncRootLibraryID);
+    setPref("scopeMode", effectiveScope);
+    setPref("syncRootCollectionKey", syncRootKey || "");
+    if (typeof syncRootLibraryID === 'number') setPref("syncRootLibraryID", syncRootLibraryID);
     setPref("mode", modeKey);
     if (storageStrategy === 'stored' || storageStrategy === 'linked_watch_folder' || storageStrategy === 'stored_plus_mirror') {
         setPref("pdfStorageStrategy", storageStrategy);
@@ -325,7 +333,7 @@ async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootL
     } catch (e) {
         Zotero.logError(`[WatchFolder] runSetupWizard: failed to start services - ${e.message}`);
     }
-    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} root=${syncRootKey} label=${syncRootLabel} mode=${modeKey}/${modeLabel})`);
+    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} scope=${effectiveScope} root=${syncRootKey || '(library)'} label=${syncRootLabel} mode=${modeKey}/${modeLabel})`);
     return true;
 }
 
@@ -469,10 +477,13 @@ function _displayPath(collection) {
  */
 async function maybeShowFirstRunNudge(window) {
     if (getPref("setupCompleted") === true) return;
-    // Sync root already picked but `setupCompleted` somehow unset?
-    // Absorb the case (manual about:config setup) without nagging.
+    // Already configured but `setupCompleted` somehow unset? Absorb the case
+    // (manual about:config setup) without nagging. Collection scope is
+    // "configured" once a sync root is picked; library scope (v2.7) is
+    // configured once a watch folder is set (no sync root to pick).
     const syncRootKey = getPref("syncRootCollectionKey");
-    if (syncRootKey) {
+    const libraryScopeConfigured = getPref("scopeMode") === 'library' && !!getPref("sourcePath");
+    if (syncRootKey || libraryScopeConfigured) {
         setPref("setupCompleted", true);
         return;
     }

@@ -25,6 +25,16 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   // has opened the pref pane (prefs.js at XPI root is not auto-loaded).
   _initDefaultPrefs();
 
+  // v2.7 migration: the scopeMode default flipped to 'library' (whole-library
+  // mirror). An existing collection-scoped install has NO user-branch scopeMode
+  // value, so it would silently read the new default and ESCALATE its delete
+  // blast radius from one sync-root subtree to the entire library — exactly the
+  // catastrophe the whole safety layer guards against. Pin such installs to
+  // 'collection' on the USER branch so the upgrade NEVER changes their behavior.
+  // New installs (no configured sync root yet) are untouched and get 'library'.
+  // The pref-pane / wizard surfaces the opt-in switch to whole-library mode.
+  _migrateScopeModeForExistingInstall();
+
   // Load the esbuild bundle into the Zotero global scope.
   // rootURI already ends with "/", so do NOT add another slash.
   const ctx = { rootURI };
@@ -108,12 +118,15 @@ function _initDefaultPrefs() {
   _set("diskDeleteSync",         "auto"); // "auto" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
 
   // v2.0 sync model — sync root + mode
-  _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured.
+  _set("scopeMode",             "library"); // 'library' (whole-library mirror, default since 2.7.0) | 'collection' (legacy single sync-root, internal fallback).
+  _set("syncRootCollectionKey",  "");      // 8-char Zotero collection key. Empty = not yet configured. Used only in scopeMode 'collection'.
   _set("syncRootLibraryID",      1);       // Default = user library. Forward-compat for group libraries.
   _set("mode",                   "mode1"); // "mode1" | "mode2" | "mode3". Only mode1 is functional in v2.0.
   _set("setupCompleted",         false);   // Gates whether the normal poll loop runs; setup wizard runs until true.
   _set("localTrashFolderName",   ".zotero-watch-trash"); // Reserved for v2.2; defined now so it can be referenced from scanner skip-list.
   _set("baselineCompletedForRoot", "");    // v2.1 Phase C: stores the sync-root key the install-time baseline has completed against. Empty = baseline not yet run (or sync root changed).
+  _set("watchRootTopLevelFingerprint", ""); // v2.7 SYNC-1: JSON {count, namesHash} of top-level dirs at last healthy scan; a >50% collapse pauses folder-deletion (transient unmount / cloud-eviction guard).
+  _set("mode3LibraryDeleteAcknowledged", false); // v2.7: true after the one-time first-arm whole-library-delete-blast-radius dialog.
 
   // File naming settings
   _set("renamePattern",          "{firstCreator} - {year} - {title}");
@@ -136,4 +149,56 @@ function _initDefaultPrefs() {
   // Performance
   _set("adaptivePolling",        true);
   _set("maxConcurrentMetadata",  2);
+}
+
+// ---------------------------------------------------------------------------
+// v2.7 scopeMode migration. The default flipped to 'library'; this pins an
+// EXISTING collection-scoped install to 'collection' on the user branch so the
+// upgrade is behavior-preserving (no silent blast-radius escalation). Idempotent
+// and conservative: only acts when it's confident the install pre-dates 2.7.0.
+// ---------------------------------------------------------------------------
+function _migrateScopeModeForExistingInstall() {
+  const PREFIX = "extensions.zotero.watchFolder.";
+  let user = null;
+  try {
+    user = Services.prefs.getBranch(PREFIX);
+    // Already has an explicit scopeMode choice → nothing to migrate.
+    if (user.prefHasUserValue("scopeMode")) return;
+    // Signature of a pre-2.7.0 configured install: it has a sync-root collection
+    // key on the user branch (the wizard/prefs always co-set setupCompleted, but
+    // an about:config-only user may have set the key + sourcePath alone — so the
+    // sync-root key is the load-bearing signal). A fresh 2.7.0 install has none,
+    // so it is left on the new 'library' default.
+    //
+    // getBoolPref throws if a pref was hand-edited to the wrong type; isolate it
+    // so a corrupt setupCompleted can't abort the whole migration (M5).
+    let hadSetup = false;
+    try {
+      hadSetup = user.prefHasUserValue("setupCompleted") && user.getBoolPref("setupCompleted", false);
+    } catch (_e) { hadSetup = false; }
+    let syncRootKey = "";
+    try {
+      if (user.prefHasUserValue("syncRootCollectionKey")) syncRootKey = user.getCharPref("syncRootCollectionKey", "") || "";
+    } catch (_e) { syncRootKey = ""; }
+    let sourcePath = "";
+    try {
+      if (user.prefHasUserValue("sourcePath")) sourcePath = user.getCharPref("sourcePath", "") || "";
+    } catch (_e) { sourcePath = ""; }
+    // Pin to 'collection' if EITHER the wizard/prefs signature (setup + key) OR a
+    // hand-configured install (key + a watch folder) is present (M11).
+    const looksPreV27 = (hadSetup && syncRootKey.length > 0) || (syncRootKey.length > 0 && sourcePath.length > 0);
+    if (looksPreV27) {
+      user.setCharPref("scopeMode", "collection");
+      try { Zotero.debug("[WatchFolder] v2.7 migration: pinned existing install to scopeMode 'collection' (behavior-preserving; whole-library mode is opt-in via setup)."); }
+      catch (_e) { /* Zotero may not be ready */ }
+    }
+  } catch (e) {
+    // FAIL CLOSED (M1): the new default is 'library' (whole-library deletes), so
+    // leaving prefs "as-is" on an error would silently escalate an existing
+    // install's blast radius. Pin to the SAFE 'collection' value instead — a
+    // false pin only means a real fresh install must opt in via setup, which is
+    // strictly safer than an accidental whole-library escalation.
+    try { user = user || Services.prefs.getBranch(PREFIX); user.setCharPref("scopeMode", "collection"); } catch (_e) { /* */ }
+    try { Zotero.logError(`[WatchFolder] v2.7 scopeMode migration error — pinned to 'collection' (fail-safe): ${e}`); } catch (_e) { /* */ }
+  }
 }

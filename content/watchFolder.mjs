@@ -13,7 +13,7 @@ import { renameAttachment } from './fileRenamer.mjs';
 import { processItemWithRules } from './smartRules.mjs';
 import { checkForDuplicate, getDuplicateDetector } from './duplicateDetector.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
-import { isBulkDelete, confirmBulkDelete } from './bulkGuard.mjs';
+import { isBulkDelete, confirmBulkDelete, confirmFirstLibraryDelete } from './bulkGuard.mjs';
 import { canSafelyMove, canSafelyTrashZoteroAttachment } from './mirrorExecutor.mjs';
 import { getStorageStrategy, STRATEGY } from './storageStrategy.mjs';
 import {
@@ -21,6 +21,8 @@ import {
   relativePathToCollection,
   collectionKeyToRelativePath,
   SyncRootMissingError,
+  UNFILED,
+  getScopeMode,
 } from './canonicalPath.mjs';
 import {
   classifyMissingFile,
@@ -524,13 +526,17 @@ export class WatchFolderService {
         Zotero.debug(`[WatchFolder] Sync root not configured — skipping import of ${filePath}`);
         return;
       }
-      const canonicalCollectionKey = targetCollection.key;
+      // Library scope: a root drop resolves to the UNFILED sentinel — the file
+      // becomes an Unfiled Zotero item (no collection membership). canonical
+      // collection key is null; downstream membership list is empty.
+      const isUnfiled = targetCollection === UNFILED;
+      const canonicalCollectionKey = isUnfiled ? null : targetCollection.key;
 
       // Ensure a `collection` tracking record exists for every Zotero
       // subcollection between sync root and the target. Without these
       // records, B2 folder-rename detection has nothing to compare
-      // against on subsequent scans.
-      if (this._trackingStore && relativeDir !== '') {
+      // against on subsequent scans. (Unfiled has no path → nothing to ensure.)
+      if (this._trackingStore && relativeDir !== '' && !isUnfiled) {
         const watchPath = getPref('sourcePath') || '';
         await this._ensureCollectionRecordsForPath(relativeDir, targetCollection, watchPath);
       }
@@ -749,7 +755,7 @@ export class WatchFolderService {
                     zoteroItemKey: parentKey,
                     zoteroAttachmentKey: attachment.key,
                     canonicalCollectionKey,
-                    collectionMembershipKeys: [canonicalCollectionKey],
+                    collectionMembershipKeys: canonicalCollectionKey ? [canonicalCollectionKey] : [],
                     state: STATE.CLEAN,
                   }));
                   await this._trackingStore.save();
@@ -772,8 +778,11 @@ export class WatchFolderService {
         }
       }
 
-      // Step 4: Import via fileImporter (Collection object, not name).
-      const item = await importFile(filePath, { collection: targetCollection });
+      // Step 4: Import via fileImporter (Collection object, not name). An
+      // UNFILED root drop (library scope) imports with no collection membership.
+      const item = isUnfiled
+        ? await importFile(filePath, { collection: null, unfiled: true })
+        : await importFile(filePath, { collection: targetCollection });
       if (!item || !item.key) {
         Zotero.debug(`[WatchFolder] Import failed for: ${filePath}`);
         return;
@@ -815,7 +824,7 @@ export class WatchFolderService {
           zoteroItemKey: item.parentItem?.key ?? attachmentKey,
           zoteroAttachmentKey: attachmentKey,
           canonicalCollectionKey,
-          collectionMembershipKeys: [canonicalCollectionKey],
+          collectionMembershipKeys: canonicalCollectionKey ? [canonicalCollectionKey] : [],
           state: wasDeleted ? STATE.MISSING : STATE.CLEAN,
         }));
         await this._trackingStore.save();
@@ -1725,6 +1734,16 @@ export class WatchFolderService {
     // shares / external drives where the OS trash isn't reachable.
     const deletable = plans.filter(p => p.canonicalDiskPath);
 
+    // First-arm whole-library-delete gate (library scope): the FIRST time a
+    // Mode-3 deletion would touch disk while the whole library is the scope,
+    // require the one-time blast-radius acknowledgement. Fail-closed (no UI →
+    // refuse). Independent of the per-batch bulk prompt below, which only fires
+    // above the bulk threshold and so misses single/sub-threshold deletions.
+    if (deletable.length > 0 && !(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+      Zotero.debug(`[WatchFolder] _handleZoteroTrash: ${deletable.length} disk-trash(es) blocked — library-scale deletion not acknowledged`);
+      return;
+    }
+
     // Bulk-delete guard: when a single Zotero-trash event covers >10
     // files (or >20% of the tracked tree), prompt before any disk
     // mutation. Counts canonical files only — shadows are dropped
@@ -2399,6 +2418,19 @@ export class WatchFolderService {
     // Mode 3 — safe-delete propagation (v2.2).
     Zotero.debug(`[WatchFolder] Detected ${stillMissing.length} externally-deleted file(s) (mode=${mode})`);
 
+    // First-arm whole-library-delete gate (library scope): require the one-time
+    // blast-radius acknowledgement before propagating ANY external deletion to
+    // Zotero. Fail-closed (no UI → refuse). Below it, the per-batch bulk prompt
+    // only fires above the threshold, so this covers single/sub-threshold cases.
+    if (stillMissing.length > 0 && !(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+      for (const record of stillMissing) {
+        this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+      }
+      try { await this._trackingStore.save(); } catch (_) {}
+      Zotero.debug(`[WatchFolder] _handleExternalDeletions: ${stillMissing.length} propagation(s) blocked — library-scale deletion not acknowledged; marked missing instead`);
+      return;
+    }
+
     // Bulk-delete guard: if a single scan cycle detected many missing
     // files, prompt before propagating any of them to Zotero. Common
     // trigger: the user moved a big folder OUT of the watch root in
@@ -2551,6 +2583,12 @@ export class WatchFolderService {
           if (oldRel !== newRel && newRel != null) {
             // Resolve / create the new auto-mapped collection under the sync root.
             const newCollection = await relativePathToCollection(newRel, { createIfMissing: true });
+            // Library scope: a move UP TO THE ROOT yields newRel '' →
+            // relativePathToCollection returns the truthy UNFILED sentinel (no
+            // .id/.key). That means "make the item Unfiled": drop the old
+            // auto-mapped membership and add NOTHING. Dereferencing it as a real
+            // collection would call addToCollection(undefined) (F2).
+            const newIsUnfiled = newCollection === UNFILED;
             if (newCollection) {
               // Remove from the OLD auto-mapped collection if currently a
               // member; preserve manually-added collection memberships.
@@ -2558,10 +2596,10 @@ export class WatchFolderService {
                 ? await relativePathToCollection(oldRel, { createIfMissing: false }).catch(() => null)
                 : null;
               const currentColIDs = item.getCollections ? item.getCollections() : [];
-              if (oldCollection && currentColIDs.includes(oldCollection.id)) {
+              if (oldCollection && oldCollection !== UNFILED && currentColIDs.includes(oldCollection.id)) {
                 item.removeFromCollection(oldCollection.id);
               }
-              if (!currentColIDs.includes(newCollection.id)) {
+              if (!newIsUnfiled && !currentColIDs.includes(newCollection.id)) {
                 item.addToCollection(newCollection.id);
               }
               await item.saveTx();
@@ -2576,10 +2614,20 @@ export class WatchFolderService {
       // re-add at the new path with the updated canonical bits.
       // localPath persisted in sync-root-relative form (#25 migration).
       try {
-        const newCanonicalCollectionKey = (newRel != null)
-          ? (await relativePathToCollection(newRel, { createIfMissing: false }).catch(() => null))?.key
-            ?? record.canonicalCollectionKey
-          : record.canonicalCollectionKey;
+        let newCanonicalCollectionKey;
+        if (newRel == null) {
+          newCanonicalCollectionKey = record.canonicalCollectionKey;
+        } else {
+          const resolved = await relativePathToCollection(newRel, { createIfMissing: false }).catch(() => null);
+          // Library scope: UNFILED (move to root) → canonical key is null
+          // (Unfiled), NOT a fallback to the stale old key. null/unresolved with
+          // a non-root path → keep the prior key (transient resolve miss).
+          if (resolved === UNFILED) {
+            newCanonicalCollectionKey = null;
+          } else {
+            newCanonicalCollectionKey = resolved?.key ?? record.canonicalCollectionKey;
+          }
+        }
         const newRelLocal = this._toRelativeForStore(newPath, watchPath);
         this._trackingStore.remove(record.localPath);
         this._trackingStore.add(createFileRecord({

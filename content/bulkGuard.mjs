@@ -19,8 +19,15 @@
  * @module bulkGuard
  */
 
+import { getPref, setPref } from './utils.mjs';
+
 const BULK_FILE_THRESHOLD = 10;
 const BULK_PERCENT_THRESHOLD = 0.20;
+// v2.7 library scale: the 20% relative threshold goes dormant when totalTracked
+// is the whole library (8/2000 = 0.4%), so an absolute ceiling backstops it.
+// Any single batch touching more than this many files is unconditionally bulk,
+// independent of the percentage.
+const BULK_ABSOLUTE_CAP = 200;
 
 /**
  * Re-entrancy guard. `Services.prompt.confirmEx` is synchronous in
@@ -60,8 +67,14 @@ let _promptInFlight = false;
 export function isBulkDelete(affectedCount, totalTracked) {
   if (affectedCount <= 1) return false;
   if (affectedCount > BULK_FILE_THRESHOLD) return true;
+  if (affectedCount > BULK_ABSOLUTE_CAP) return true; // redundant past the flat cap, kept explicit
   if (totalTracked > 0 && (affectedCount / totalTracked) > BULK_PERCENT_THRESHOLD) return true;
   return false;
+}
+
+/** Is this batch large enough to warrant the stronger library-scale warning? */
+export function isLibraryScaleDelete(affectedCount) {
+  return affectedCount > BULK_ABSOLUTE_CAP;
 }
 
 /**
@@ -114,6 +127,65 @@ export async function confirmBulkDelete({ action, path, affectedCount, totalTrac
   } finally {
     _promptInFlight = false;
   }
+}
+
+/**
+ * First-arm whole-library-delete acknowledgement (v2.7, scopeMode 'library').
+ *
+ * The FIRST time Mode 3 would propagate ANY deletion while the whole library is
+ * the scope, surface a distinct one-time dialog explaining the blast radius is
+ * now the entire library (not a bounded sync-root subtree), and persist
+ * `mode3LibraryDeleteAcknowledged`. Independent of the per-batch bulk prompt.
+ *
+ * Returns true when the caller may proceed:
+ *   - not library scope → true (no extra gate; collection scope is bounded)
+ *   - already acknowledged → true
+ *   - acknowledged just now (user approved the one-time dialog) → true + persist
+ *   - user declined, or no UI to prompt → FALSE (refuse — same fail-safe as
+ *     confirmBulkDelete; library-scale Mode-3 deletes are effectively disabled
+ *     on headless/mobile, which is the safe default).
+ *
+ * @param {{scopeMode: string}} ctx
+ * @returns {Promise<boolean>}
+ */
+export async function confirmFirstLibraryDelete({ scopeMode } = {}) {
+  if (scopeMode !== 'library') return true;
+  if (getPref('mode3LibraryDeleteAcknowledged') === true) return true;
+  if (_promptInFlight) return false;
+
+  let win = null;
+  try {
+    if (typeof Services !== 'undefined' && Services.wm && typeof Services.wm.getMostRecentWindow === 'function') {
+      win = Services.wm.getMostRecentWindow('navigator:browser');
+    }
+  } catch (_e) { /* null window */ }
+  if (typeof Services === 'undefined' || !Services.prompt || typeof Services.prompt.confirmEx !== 'function') {
+    try { Zotero.debug('[WatchFolder] bulkGuard: first-arm library-delete refused (no Services.prompt)'); }
+    catch (_e) { /* no Zotero in tests */ }
+    return false;
+  }
+  const msg =
+    'You are about to let Watch Folder DELETE for the first time while it mirrors your WHOLE LIBRARY.\n\n'
+    + 'In whole-library mode the blast radius is your entire Zotero library — deleting a folder on disk can trash the matching collection (and its files), and vice versa.\n\n'
+    + 'Watch Folder keeps several safety nets (recoverable trash, conflict checks, bulk-delete confirmations, and a cloud-eviction pause), but you should have a backup before relying on deletion at this scale.\n\n'
+    + 'Enable two-way deletion at library scale?';
+  const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+              + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+              + Services.prompt.BUTTON_POS_1_DEFAULT; // Cancel default
+  _promptInFlight = true;
+  let approved = false;
+  try {
+    approved = Services.prompt.confirmEx(
+      win, 'Watch Folder — enable library-scale deletion', msg, flags,
+      'Enable deletion', null, null, null, { value: false },
+    ) === 0;
+  } finally {
+    _promptInFlight = false;
+  }
+  if (approved) {
+    try { setPref('mode3LibraryDeleteAcknowledged', true); } catch (_e) { /* best effort */ }
+  }
+  return approved;
 }
 
 /**

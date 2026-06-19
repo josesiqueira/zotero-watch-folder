@@ -229,13 +229,16 @@
 
   <!-- ============ Step 2: pick sync root collection ============ -->
   <div class="step" id="step-collection" data-step="2">
-    <h2>2. Pick the Zotero collection</h2>
+    <h2>2. How the watch folder maps to Zotero</h2>
     <p class="lede">
-      Imported items will land in this collection. If you create
-      subfolders inside your watch folder, matching subcollections
-      will appear under this one.
+      Watch Folder mirrors your <strong>whole library</strong>. You don't pick a
+      single collection — the layout maps automatically:
     </p>
-    <div class="coll-list" id="coll-list"></div>
+    <ul>
+      <li>A PDF dropped at the <strong>top level</strong> of the watch folder becomes an <strong>Unfiled</strong> item.</li>
+      <li>Each <strong>top-level folder</strong> maps to a top-level collection; nested folders map to nested collections (created as needed).</li>
+      <li>Zotero's Trash and special views (Duplicates, Unfiled, saved searches) are never mirrored.</li>
+    </ul>
     <div class="error" id="coll-error"></div>
   </div>
 
@@ -308,7 +311,7 @@
     </p>
     <dl class="summary">
       <dt>Watch folder</dt><dd id="sum-folder">—</dd>
-      <dt>Sync root</dt><dd id="sum-coll">—</dd>
+      <dt>Scope</dt><dd id="sum-coll">—</dd>
       <dt>Mode</dt><dd id="sum-mode">—</dd>
       <dt>PDFs</dt><dd id="sum-storage">—</dd>
     </dl>

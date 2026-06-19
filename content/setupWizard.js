@@ -112,8 +112,8 @@ const WatchFolderSetup = (function () {
       enable.setAttribute("hidden", "hidden");
     }
 
-    // Per-step entry hooks
-    if (n === 2) populateCollections();
+    // Per-step entry hooks. Step 2 is now an informational whole-library
+    // explainer (library scope is the only model) — no collection to populate.
     if (n === 5) renderConfirm();
   }
 
@@ -127,11 +127,7 @@ const WatchFolderSetup = (function () {
       return true;
     }
     if (n === 2) {
-      if (!state.syncRootKey) {
-        $("coll-error").textContent = "Pick a Zotero collection to continue.";
-        return false;
-      }
-      $("coll-error").textContent = "";
+      // Whole-library scope — nothing to pick; the panel is informational.
       return true;
     }
     if (n === 3) {
@@ -167,6 +163,7 @@ const WatchFolderSetup = (function () {
     _onResult({
       canceled: false,
       watchFolder: state.watchFolder,
+      scopeMode: "library",
       syncRootKey: state.syncRootKey,
       syncRootLibraryID: state.syncRootLibraryID,
       syncRootLabel: state.syncRootLabel,
@@ -318,7 +315,7 @@ const WatchFolderSetup = (function () {
     const checkedStorage = document.querySelector('input[name="storage"]:checked');
     state.storageStrategy = checkedStorage ? checkedStorage.value : state.storageStrategy;
     $("sum-folder").textContent = state.watchFolder || "—";
-    $("sum-coll").textContent = state.syncRootLabel || state.syncRootKey || "—";
+    $("sum-coll").textContent = "Whole library";
     $("sum-mode").textContent = _modeLabel(state.mode);
     const storageEl = $("sum-storage");
     if (storageEl) storageEl.textContent = _storageLabel(state.storageStrategy);

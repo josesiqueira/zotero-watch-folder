@@ -34,6 +34,8 @@ import {
   collectionKeyToRelativePath,
   collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
+  getScopeMode,
+  UNFILED,
 } from './canonicalPath.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import * as baseline from './baseline.mjs';
@@ -136,9 +138,8 @@ async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, s
     // idempotent — it skips notes/links (no attachmentFilename), already-
     // tracked attachments, and files already present at the destination.
     const baselineRoot = getPref('baselineCompletedForRoot');
-    const baselineDone = !!baselineRoot
-      && !!syncRoot?.collection?.key
-      && baselineRoot === syncRoot.collection.key;
+    const expectedKey = baseline.baselineKeyFor(syncRoot);
+    const baselineDone = !!baselineRoot && !!expectedKey && baselineRoot === expectedKey;
     if (!baselineDone) {
       Zotero.debug(`[WatchFolder] itemMembershipHandler: untracked attachment ${attachmentKey} added to ${collection.key} — deferring to baseline (not yet complete)`);
       return;
@@ -203,11 +204,16 @@ async function _handleRemove({ record, attachmentKey, collection, item, syncRoot
   if (!wasCanonical) return;
   // The canonical collection was just dropped. If the item still belongs
   // to other sync-root collections, pick a new canonical and move the
-  // local file to match. If no memberships remain, the executor has
-  // already flipped state to OUT_OF_SCOPE_SUPPRESSED — leave the local
-  // file in place (user resolves via suppression UX, Phase B).
+  // local file to match.
   const updated = store.getByAttachmentKey(attachmentKey);
-  if (!updated || (updated.collectionMembershipKeys || []).length === 0) return;
+  if (!updated) return;
+  const noMemberships = (updated.collectionMembershipKeys || []).length === 0;
+  // Collection scope: no memberships left → the executor has already flipped
+  // state to OUT_OF_SCOPE_SUPPRESSED; leave the local file in place (user
+  // resolves via the suppression UX). Library scope: no memberships means the
+  // item is now Unfiled — still in scope — so fall through and recompute the
+  // canonical (→ UNFILED → move the file to the watch-folder root).
+  if (noMemberships && getScopeMode() !== 'library') return;
   await _recomputeCanonicalIfChanged({ record: updated, item, syncRoot });
 }
 
@@ -218,14 +224,25 @@ async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
     existingTrackingRecord: record,
   });
   if (!newCanonical) return;
-  if (newCanonical.key === record.canonicalCollectionKey) return;
+
+  // Library scope: chooseCanonicalCollection may return the UNFILED sentinel
+  // (the item lost its last collection membership → it's now Unfiled, still in
+  // scope). The new canonical is the watch-folder ROOT: relPath '', key null.
+  const isUnfiled = newCanonical === UNFILED;
+  const newCanonicalCollectionKey = isUnfiled ? null : newCanonical.key;
+  // Short-circuit only when the key is a real (non-null) match. A null key
+  // (Unfiled) doesn't uniquely determine the path — the record's canonical key
+  // may already be null while its file still sits in a collection folder (the
+  // executor cleared the key on removeItemMembership). Fall through to the
+  // path-based no-op guard below, which moves the file to the root.
+  if (newCanonicalCollectionKey !== null && newCanonicalCollectionKey === record.canonicalCollectionKey) return;
 
   // Disk-domain variant (FS-1): the new canonical path becomes a stored
   // localPath that must round-trip against on-disk folders and match the
   // sanitized form baseline/collectionWatcher use, so a reparent into a
   // Windows-reserved/illegal collection name mirrors correctly. ('' / null
   // pass through, preserving the scope/no-op gates below.)
-  const newRelPath = await collectionKeyToDiskRelativePath(newCanonical.key);
+  const newRelPath = isUnfiled ? '' : await collectionKeyToDiskRelativePath(newCanonicalCollectionKey);
   if (newRelPath === null) return;
 
   // The filename is preserved across the canonical move — we only change
@@ -241,7 +258,7 @@ async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
       attachmentKey: record.zoteroAttachmentKey,
       oldCanonicalPath: record.canonicalLocalPath,
       newCanonicalPath: newCanonicalLocalPath,
-      newCanonicalCollectionKey: newCanonical.key,
+      newCanonicalCollectionKey,
     },
   });
 }

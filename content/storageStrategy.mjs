@@ -27,7 +27,7 @@
  */
 
 import { getPref, getFileHash } from './utils.mjs';
-import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToDiskRelativePath } from './canonicalPath.mjs';
+import { resolveSyncRoot, chooseCanonicalCollection, collectionKeyToDiskRelativePath, UNFILED } from './canonicalPath.mjs';
 import { getTrackingStore, createFileRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import * as baseline from './baseline.mjs';
@@ -260,9 +260,11 @@ export async function runReclaim({ apply = true } = {}) {
 async function _convertOneToLinked(entry, { syncRoot, watchRoot, store }) {
   const { attachment, item, path: srcPath } = entry;
 
-  // 1. Resolve canonical watch-folder destination.
+  // 1. Resolve canonical watch-folder destination. Library scope: an Unfiled
+  // item (UNFILED sentinel) reclaims to the watch-folder root (relDir '').
   const canonical = await chooseCanonicalCollection(item, syncRoot.collection);
-  const relDir = canonical ? await collectionKeyToDiskRelativePath(canonical.key) : '';
+  const isUnfiled = canonical === UNFILED;
+  const relDir = isUnfiled ? '' : (canonical ? await collectionKeyToDiskRelativePath(canonical.key) : '');
   if (relDir == null) return false;
   const filename = attachment.attachmentFilename || PathUtils.filename(srcPath);
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;
@@ -320,8 +322,10 @@ async function _convertOneToLinked(entry, { syncRoot, watchRoot, store }) {
       lastSyncedMtime: stat?.lastModified ?? 0,
       zoteroItemKey: parentItemID ? (Zotero.Items.get(parentItemID)?.key ?? null) : linked.key,
       zoteroAttachmentKey: linked.key,
-      canonicalCollectionKey: canonical?.key ?? null,
-      collectionMembershipKeys: canonical ? [canonical.key] : [],
+      // isUnfiled (library scope) → no collection: null key + empty membership.
+      // Guard against the UNFILED sentinel being truthy (would yield [undefined]).
+      canonicalCollectionKey: isUnfiled ? null : (canonical?.key ?? null),
+      collectionMembershipKeys: isUnfiled || !canonical ? [] : [canonical.key],
       state: STATE.CLEAN,
     }));
   }
@@ -518,9 +522,11 @@ export async function previewMirror() {
   const watchRoot = getPref('sourcePath');
   const store = getTrackingStore();
   if (!watchRoot) return { ok: false, reason: 'not-configured' };
-  const result = await baseline.adoptCollectionSubtree({
-    rootCollection: syncRoot.collection, syncRoot, watchRoot, store, dryRun: true,
-  });
+  // Library scope has no single root collection — the whole-library walk
+  // (runBaseline, forced + dry) is the equivalent "copy stored → disk" pass.
+  const result = syncRoot.isLibraryRoot
+    ? await baseline.runBaseline({ trackingStore: store, watchRoot, syncRoot, force: true, dryRun: true })
+    : await baseline.adoptCollectionSubtree({ rootCollection: syncRoot.collection, syncRoot, watchRoot, store, dryRun: true });
   return { ok: result.ok, copies: result.copies, mkdirs: result.mkdirs, reconciles: result.reconciles ?? 0 };
 }
 
@@ -535,8 +541,8 @@ export async function runMirror() {
   const watchRoot = getPref('sourcePath');
   const store = getTrackingStore();
   if (!watchRoot) return { ok: false, reason: 'not-configured' };
-  const result = await baseline.adoptCollectionSubtree({
-    rootCollection: syncRoot.collection, syncRoot, watchRoot, store, dryRun: false,
-  });
+  const result = syncRoot.isLibraryRoot
+    ? await baseline.runBaseline({ trackingStore: store, watchRoot, syncRoot, force: true, dryRun: false })
+    : await baseline.adoptCollectionSubtree({ rootCollection: syncRoot.collection, syncRoot, watchRoot, store, dryRun: false });
   return { ok: result.ok, copies: result.copies, mkdirs: result.mkdirs, errors: result.errors };
 }

@@ -7,7 +7,13 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { isBulkDelete, confirmBulkDelete, __test_resetPromptInFlight } from '../../content/bulkGuard.mjs';
+import {
+  isBulkDelete,
+  isLibraryScaleDelete,
+  confirmBulkDelete,
+  confirmFirstLibraryDelete,
+  __test_resetPromptInFlight,
+} from '../../content/bulkGuard.mjs';
 
 describe('UT-110: isBulkDelete', () => {
   it('returns false for 0 or 1 affected', () => {
@@ -167,5 +173,64 @@ describe('UT-111: confirmBulkDelete', () => {
       action: 'b', path: '/y', affectedCount: 20, totalTracked: 100,
     });
     expect(b).toBe(true);
+  });
+});
+
+// ─── UT-112: library-scale absolute cap + first-arm acknowledgement (v2.7) ──
+
+describe('UT-112: isLibraryScaleDelete + absolute cap', () => {
+  it('isBulkDelete trips on a huge absolute count even at low percentage', () => {
+    // 300 of 100000 = 0.3% (below the 20% relative threshold) but still bulk.
+    expect(isBulkDelete(300, 100000)).toBe(true);
+  });
+  it('isLibraryScaleDelete is true only past the 200-file cap', () => {
+    expect(isLibraryScaleDelete(200)).toBe(false);
+    expect(isLibraryScaleDelete(201)).toBe(true);
+  });
+});
+
+describe('UT-112: confirmFirstLibraryDelete (first-arm acknowledgement)', () => {
+  beforeEach(() => {
+    Services.prompt.confirmEx.mockClear();
+    Services.prompt.confirmEx.mockReturnValue(0);
+    __test_resetPromptInFlight();
+    Zotero.Prefs.get = vi.fn(() => false);
+    Zotero.Prefs.set = vi.fn();
+  });
+
+  it('returns true immediately in collection scope (no extra gate)', async () => {
+    expect(await confirmFirstLibraryDelete({ scopeMode: 'collection' })).toBe(true);
+    expect(Services.prompt.confirmEx).not.toHaveBeenCalled();
+  });
+
+  it('returns true without prompting when already acknowledged', async () => {
+    Zotero.Prefs.get = vi.fn(() => true);
+    expect(await confirmFirstLibraryDelete({ scopeMode: 'library' })).toBe(true);
+    expect(Services.prompt.confirmEx).not.toHaveBeenCalled();
+  });
+
+  it('prompts once, persists acknowledgement, and proceeds when approved', async () => {
+    Services.prompt.confirmEx.mockReturnValue(0);
+    expect(await confirmFirstLibraryDelete({ scopeMode: 'library' })).toBe(true);
+    expect(Services.prompt.confirmEx).toHaveBeenCalledTimes(1);
+    const setCall = Zotero.Prefs.set.mock.calls[0];
+    expect(setCall[0]).toContain('mode3LibraryDeleteAcknowledged');
+    expect(setCall[1]).toBe(true);
+  });
+
+  it('refuses (and does NOT persist) when the user declines', async () => {
+    Services.prompt.confirmEx.mockReturnValue(1);
+    expect(await confirmFirstLibraryDelete({ scopeMode: 'library' })).toBe(false);
+    expect(Zotero.Prefs.set).not.toHaveBeenCalled();
+  });
+
+  it('refuses when there is no UI to prompt (headless/mobile)', async () => {
+    const original = Services.prompt;
+    Services.prompt = undefined;
+    try {
+      expect(await confirmFirstLibraryDelete({ scopeMode: 'library' })).toBe(false);
+    } finally {
+      Services.prompt = original;
+    }
   });
 });

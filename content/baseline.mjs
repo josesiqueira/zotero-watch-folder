@@ -37,6 +37,7 @@ import {
   collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
   isSpecialCollection,
+  UNFILED,
 } from './canonicalPath.mjs';
 import { createFileRecord, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
@@ -60,6 +61,31 @@ async function _hashViaCache(absPath, statHint) {
 const BASELINE_PREF = 'baselineCompletedForRoot';
 
 /**
+ * The idempotency key the baseline is marked complete against. In collection
+ * scope it's the sync-root collection key (changing the root re-triggers). In
+ * library scope there's no single collection — key on the library id with a
+ * reserved prefix so it can never collide with an 8-char collection key.
+ * @param {{collection: object|null, libraryID: number, isLibraryRoot?: boolean}} syncRoot
+ * @returns {string}
+ */
+function _baselineKey(syncRoot) {
+  if (syncRoot?.isLibraryRoot) return `__library__:${syncRoot.libraryID}`;
+  return syncRoot?.collection?.key ?? '';
+}
+
+/**
+ * Public accessor for the baseline idempotency key of a resolved sync root.
+ * Consumers (e.g. itemMembershipHandler's adopt-into-scope gate) must compare
+ * the persisted `baselineCompletedForRoot` pref against THIS, not against
+ * `syncRoot.collection.key` — which is null in library scope.
+ * @param {object} syncRoot
+ * @returns {string}
+ */
+export function baselineKeyFor(syncRoot) {
+  return _baselineKey(syncRoot);
+}
+
+/**
  * Has the baseline been run for the current sync root?
  * @returns {Promise<boolean>}
  */
@@ -69,7 +95,7 @@ export async function isBaselineNeeded() {
   catch (_e) { return false; }
   if (!syncRoot) return false;
   const completed = getPref(BASELINE_PREF);
-  return completed !== syncRoot.collection.key;
+  return completed !== _baselineKey(syncRoot);
 }
 
 /** Mark the baseline complete for `syncRootKey`. */
@@ -101,20 +127,23 @@ export async function runBaseline(opts = {}) {
   }
   if (!syncRoot) return { ok: false, baselineRan: false, skipped: 'no-sync-root' };
 
+  const baselineKey = _baselineKey(syncRoot);
   const completed = getPref(BASELINE_PREF);
-  if (!opts.force && completed === syncRoot.collection.key) {
+  if (!opts.force && completed === baselineKey) {
     return { ok: true, baselineRan: false, skipped: 'already-completed' };
   }
 
   const store = opts.trackingStore;
   if (!store) return { ok: false, baselineRan: false, skipped: 'no-store' };
 
-  Zotero.debug(`[WatchFolder] baseline: starting for sync root ${syncRoot.collection.key} → ${watchRoot}`);
+  Zotero.debug(`[WatchFolder] baseline: starting for ${syncRoot.isLibraryRoot ? `library ${syncRoot.libraryID}` : `sync root ${syncRoot.collection.key}`} → ${watchRoot}`);
   const dryRun = !!opts.dryRun;
   let copies = 0, mkdirs = 0, errors = 0, reconciles = 0;
 
   try {
-    const { collections, attachments } = await _enumerateUnderSyncRoot(syncRoot);
+    const { collections, attachments } = syncRoot.isLibraryRoot
+      ? await _enumerateLibrary(syncRoot)
+      : await _enumerateUnderSyncRoot(syncRoot);
 
     // B.7 — build a disk-file hash index ONCE so the per-attachment
     // copy step can detect content that already exists on disk at a
@@ -190,7 +219,7 @@ export async function runBaseline(opts = {}) {
 
     if (!dryRun) {
       try { await store.save(); } catch (_e) { /* logged inside save */ }
-      markBaselineComplete(syncRoot.collection.key);
+      markBaselineComplete(baselineKey);
     }
 
     Zotero.debug(`[WatchFolder] baseline: complete (copies=${copies} mkdirs=${mkdirs} reconciles=${reconciles} errors=${errors})`);
@@ -334,7 +363,12 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
 
   const canonical = await chooseCanonicalCollection(item, syncRoot.collection);
   if (!canonical) return 'skipped';
-  const relDir = await collectionKeyToDiskRelativePath(canonical.key);
+  // Library scope: an Unfiled item (UNFILED sentinel) mirrors to the watch-
+  // folder root (relDir = '', canonicalCollectionKey = null). Otherwise it's
+  // a real collection — resolve its disk-relative folder path.
+  const isUnfiled = canonical === UNFILED;
+  const canonicalCollectionKey = isUnfiled ? null : canonical.key;
+  const relDir = isUnfiled ? '' : await collectionKeyToDiskRelativePath(canonical.key);
   if (relDir == null) return 'skipped';
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;
   const absDest = _toAbs(watchRoot, relPath);
@@ -345,7 +379,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   const destExists = await IOUtils.exists(absDest);
   if (destExists) {
     if (!store.getByAttachmentKey(attachment.key) && !dryRun) {
-      await _adoptExistingDestFile({ attachment, item, canonical, relPath, absDest, store });
+      await _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store });
     }
     return 'skipped';
   }
@@ -378,7 +412,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
           lastSyncedMtime: stat?.lastModified ?? 0,
           zoteroItemKey: _parentItemKey(attachment),
           zoteroAttachmentKey: attachment.key,
-          canonicalCollectionKey: canonical.key,
+          canonicalCollectionKey,
           collectionMembershipKeys: _itemMembershipKeys(item),
           state: STATE.CLEAN,
         }));
@@ -434,7 +468,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
       lastSyncedMtime: stat?.lastModified ?? 0,
       zoteroItemKey: _parentItemKey(attachment),
       zoteroAttachmentKey: attachment.key,
-      canonicalCollectionKey: canonical.key,
+      canonicalCollectionKey,
       collectionMembershipKeys: _itemMembershipKeys(item),
       state: STATE.CLEAN,
     }));
@@ -442,7 +476,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   return 'copied';
 }
 
-async function _adoptExistingDestFile({ attachment, item, canonical, relPath, absDest, store }) {
+async function _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store }) {
   let stat = null;
   try { stat = await IOUtils.stat(absDest); } catch (_e) { /* best effort */ }
   const hash = await _hashViaCache(absDest, stat);
@@ -454,7 +488,7 @@ async function _adoptExistingDestFile({ attachment, item, canonical, relPath, ab
     lastSyncedMtime: stat?.lastModified ?? 0,
     zoteroItemKey: _parentItemKey(attachment),
     zoteroAttachmentKey: attachment.key,
-    canonicalCollectionKey: canonical.key,
+    canonicalCollectionKey,
     collectionMembershipKeys: _itemMembershipKeys(item),
     state: STATE.CLEAN,
   }));
@@ -480,7 +514,12 @@ async function _enumerateFrom(rootCollection, syncRoot) {
   const walk = async (collection) => {
     if (visited.has(collection.id)) return;
     visited.add(collection.id);
-    if (collection.key !== syncRoot.collection.key) collections.push(collection);
+    // Collection scope: exclude the sync-root collection itself (it maps to the
+    // watch-folder root, not a subfolder). Library scope: there is no root
+    // collection — every visited collection is a folder.
+    if (syncRoot.isLibraryRoot || collection.key !== syncRoot.collection.key) {
+      collections.push(collection);
+    }
 
     // Force-load child items: after a plugin reload Zotero's
     // Collection._childItems cache can be empty even when collectionItems
@@ -572,12 +611,61 @@ async function _enumerateUnderSyncRoot(syncRoot) {
 }
 
 /**
+ * Whole-library enumeration (scopeMode 'library'). There is no single root
+ * collection, so:
+ *   collections — EVERY non-special collection in the library (each becomes a
+ *                 top-level-or-nested disk folder; depth derived by
+ *                 collectionKeyToDiskRelativePath walking up to the top level).
+ *   attachments — walk ALL top-level items in the library, not just those in
+ *                 collections. `Zotero.Items.getAll(libraryID, true, false)`
+ *                 returns every top-level item (filed AND unfiled, excluding
+ *                 trashed); unfiled items mirror to the watch-folder root via
+ *                 the UNFILED canonical. This is the key difference from the
+ *                 collection-scoped walk, which only ever sees items reachable
+ *                 from the sync-root subtree.
+ *
+ * @returns {Promise<{collections: Array, attachments: Array<{attachment, item}>}>}
+ */
+async function _enumerateLibrary(syncRoot) {
+  const libraryID = syncRoot.libraryID;
+
+  const allCols = Zotero.Collections.getByLibrary(libraryID) || [];
+  const collections = allCols.filter((c) => c && !isSpecialCollection(c));
+
+  const attachmentMap = new Map();
+  let topItems = [];
+  try {
+    topItems = (await Zotero.Items.getAll(libraryID, true, false)) || [];
+  } catch (e) {
+    Zotero.debug(`[WatchFolder] baseline(library): Items.getAll failed: ${e?.message ?? e}`);
+    topItems = [];
+  }
+  for (const item of topItems) {
+    if (!item) continue;
+    if (item.isAttachment && item.isAttachment()) {
+      attachmentMap.set(item.key, { attachment: item, item });
+    } else {
+      const attIDs = (typeof item.getAttachments === 'function')
+        ? (item.getAttachments() || []) : [];
+      for (const attID of attIDs) {
+        const att = Zotero.Items.get(attID);
+        if (att?.isAttachment && att.isAttachment()) {
+          attachmentMap.set(att.key, { attachment: att, item });
+        }
+      }
+    }
+  }
+  return { collections, attachments: Array.from(attachmentMap.values()) };
+}
+
+/**
  * Public wrapper around `_enumerateUnderSyncRoot` so the storage-strategy
  * engine can enumerate every attachment under the sync root without
  * duplicating the recursive walk. Returns `{ collections, attachments }`
  * where attachments is an array of `{ attachment, item }`.
  */
 export async function enumerateSyncRootAttachments(syncRoot) {
+  if (syncRoot?.isLibraryRoot) return _enumerateLibrary(syncRoot);
   return _enumerateUnderSyncRoot(syncRoot);
 }
 

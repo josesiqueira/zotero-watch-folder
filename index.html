@@ -406,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.6.4 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.7.0 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -422,9 +422,9 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>813</b> unit tests passing</span>
+        <span><b>872</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
-        <span><b>30</b> tunable preferences</span>
+        <span><b>33</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
       </div>
     </div>
@@ -483,6 +483,17 @@ footer .fine {
     <p class="section-lede">
       Modes are a single preference. Switch any time — the plugin starts and
       stops the relevant pipeline in-process, no Zotero restart required.
+    </p>
+    <p class="section-lede" style="margin-top: -24px; font-size: 16px;">
+      <strong>New in v2.7: whole-library scope (default).</strong>
+      By default the plugin now mirrors your <em>entire</em> Zotero library, not just
+      one collection. A PDF dropped at the watch-folder root becomes an Unfiled item;
+      every top-level collection becomes a top-level folder; nested collections map to
+      nested folders. Special views (Duplicates, Unfiled view, saved searches, Trash)
+      are never mirrored. Existing installs are automatically pinned to their current
+      collection-scope behavior on upgrade — whole-library scope is opt-in for them via
+      re-running setup. The <code>scopeMode</code> preference controls this: <code>library</code>
+      (new default) or <code>collection</code> (single chosen sync-root, legacy behavior).
     </p>
 
     <div class="modes-grid">
@@ -614,7 +625,7 @@ footer .fine {
 <section id="features">
   <div class="wrap">
     <div class="section-eyebrow">What's inside</div>
-    <h2>Every feature that ships in v2.2.</h2>
+    <h2>Every feature that ships in v2.7.</h2>
     <p class="section-lede">
       Reality, not roadmap. If it's on this list, it works end-to-end against
       a live Zotero and is covered by the unit suite.
@@ -650,6 +661,11 @@ footer .fine {
         <div class="icon">⇄</div>
         <h4>Two-way mirror</h4>
         <p>Collection ↔ folder lockstep in Mode 2/3. Renames, moves, and new folders propagate both ways.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">L</div>
+        <h4>Whole-library scope</h4>
+        <p>Mirror your entire Zotero library by default (<code>scopeMode: library</code>). A PDF dropped at the watch-folder root lands in Unfiled; every top-level collection becomes a top-level folder. Switch to <code>collection</code> scope for the legacy single-root mode. Library-scale Mode 3 adds cloud-eviction pause (if &gt;50% of top-level folders vanish at once, deletion pauses) and a one-time enable confirmation before the first delete.</p>
       </div>
       <div class="feat">
         <div class="icon">⌫</div>
@@ -758,7 +774,7 @@ footer .fine {
 <!-- ========== CONFIGURE ========== -->
 <section id="configure">
   <div class="wrap">
-    <div class="section-eyebrow">All 30 preferences, in plain language</div>
+    <div class="section-eyebrow">All 33 preferences, in plain language</div>
     <h2>Configurable, but you don't have to.</h2>
     <p class="section-lede">
       Defaults are sane. These are the knobs you'd reach for first. Everything
@@ -789,7 +805,12 @@ footer .fine {
         <tr>
           <td><span class="key">syncRootCollectionKey</span></td>
           <td><code>""</code></td>
-          <td>The 8-char Zotero collection key that anchors the sync.</td>
+          <td>The 8-char Zotero collection key that anchors the sync. Only relevant when <code>scopeMode</code> is <code>collection</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="key">scopeMode</span></td>
+          <td><code>library</code></td>
+          <td>What the plugin mirrors: <code>library</code> (default in v2.7+) mirrors your entire personal library — every top-level collection becomes a top-level folder, a PDF dropped at the root lands in Unfiled; <code>collection</code> is the legacy mode that mirrors a single chosen sync-root collection. Existing installs are automatically pinned to <code>collection</code> on upgrade; re-run setup to opt in to <code>library</code>.</td>
         </tr>
         <tr>
           <td><span class="key">pollInterval</span></td>
@@ -905,9 +926,9 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.5 is the latest stable line: full WP-A/B/C performance pass plus the
-      prefs-pane redesign on top of a v2.2 line that already had all three
-      modes end-to-end. The bar to ship was: 669 unit tests passing,
+      v2.7.0 is the current stable release: whole-library mirror as the new
+      default scope, on top of the v2.6.x data-safety and UX hardening wave.
+      The bar to ship was: 872 unit tests passing across 26 files,
       live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
@@ -973,6 +994,13 @@ footer .fine {
         <div>
           <b>Broader live-MCP Mode 3 coverage</b>
           <span class="meta">DEL.3 / RST.2 / RST.4 / RST.5 / FDEL.2 (10+ PDFs, multi-attachment parents). Unit-tested today, not yet live-pass'd.</span>
+        </div>
+      </li>
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.7.0 — whole-library mirror (new default scope)</b>
+          <span class="meta">Whole-library mirror as the new default (<code>scopeMode: library</code>): root drop → Unfiled, every top-level collection → top-level folder, nested collections map to nested folders. Library-scale delete-safety nets: cloud-eviction pause (deletion halts if &gt;50% of top-level folders vanish in one cycle), per-cycle mass-deletion cap, one-time "enable library-scale deletion" confirmation before the first delete. Existing installs are automatically pinned to their current collection-scope behavior on upgrade — opt in via re-running setup. 872 unit tests across 26 files.</span>
         </div>
       </li>
       <li>
@@ -1050,7 +1078,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (813 passing, 25 files)</span>
+<span class="c"># unit tests (872 passing, 26 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1080,7 +1108,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.6.4 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-18
+      GPL-3.0 · v2.7.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-19
     </div>
   </div>
 </footer>

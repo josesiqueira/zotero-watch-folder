@@ -28,6 +28,13 @@
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { STATE } from './trackingStore.mjs';
 import { isWatchRootAvailable } from './fileMissing.mjs';
+import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
+import {
+  topLevelDirNames,
+  checkTopLevelCollapse,
+  recordHealthyFingerprint,
+  checkCycleAggregate,
+} from './watchRootGuard.mjs';
 
 /**
  * Run the disk diff against the tracked collection records.
@@ -56,9 +63,30 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
 
   const dirSet = onDiskAbsDirs instanceof Set ? onDiskAbsDirs : new Set(onDiskAbsDirs || []);
 
-  const records = trackingStore.getAllOfType('collection');
-  if (records.length === 0) return;
+  // ── SYNC-1: top-level collapse gate (cloud-eviction guard) ──────────────
+  // The root is reachable, but if most/all of its top-level folders vanished
+  // at once that's the signature of a placeholdered/evicted cloud mount, not
+  // real deletions — under library scope it would be a whole-library wipe.
+  // Pause the deletion pass and DON'T refresh the fingerprint (so a real
+  // collapse can't quietly become the new "healthy" baseline).
+  const topNames = topLevelDirNames(dirSet, watchRoot);
+  const collapse = checkTopLevelCollapse(topNames);
+  if (collapse.collapsed) {
+    Zotero.debug(`[WatchFolder] folderEventDetector: ${collapse.reason} — skipping folder-deletion detection`);
+    reportWarning({
+      category: WARNING_CATEGORY.IO_ERROR,
+      actionType: 'folderDeletionPass',
+      path: watchRoot,
+      reason: 'top-level-collapse',
+      message: `Folder-deletion sync paused: ${collapse.reason}. No folders were deleted. If you really removed these folders, they will sync once the count stabilises.`,
+    });
+    return;
+  }
 
+  const records = trackingStore.getAllOfType('collection');
+
+  // ── Phase 1: collect every tracked collection that's gone from disk ─────
+  const missing = [];
   for (const rec of records) {
     if (!rec || typeof rec.localPath !== 'string' || rec.localPath === '') continue;
     // Idempotency guard — a CollectionRecord that's already
@@ -79,6 +107,45 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     catch (_e) { exists = false; }
     if (exists) continue;
 
+    missing.push(rec);
+  }
+  // CLEAN cycle (nothing missing) — only NOW is it safe to refresh the healthy
+  // fingerprint. Recording it earlier (before deletions are reconciled) let a
+  // drip-eviction ratchet the collapse baseline downward each cycle so the
+  // >50%-collapse gate never fired against the true pre-incident count (F7/F6).
+  // A cycle WITH missing folders deliberately leaves the fingerprint stale; the
+  // next fully-reconciled clean cycle updates it.
+  if (missing.length === 0) {
+    recordHealthyFingerprint(topNames);
+    return;
+  }
+
+  // ── Phase 2: cycle aggregate cap (above the per-action bulkGuard) ───────
+  // N individually-small deletes still add up to a mass deletion. A top-level
+  // folder is one whose SYNC-ROOT-RELATIVE path has no separator. Compute the
+  // relative form first: legacy absolute localPaths contain '/' and would
+  // otherwise be miscounted as nested, undercounting missingTopLevel and
+  // weakening the top-level cap (F7b).
+  const missingTopLevel = missing.filter((r) => !_relForm(r.localPath, watchRoot).includes('/')).length;
+  const aggregate = checkCycleAggregate({
+    missingTopLevel,
+    missingTotal: missing.length,
+    totalTracked: records.length,
+  });
+  if (aggregate.trip) {
+    Zotero.debug(`[WatchFolder] folderEventDetector: ${aggregate.reason} — refusing batch`);
+    reportWarning({
+      category: WARNING_CATEGORY.SUPPRESSED,
+      actionType: 'folderDeletionPass',
+      path: watchRoot,
+      reason: 'cycle-aggregate-cap',
+      message: `Folder-deletion sync paused: ${aggregate.reason}. No folders were deleted — this guards against accidental or transient mass deletion. Remove the folders in smaller batches, or restore them, to proceed.`,
+    });
+    return;
+  }
+
+  // ── Phase 3: emit one localFolderDeleted per genuinely-missing folder ───
+  for (const rec of missing) {
     // Disk-side deletion → propagate to Zotero (localFolderDeleted). The
     // local folder is GONE; the corresponding Zotero collection (and, in
     // Mode 3, its clean attachments) is what gets trashed. Distinct from
@@ -105,4 +172,15 @@ function _toAbs(root, rel) {
   const segs = rel.split('/').filter((s) => s.trim() !== '');
   if (segs.length === 0) return root;
   return PathUtils.join(root, ...segs);
+}
+
+/**
+ * Sync-root-relative form of a (possibly legacy-absolute) tracked localPath, so
+ * "top-level" can be judged by "no separator" regardless of how the path was
+ * stored. Strips a leading watchRoot + separators; normalizes '\\' to '/'.
+ */
+function _relForm(localPath, watchRoot) {
+  let rel = String(localPath || '');
+  if (watchRoot && rel.startsWith(watchRoot)) rel = rel.slice(watchRoot.length);
+  return rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
 }

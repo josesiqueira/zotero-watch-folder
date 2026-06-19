@@ -40,6 +40,9 @@ vi.mock('../../content/utils.mjs', async () => {
 vi.mock('../../content/baseline.mjs', () => ({
   copyAttachmentToCanonical: vi.fn(async () => 'copied'),
   adoptCollectionSubtree: vi.fn(async () => ({ ok: true })),
+  // Mirrors the real helper: collection scope → collection key; library → key.
+  baselineKeyFor: vi.fn((syncRoot) =>
+    syncRoot?.isLibraryRoot ? `__library__:${syncRoot.libraryID}` : (syncRoot?.collection?.key ?? '')),
 }));
 
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
@@ -48,6 +51,7 @@ import {
   collectionKeyToRelativePath,
   collectionKeyToDiskRelativePath,
   chooseCanonicalCollection,
+  UNFILED,
 } from '../../content/canonicalPath.mjs';
 import { getPref } from '../../content/utils.mjs';
 import * as baseline from '../../content/baseline.mjs';
@@ -382,6 +386,51 @@ describe('UT-507: remove of last membership', () => {
     const types = mirrorExecutor.execute.mock.calls.map((c) => c[0].type);
     expect(types).toEqual(['removeItemMembership']);
     expect(chooseCanonicalCollection).not.toHaveBeenCalled();
+  });
+});
+
+// ─── UT-509: library scope — last membership removed → recompute to root ────
+
+describe('UT-509: remove of last membership (library scope) → moveItem to root', () => {
+  it('recomputes the canonical to UNFILED and moves the file to the watch-folder root', async () => {
+    getPref.mockImplementation((k) => ({ scopeMode: 'library', sourcePath: '/watch' }[k]));
+    const collection = { id: 200, key: 'CAN' };
+    const att = { key: 'ATT1', isAttachment: () => true };
+    Zotero.Collections.get.mockReturnValue(collection);
+    Zotero.Items.get.mockReturnValue(att);
+    // Item lost its last collection → chooseCanonicalCollection returns UNFILED.
+    chooseCanonicalCollection.mockResolvedValue(UNFILED);
+
+    const store = makeStore([
+      {
+        zoteroAttachmentKey: 'ATT1',
+        canonicalCollectionKey: 'CAN',
+        collectionMembershipKeys: ['CAN'],
+        canonicalLocalPath: 'OldFolder/paper.pdf',
+      },
+    ]);
+    mirrorExecutor.execute.mockImplementation(async (action) => {
+      if (action.type === 'removeItemMembership') {
+        store._replace('ATT1', { collectionMembershipKeys: [], canonicalCollectionKey: null });
+      }
+      return { ok: true };
+    });
+
+    await handleCollectionItemEvent('remove', ['200-300'], {}, makeCoordinator(store));
+
+    const calls = mirrorExecutor.execute.mock.calls.map((c) => c[0]);
+    expect(calls[0].type).toBe('removeItemMembership');
+    // Unlike collection scope (UT-507), library scope recomputes: the file
+    // moves to the watch-folder root with a null canonical key (Unfiled).
+    expect(calls[1]).toEqual({
+      type: 'moveItem',
+      payload: {
+        attachmentKey: 'ATT1',
+        oldCanonicalPath: 'OldFolder/paper.pdf',
+        newCanonicalPath: 'paper.pdf',
+        newCanonicalCollectionKey: null,
+      },
+    });
   });
 });
 
