@@ -343,13 +343,13 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <div class="label">✓ Inclusion</div>
         <h2>Things the plugin acts on</h2>
         <p>Files arriving, items being added or moved, restores after a trash, baseline reconciles. The plugin <em>does</em> something visible — imports, copies, renames, mkdirs, recovers.</p>
-        <div class="ct">25 cases</div>
+        <div class="ct">28 cases</div>
       </div>
       <div class="summary-card no">
         <div class="label">✕ Exclusion</div>
         <h2>Things the plugin refuses</h2>
         <p>Duplicates, wrong file types, files in reserved dirs, deletes that shouldn't propagate, conflicts, bulk operations needing confirmation, items outside scope. The plugin <em>holds back</em>.</p>
-        <div class="ct">29 cases</div>
+        <div class="ct">33 cases</div>
       </div>
     </div>
 
@@ -374,20 +374,20 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
     <!-- INCLUSION COLUMN                                                -->
     <!-- ============================================================== -->
     <div class="column ok" id="inclusion">
-      <h3><span class="glyph">✓</span>Inclusion<span class="count">25 cases</span></h3>
+      <h3><span class="glyph">✓</span>Inclusion<span class="count">28 cases</span></h3>
 
       <div class="case">
         <div class="case-id">I.1 <span class="mode-tag all">ALL</span></div>
         <h4>File dropped at watch-folder root</h4>
         <p class="when">A new PDF appears at the top level of the watch folder.</p>
-        <p class="then">Imported as an item in the sync-root collection. Metadata fetched. Renamed via template.</p>
+        <p class="then">Imported as an Unfiled item (no collection) — the plugin mirrors the whole library; a file with no subfolder has no collection home. Metadata fetched. Renamed via template.</p>
       </div>
 
       <div class="case">
         <div class="case-id">I.2 <span class="mode-tag all">ALL</span></div>
         <h4>File dropped in a subfolder</h4>
         <p class="when">A new PDF appears in <code>WatchFolder/X/Y/</code>.</p>
-        <p class="then">Subcollections <code>X</code> and <code>Y</code> are created under the sync root. Item filed in the leaf.</p>
+        <p class="then">Collections <code>X</code> and <code>Y</code> are created in the library (top-level and nested respectively). Item filed in the leaf collection.</p>
       </div>
 
       <div class="case">
@@ -399,15 +399,15 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
       <div class="case">
         <div class="case-id">I.4 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
-        <h4>New subcollection in Zotero</h4>
-        <p class="when">User creates a subcollection under the sync root.</p>
-        <p class="then">A matching disk folder is created. If items are then added to that collection, their files are placed there.</p>
+        <h4>New collection in Zotero</h4>
+        <p class="when">User creates a new collection anywhere in the library (top-level or nested).</p>
+        <p class="then">A matching disk folder is created at the corresponding path under the watch folder. If items are then added to that collection, their files are placed there.</p>
       </div>
 
       <div class="case">
         <div class="case-id">I.5 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
-        <h4>Zotero subcollection renamed</h4>
-        <p class="when">A tracked subcollection is renamed in Zotero.</p>
+        <h4>Zotero collection renamed</h4>
+        <p class="when">A tracked collection (anywhere in the library) is renamed in Zotero.</p>
         <p class="then">Matching disk folder is renamed atomically. Child file records' paths are rewritten.</p>
       </div>
 
@@ -421,7 +421,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="case">
         <div class="case-id">I.7 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
         <h4>Item moved between Zotero collections</h4>
-        <p class="when">A tracked item is added to (or moved between) sync-root collections.</p>
+        <p class="when">A tracked item is added to (or moved between) library collections.</p>
         <p class="then">The file follows on disk. Canonical-collection rule picks the location when an item belongs to multiple collections.</p>
       </div>
 
@@ -456,8 +456,8 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
       <div class="case">
         <div class="case-id">I.12 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
-        <h4>Populated collection moved into sync root</h4>
-        <p class="when">An existing populated collection is re-parented under the sync root.</p>
+        <h4>Populated collection adopted into library scope</h4>
+        <p class="when">An existing populated collection is added or re-parented anywhere in the library's tracked hierarchy.</p>
         <p class="then">Adopt-into-scope path: subfolder mkdir'd, child attachment files copied out, FileRecords created.</p>
       </div>
 
@@ -536,13 +536,13 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <div class="case-id">I.23 <span class="mode-tag all">ALL</span></div>
         <h4>Build/Repair Watch Folder Mirror</h4>
         <p class="when">The strategy is <code>stored_plus_mirror</code> and the user runs "Build/Repair Watch Folder Mirror…".</p>
-        <p class="then">Stored attachments under the sync root are copied to their canonical watch-folder paths. The stored Zotero attachments are kept exactly as-is — this is a redundant backup copy, not a conversion.</p>
+        <p class="then">Stored attachments anywhere in the library are copied to their canonical watch-folder paths. The stored Zotero attachments are kept exactly as-is — this is a redundant backup copy, not a conversion.</p>
       </div>
 
       <div class="case">
         <div class="case-id">I.24 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
-        <h4>Existing item moved into the sync root after baseline</h4>
-        <p class="when">After the first-run baseline has completed, the user drags an existing Zotero item into a collection under the sync root.</p>
+        <h4>Existing item moved into library scope after baseline</h4>
+        <p class="when">After the first-run baseline has completed, the user drags an existing Zotero item into any library collection.</p>
         <p class="then">Its attachment is copied to the canonical local path and a FileRecord is created (adopt-into-scope). Before baseline completes, baseline owns the copy and the event is deferred.</p>
       </div>
 
@@ -553,13 +553,34 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <p class="then">Each contained attachment that passes the Zotero-side freshness check is moved to Zotero's trash (bulk-delete confirmation applies), then the Zotero collection itself is trashed — all recoverable. Drifted children block and keep the collection.</p>
       </div>
 
+      <div class="case">
+        <div class="case-id">I.26 <span class="mode-tag all">ALL</span></div>
+        <h4>Root drop → Unfiled item</h4>
+        <p class="when">A PDF is dropped at the top level of the watch folder (no subfolder).</p>
+        <p class="then">Imported as an Unfiled Zotero item — it has no collection parent. Metadata fetched and file renamed via template. Appears in the Unfiled Items view until the user files it manually.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.27 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Top-level folder → top-level collection</h4>
+        <p class="when">A new folder is created at the watch-folder root; nested folders may exist inside it.</p>
+        <p class="then">A new top-level Zotero collection is created for that folder. Nested folders become nested collections. The folder hierarchy mirrors into the library with no sync-root anchor.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.28 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
+        <h4>Item leaves its last collection → becomes Unfiled, file moves to watch root</h4>
+        <p class="when">A tracked item is removed from its last library collection (anywhere in the library), leaving it with no collection membership.</p>
+        <p class="then">The item becomes Unfiled in Zotero. Its local file is relocated to the top level of the watch folder to stay consistent with the Unfiled state. Tracking record updates accordingly.</p>
+      </div>
+
     </div>
 
     <!-- ============================================================== -->
     <!-- EXCLUSION COLUMN                                                -->
     <!-- ============================================================== -->
     <div class="column no" id="exclusion">
-      <h3><span class="glyph">✕</span>Exclusion<span class="count">29 cases</span></h3>
+      <h3><span class="glyph">✕</span>Exclusion<span class="count">33 cases</span></h3>
 
       <div class="case">
         <div class="case-id">E.1 <span class="mode-tag all">ALL</span></div>
@@ -633,23 +654,23 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
       <div class="case">
         <div class="case-id">E.11 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
-        <h4>Last sync-root collection removed</h4>
-        <p class="when">An item is removed from its only sync-root collection.</p>
+        <h4>Last library collection removed</h4>
+        <p class="when">An item is removed from its only library collection (leaving it Unfiled or with no tracked path).</p>
         <p class="then">File stays on disk. State flips to <code>out-of-scope-suppressed</code>. User resolves via prefs: Re-instate / Keep local / Trash / Move outside.</p>
       </div>
 
       <div class="case">
         <div class="case-id">E.12 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
         <h4>USER_DETACHED records stay detached</h4>
-        <p class="when">User picked "Keep local" in the suppression resolver, and later the item is re-added to a sync-root collection.</p>
+        <p class="when">User picked "Keep local" in the suppression resolver, and later the item is re-added to a library collection.</p>
         <p class="then">State stays USER_DETACHED. The auto-clear-on-re-add safety net excludes USER_DETACHED on purpose — it's an explicit user choice.</p>
       </div>
 
       <div class="case">
         <div class="case-id">E.13 <span class="mode-tag all">ALL</span></div>
-        <h4>Out-of-scope subfolders</h4>
-        <p class="when">The watch folder happens to be larger than the sync-root scope (e.g. user picked a single sub-collection but the folder has more).</p>
-        <p class="then">Files outside the sync-root subtree are NOT propagated to Zotero. The sync root anchors what's in scope.</p>
+        <h4>Non-PDF content subfolders</h4>
+        <p class="when">The watch folder contains subfolders with only non-PDF (or wrong-extension) files.</p>
+        <p class="then">The folders may be mirrored as empty collections, but their contents are not imported. Only files matching the <code>fileTypes</code> pref are acted on.</p>
       </div>
 
       <div class="case">
@@ -661,10 +682,10 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
       <div class="case">
         <div class="case-id">E.15 <span class="mode-tag all">ALL</span></div>
-        <h4>Trashed sync-root collection — sync pauses cleanly</h4>
-        <p class="when">The sync-root collection itself has been moved to Zotero's trash.</p>
-        <p class="then"><code>resolveSyncRoot()</code> detects the trashed collection and throws <code>SyncRootMissingError</code> with a clear message: "Sync-root collection X is in Zotero's trash — pausing sync. Restore the collection from Zotero's Bin to resume." Existing catch sites pause sync; no destructive operations run. New imports do not arrive.</p>
-        <p class="note">Restoring the sync-root collection from Zotero's Bin → right-click → Restore brings everything back into scope on the next scan. Hardened in v2.3.2 — pre-fix, this state silently classified every import as out-of-scope-suppressed.</p>
+        <h4>Trashed library root anchor — sync pauses cleanly</h4>
+        <p class="when">The library root anchor (formerly "sync-root collection") has been moved to Zotero's trash or the library becomes unreachable.</p>
+        <p class="then"><code>resolveSyncRoot()</code> throws <code>SyncRootMissingError</code>. Existing catch sites pause sync; no destructive operations run. New imports do not arrive.</p>
+        <p class="note">Restoring the collection from Zotero's Bin → right-click → Restore brings everything back into scope on the next scan. Hardened in v2.3.2 — pre-fix, this state silently classified every import as out-of-scope-suppressed.</p>
       </div>
 
       <div class="case">
@@ -698,7 +719,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="case">
         <div class="case-id">E.20 <span class="mode-tag m2">M2</span><span class="mode-tag m3">M3</span></div>
         <h4>Metadata-only Zotero items at baseline</h4>
-        <p class="when">A Zotero item in the sync root has no file attached (just bibliographic metadata).</p>
+        <p class="when">A Zotero item anywhere in the library has no file attached (just bibliographic metadata).</p>
         <p class="then">Skipped silently at baseline. No "missing file" warning, no false sync target.</p>
       </div>
 
@@ -765,6 +786,34 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <p class="then">The record is SUPPRESSED, not dropped. A dropped record plus a present file would make the next scan re-import the file and recreate the item you just trashed — suppression breaks that loop.</p>
       </div>
 
+      <div class="case">
+        <div class="case-id">E.30 <span class="mode-tag all">ALL</span></div>
+        <h4>Special views never mirrored</h4>
+        <p class="when">Zotero's Trash/Bin, Duplicates, Unfiled view, saved searches, and My Publications view are present in the library.</p>
+        <p class="then">Filtered out by <code>isSpecialCollection</code>. None of these views is ever turned into a watch-folder subfolder, used as a delete target, or treated as a canonical collection. No disk folder is created for them.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.31 <span class="mode-tag m3">M3</span></div>
+        <h4>Cloud-eviction pause</h4>
+        <p class="when">More than 50% of top-level watch-folder directories vanish in a single scan cycle (suspected cloud-sync unmount or eviction).</p>
+        <p class="then">The folder-deletion pass for that cycle is PAUSED — no Zotero collections are trashed. The missing folders are recorded but treated as transiently unavailable, not deleted. Normal deletion resumes once the root stabilises.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.32 <span class="mode-tag m3">M3</span></div>
+        <h4>Mass-deletion cap</h4>
+        <p class="when">A single scan cycle finds more top-level folder deletions than the plugin's bulk-delete threshold allows in one batch.</p>
+        <p class="then">The entire batch is refused. No collections are trashed. The warning sink records the refusal. The user must confirm via the bulk-delete dialog or reduce scope.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">E.33 <span class="mode-tag m3">M3</span></div>
+        <h4>First library-scale delete needs confirmation</h4>
+        <p class="when">Mode 3 is active under whole-library scope and a deletion is about to propagate for the first time (first deletion cycle after enabling library-wide scope).</p>
+        <p class="then">A one-time acknowledgement is required before any deletion proceeds. If no UI is available (headless context), the deletion is refused entirely — the gate is fail-closed, never fail-open.</p>
+      </div>
+
     </div>
   </div>
 </div>
@@ -772,7 +821,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.6.4 · Covers Zotero 7, 8, 9 · Last updated 2026-06-18</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.7.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

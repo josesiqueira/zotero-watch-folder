@@ -401,8 +401,8 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="story-tag">1.1 · fresh start</div>
       <h3>My folder is empty and my Zotero library is empty</h3>
       <p class="voice">I just installed the plugin. I want to set things up so it's ready when I start downloading papers.</p>
-      <div class="row"><span class="label">I want to</span><span class="body">Open settings, point the plugin at a folder I'll be dropping PDFs into, pick a Zotero collection where new items should land, pick a mode, turn it on.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">A five-step wizard offers me: pick the local folder → pick the Zotero collection → pick a mode → pick where PDFs live (storage strategy) → confirm. Defaults work for most people. After "Enable", the plugin is running. Nothing visible happens yet on disk or in Zotero because there's nothing to sync.</span></div>
+      <div class="row"><span class="label">I want to</span><span class="body">Open settings, point the plugin at a folder I'll be dropping PDFs into, pick a mode, turn it on.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">A wizard offers: pick the local folder → pick a mode → pick where PDFs live (storage strategy) → confirm. There is no "pick a collection" step — the plugin mirrors your <b>whole Zotero library</b>. A PDF dropped at the watch-folder root lands as an Unfiled item; one dropped into a subfolder lands in the matching top-level collection. Nested subfolders produce nested collections. Zotero's Bin, Duplicates, and other special views are never mirrored. Defaults work for most people. After "Enable", the plugin is running. Nothing visible happens yet because there's nothing to sync.</span></div>
       <div class="row offnote"><span class="label">If it looks off</span><span class="body">No wizard appears → check that <code>setupCompleted</code> isn't already true from a previous attempt. Open prefs and re-run setup via "Re-run setup wizard…".</span></div>
       <div class="ref"><b>Covers:</b> S.1, S.4, SETUP.1, P1.1, P1.2, P1.10</div>
     </div>
@@ -412,7 +412,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>My folder has PDFs in it, but my Zotero library is empty</h3>
       <p class="voice">I've been saving papers into <code>~/Papers</code> for years. I want Zotero to catch up with what I already have.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Point the plugin at my existing folder, let it import everything I already have, and preserve the way I've organized subfolders.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">Within a few scan cycles, every PDF in the folder appears as an item in my sync-root collection. Subfolders become subcollections (<code>Papers/Methods/AI/</code> → <code>SyncRoot › Methods › AI</code>). Metadata gets fetched for each file. Failures get a <code>_needs-review</code> tag.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Within a few scan cycles, every PDF in the folder appears in Zotero. Files at the root of the watch folder land as Unfiled items; subfolders become matching collections (<code>Papers/Methods/AI/</code> → <code>Methods › AI</code>). Metadata gets fetched for each file. Failures get a <code>_needs-review</code> tag.</span></div>
       <div class="row offnote"><span class="label">If it looks off</span><span class="body">Some files imported, some didn't → check <code>fileTypes</code> matches your extensions (default is <code>pdf</code> only). Big folders take longer because metadata retrieval is throttled — give it a few minutes.</span></div>
       <div class="ref"><b>Covers:</b> ADD.1, ADD.2, ADD.3, E.4, P1.3, P1.4, P1.5, P1.8</div>
     </div>
@@ -424,7 +424,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="row"><span class="label">I want to</span><span class="body">Pick Mode 2 or Mode 3, point the plugin at an empty folder, and have my library "materialized" out to disk on first run.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">A first-run baseline runs. Each item with an attached file gets its file copied out of Zotero's storage to the equivalent path on disk. Subcollections become subfolders. Items without files (metadata-only entries) are skipped silently.</span></div>
       <div class="row alt"><span class="label">In Mode 1</span><span class="body">Mode 1 is import-only and won't write anything to disk. Switch to Mode 2 or Mode 3 if you want your library mirrored locally.</span></div>
-      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Nothing copies out → confirm the mode is mode2 or mode3, and that <code>baselineCompletedForRoot</code> is empty (clear it to force a re-run). Disk space concern: consider <code>importMode = linked</code> for new items instead of copying.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Nothing copies out → confirm the mode is mode2 or mode3, and that <code>baselineCompletedForRoot</code> is empty (clear it to force a re-run). Collections appear as subfolders; items in no collection land in the root folder as Unfiled. Disk space concern: consider <code>importMode = linked</code> for new items instead of copying.</span></div>
       <div class="ref"><b>Covers:</b> BASE.1 (B.6 mkdir), BASE.2 (B.2 copy)</div>
     </div>
 
@@ -444,7 +444,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <p class="voice">My folder layout is one thing; my Zotero collections are another. Don't force them to match.</p>
       <div class="row"><span class="label">I want to</span><span class="body">The plugin to reconcile sanely without trashing anything or force-rewriting either side's structure.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">Files only on disk get imported into the Zotero collection matching their subfolder path. Items only in Zotero get their files copied out (Mode 2/3). Files that match by hash on both sides are linked in place — the plugin won't force-move a file to its "canonical" path just to make the structures align.</span></div>
-      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Feels overwhelming → create a fresh empty collection in Zotero, pick that as the sync root, and let the plugin build up from there. You can re-baseline by clearing <code>baselineCompletedForRoot</code>.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Feels overwhelming → clear <code>baselineCompletedForRoot</code> and re-run setup. The plugin mirrors the whole library, so there is no single "sync root collection" to scope down to — but you can use Smart Rules or Mode 1 (import-only) to limit what it acts on while you orient yourself.</span></div>
       <div class="ref"><b>Covers:</b> ADOPT.1, BASE.3</div>
     </div>
 
@@ -480,7 +480,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>I just downloaded a paper to my watch folder</h3>
       <p class="voice">I clicked download in my browser, the PDF landed in my watch folder. Now I want to see it in Zotero, with the title and authors filled in.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Open Zotero a few seconds later and see the new paper, recognized and named.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">Within ~5 seconds the file shows up as an item in my sync-root collection. Title, authors, year, DOI get populated. The file is renamed via the template (default: <code>{firstCreator} - {year} - {title}.pdf</code>) — both on disk and on the attachment.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Within ~5 seconds the file shows up as an item — in the matching collection if dropped into a subfolder, or as Unfiled if dropped at the watch-folder root. Title, authors, year, DOI get populated. The file is renamed via the template (default: <code>{firstCreator} - {year} - {title}.pdf</code>) — both on disk and on the attachment.</span></div>
       <div class="row offnote"><span class="label">If it looks off</span><span class="body">Item appeared but metadata is missing → look for a <code>_needs-review</code> tag; Zotero's recognizer didn't find a match. You can run "Retrieve Metadata for PDF" manually. Filename didn't get rewritten → check <code>autoRename</code> is on and the template variables resolved (some fields like <code>{DOI}</code> are empty for non-DOI papers).</span></div>
       <div class="ref"><b>Covers:</b> S.2, P1.3, P1.4, P1.5</div>
     </div>
@@ -510,8 +510,8 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>I want to organize PDFs into subfolders on disk</h3>
       <p class="voice">I create <code>Methods/</code> in my watch folder and drag some PDFs into it. I want a matching Zotero subcollection.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Subfolders to drive Zotero's collection tree.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">The moment I create a subfolder (or move files into one), a matching subcollection appears in Zotero under the sync root. Items get filed there. Empty subfolders create empty collections.</span></div>
-      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Subcollection isn't appearing → confirm the subfolder is under the watch root (not its parent or sibling). Special folders (like <code>.zotero-watch-trash/</code> and <code>imported/</code>) are reserved and skipped.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The moment I create a subfolder (or move files into one), a matching collection appears in Zotero. Top-level subfolders become top-level collections; nested subfolders produce nested collections. Items get filed in the matching collection. Empty subfolders create empty collections.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Collection isn't appearing → confirm the subfolder is under the watch root (not its parent or sibling). Special folders (like <code>.zotero-watch-trash/</code> and <code>imported/</code>) are reserved and skipped.</span></div>
       <div class="ref"><b>Covers:</b> ADD.2, ADD.3</div>
     </div>
 
@@ -549,7 +549,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <p class="voice">A paper I categorized as "Methods" should really be in "Theory". I drag it across in Zotero.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Its file to follow on disk.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the file moves on disk to the new collection's subfolder. The old location is empty afterward. Items that live in multiple collections at once keep one "canonical" location (usually the first one) and that's where the file lives.</span></div>
-      <div class="row offnote"><span class="label">If it looks off</span><span class="body">File didn't move → make sure both source and target are under the sync root (collections outside the sync root don't count).</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">File didn't move → confirm you're running Mode 2 or 3. The whole library is in scope; no separate "sync root" scoping applies.</span></div>
       <div class="ref"><b>Covers:</b> MEM.1</div>
     </div>
 
@@ -566,7 +566,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="story-tag">2.10 · late attachment</div>
       <h3>I attached a PDF to an existing Zotero item by hand</h3>
       <p class="voice">I had a citation in Zotero without a file; I just attached the PDF via "Add Attachment".</p>
-      <div class="row"><span class="label">I want to</span><span class="body">The file to appear on disk like everything else under the sync root.</span></div>
+      <div class="row"><span class="label">I want to</span><span class="body">The file to appear on disk like everything else in the watch folder.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">In Mode 2 or Mode 3, the plugin copies the file out to the appropriate subfolder (matching the parent item's collection). A FileRecord is created.</span></div>
       <div class="ref"><b>Covers:</b> LATE.1</div>
     </div>
@@ -639,10 +639,10 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
     <div class="story">
       <div class="story-tag">3.5 · bulk safety</div>
-      <h3>I just deleted a lot of files at once</h3>
-      <p class="voice">I cleared out an old folder, or one of those file syncs got weird and removed twenty files. I do NOT want my Zotero library shredded as a side effect.</p>
+      <h3>I just deleted a lot of files (or folders) at once</h3>
+      <p class="voice">I cleared out an old folder, or a cloud-sync glitch removed twenty files — or several top-level folders disappeared at once. I do NOT want my Zotero library shredded as a side effect.</p>
       <div class="row"><span class="label">I want to</span><span class="body">A safety stop. Make me confirm before something this big happens.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">If a single operation would affect more than 10 files <em>or</em> more than 20% of your tracked items, a confirmation dialog appears. Cancel → tracking flips to "missing" but nothing destructive happens. Proceed → normal propagation runs. If the confirm dialog can't render (no UI thread available), the plugin refuses rather than silently executing.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">If a single operation would affect more than 10 files <em>or</em> more than 20% of your tracked items, a confirmation dialog appears. Cancel → tracking flips to "missing" but nothing destructive happens. Proceed → normal propagation runs. If the confirm dialog can't render (no UI thread available), the plugin refuses rather than silently executing. Additionally: if many top-level folders vanish simultaneously (the signature of a cloud-sync glitch under whole-library scope), the plugin <b>pauses deletion entirely</b> rather than trashing all those collections — you'll see a warning in the prefs "Sync warnings" panel and can resume or investigate. And the very first time a two-way delete would fire under whole-library scope, you get a one-time confirmation explaining the scope and asking you to opt in.</span></div>
       <div class="ref"><b>Covers:</b> DEL.3, FDEL.2</div>
     </div>
 
@@ -657,8 +657,8 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
     <div class="story">
       <div class="story-tag">3.7 · last-collection-removed</div>
-      <h3>I removed an item from its only sync-root collection</h3>
-      <p class="voice">I cleaned up the categorization in Zotero and now an item isn't in any of my sync-root collections. What happened to its file on disk?</p>
+      <h3>I removed an item from all of its collections</h3>
+      <p class="voice">I cleaned up the categorization in Zotero and now an item isn't in any collection — it's essentially Unfiled. What happened to its file on disk?</p>
       <div class="row"><span class="label">I want to</span><span class="body">My file to stay on disk. Don't delete things just because I reorganized.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">The file stays on disk. The FileRecord flips to "out-of-scope-suppressed." A "Suppressed items" row appears in prefs. From there I can: re-instate (put back), keep local (stop syncing but keep the file), trash, or move outside the watch root.</span></div>
       <div class="ref"><b>Covers:</b> SUPP.1</div>
@@ -753,11 +753,12 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
     </div>
 
     <div class="story">
-      <div class="story-tag">4.4 · change sync root</div>
-      <h3>I want to use a different Zotero collection as the sync root</h3>
-      <p class="voice">I started syncing against <code>Inbox</code>, but I really want everything under <code>Research</code>.</p>
-      <div class="row"><span class="label">I want to</span><span class="body">Re-anchor the sync to a different collection.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">Change <code>syncRootCollectionKey</code> in prefs (or use the picker in the prefs pane). Clear <code>baselineCompletedForRoot</code> so the baseline re-runs against the new root.</span></div>
+      <div class="story-tag">4.4 · upgrade + whole-library scope</div>
+      <h3>I upgraded from an older version — do I still have my single-collection setup?</h3>
+      <p class="voice">I was running v2.6 with a single sync-root collection. I upgraded to v2.7. Did anything change?</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Keep working exactly as before, unless I choose to switch to the new whole-library mode.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Nothing changes automatically. Upgrading pins you to your existing single-collection behavior via a migration flag. The new whole-library scope (which maps your entire Zotero library to the watch folder, with top-level folders = top-level collections and root-level files = Unfiled items) is <b>opt-in</b> — re-run setup via "Re-run setup wizard…" in prefs and choose the whole-library option when prompted. Only then does the scope switch.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">If you re-ran setup and want to go back to single-collection behavior, use "Re-run setup wizard…" again and pick the collection-scoped option. Clear <code>baselineCompletedForRoot</code> so the baseline re-runs against the new scope.</span></div>
     </div>
 
     <div class="story">
@@ -834,7 +835,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>I installed Zotero on my desktop too, with Zotero Sync turned on</h3>
       <p class="voice">My laptop is already set up with the plugin. Now I'm setting up the desktop. My Zotero library is already pulled down via Zotero Sync, but the desktop's watch folder is empty.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Install the plugin on the desktop and have my library mirrored locally — without re-importing every item as a new one.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">This is effectively the "Zotero populated, folder empty" case from Chapter 1. Pick the same sync root collection in the wizard. The baseline writes attachment files out to the desktop's watch folder. Hash stamps in items' Extra fields prevent any cross-device duplicates.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">This is effectively the "Zotero populated, folder empty" case from Chapter 1. Run setup on the desktop and point it at a local watch folder (empty is fine). The plugin mirrors the whole library: the baseline writes attachment files out into the matching folder structure. Hash stamps in items' Extra fields prevent any cross-device duplicates.</span></div>
       <div class="ref"><b>Covers:</b> BASE.2, BASE.3 (cross-device variant)</div>
     </div>
 
@@ -872,7 +873,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap-wide">
     <div class="row">
-      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.6.4 · Covers Zotero 7, 8, 9 · Last updated 2026-06-18</div>
+      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.7.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
       <ul>
         <li><a href="index.html">Back to overview</a></li>
         <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>
