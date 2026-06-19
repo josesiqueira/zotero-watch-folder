@@ -684,6 +684,20 @@
                 `Watch folder on disk: ${r.watchFolderFileCount} file(s) (${formatBytes(r.watchFolderBytes)})`,
                 `Trashed Zotero attachments with files: ${r.trashedAttachmentCount} (${formatBytes(r.trashedBytes)})`,
             ];
+            // File-sync destination for the personal library (the "Stored in
+            // Zotero" files sync here). Group libraries always use Zotero
+            // storage regardless — WebDAV is personal-library only.
+            const fs = r.fileSync;
+            if (fs) {
+                let where;
+                if (!fs.enabled) where = 'off (files stay local only)';
+                else if (fs.protocol === 'webdav') where = `WebDAV${fs.webdavHost ? ' — ' + fs.webdavHost : ''}`;
+                else where = 'Zotero storage';
+                lines.push(`File sync (My Library): ${where}`);
+                if (fs.enabled && fs.protocol === 'webdav') {
+                    lines.push('  • Group-library files still use Zotero storage (WebDAV is personal-library only).');
+                }
+            }
             const text = lines.join('\n');
             if (out) {
                 out.value = text;

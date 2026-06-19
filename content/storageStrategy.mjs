@@ -416,10 +416,12 @@ async function _watchFolderUsage(watchRoot) {
  * }>}
  */
 export async function accountingReport() {
+  const fileSync = _fileSyncInfo();
   const empty = {
     zoteroItemCount: 0, storedCount: 0, linkedCount: 0, storedBytes: 0,
     watchFolderFileCount: 0, watchFolderBytes: 0,
     trashedAttachmentCount: 0, trashedBytes: 0,
+    fileSync,
   };
 
   const syncRoot = await resolveSyncRoot().catch(() => null);
@@ -476,7 +478,27 @@ export async function accountingReport() {
     zoteroItemCount, storedCount, linkedCount, storedBytes,
     watchFolderFileCount: usage.count, watchFolderBytes: usage.bytes,
     trashedAttachmentCount, trashedBytes,
+    fileSync,
   });
+}
+
+/**
+ * Where Zotero syncs attachment FILES for the personal library: WebDAV (e.g.
+ * pCloud) or Zotero's own storage, or off. Read from Zotero's sync prefs (full
+ * key + global=true). Group-library files always use Zotero storage regardless
+ * (WebDAV is personal-library only) — surfaced as a note in the UI.
+ * @returns {{enabled:boolean, protocol:string, webdavHost:string|null}}
+ */
+function _fileSyncInfo() {
+  const get = (k) => { try { return Zotero.Prefs.get(k, true); } catch (_e) { return undefined; } };
+  const enabled = get('extensions.zotero.sync.storage.enabled') === true;
+  const protocol = get('extensions.zotero.sync.storage.protocol') || 'zotero';
+  let webdavHost = null;
+  if (protocol === 'webdav') {
+    const url = get('extensions.zotero.sync.storage.url');
+    webdavHost = (typeof url === 'string' && url) ? url : null;
+  }
+  return { enabled, protocol, webdavHost };
 }
 
 // ─── Empty Zotero trash (FEAT-EMPTY-TRASH) ──────────────────────────────────

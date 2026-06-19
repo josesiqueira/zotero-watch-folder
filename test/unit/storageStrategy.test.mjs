@@ -580,3 +580,32 @@ describe('UT-908: purgeWebDAVOrphans', () => {
     expect(purgeOrphaned).toHaveBeenCalledTimes(1);
   });
 });
+
+// ─── UT-909: accountingReport surfaces the file-sync destination ────────────
+
+describe('UT-909: accountingReport file-sync info', () => {
+  beforeEach(() => {
+    globalThis.Zotero = globalThis.Zotero || {};
+    globalThis.Zotero.debug = vi.fn();
+  });
+
+  it('reports WebDAV protocol + host from the sync prefs (full key path)', async () => {
+    globalThis.Zotero.Prefs = { get: vi.fn((k) => {
+      if (k === 'extensions.zotero.sync.storage.enabled') return true;
+      if (k === 'extensions.zotero.sync.storage.protocol') return 'webdav';
+      if (k === 'extensions.zotero.sync.storage.url') return 'webdav.pcloud.com';
+      return undefined;
+    }) };
+    resolveSyncRoot.mockResolvedValue(null); // empty path still carries fileSync
+    const r = await storageStrategy.accountingReport();
+    expect(r.fileSync).toMatchObject({ enabled: true, protocol: 'webdav', webdavHost: 'webdav.pcloud.com' });
+  });
+
+  it('defaults to zotero storage when no webdav pref is set', async () => {
+    globalThis.Zotero.Prefs = { get: vi.fn(() => undefined) };
+    resolveSyncRoot.mockResolvedValue(null);
+    const r = await storageStrategy.accountingReport();
+    expect(r.fileSync.protocol).toBe('zotero');
+    expect(r.fileSync.webdavHost).toBe(null);
+  });
+});
