@@ -322,8 +322,10 @@ async function _convertOneToLinked(entry, { syncRoot, watchRoot, store }) {
       lastSyncedMtime: stat?.lastModified ?? 0,
       zoteroItemKey: parentItemID ? (Zotero.Items.get(parentItemID)?.key ?? null) : linked.key,
       zoteroAttachmentKey: linked.key,
-      canonicalCollectionKey: canonical?.key ?? null,
-      collectionMembershipKeys: canonical ? [canonical.key] : [],
+      // isUnfiled (library scope) → no collection: null key + empty membership.
+      // Guard against the UNFILED sentinel being truthy (would yield [undefined]).
+      canonicalCollectionKey: isUnfiled ? null : (canonical?.key ?? null),
+      collectionMembershipKeys: isUnfiled || !canonical ? [] : [canonical.key],
       state: STATE.CLEAN,
     }));
   }
