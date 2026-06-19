@@ -3,9 +3,9 @@
     "watch-folder@zotero-plugin.org": {
       "updates": [
         {
-          "version": "2.6.4",
-          "update_link": "https://github.com/josesiqueira/zotero-watch-folder/releases/download/v2.6.4/zotero-watch-folder-2.6.4.xpi",
-          "update_hash": "sha256:e2c4759c60a423ef4a4de2f0c96b5fb860dd6680e55f8cfb2a2dc3a6164f9b37",
+          "version": "2.7.0",
+          "update_link": "https://github.com/josesiqueira/zotero-watch-folder/releases/download/v2.7.0/zotero-watch-folder-2.7.0.xpi",
+          "update_hash": "sha256:3ca9f69d134b78183c22687ecae718d7d2c4a87bc44b453436eb6fe4e4f1c1e9",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999"
