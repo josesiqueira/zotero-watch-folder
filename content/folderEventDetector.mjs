@@ -82,12 +82,8 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     });
     return;
   }
-  // Healthy (or bootstrapping) — record the current top-level set so the next
-  // cycle has a baseline to compare against.
-  recordHealthyFingerprint(topNames);
 
   const records = trackingStore.getAllOfType('collection');
-  if (records.length === 0) return;
 
   // ── Phase 1: collect every tracked collection that's gone from disk ─────
   const missing = [];
@@ -113,12 +109,24 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
 
     missing.push(rec);
   }
-  if (missing.length === 0) return;
+  // CLEAN cycle (nothing missing) — only NOW is it safe to refresh the healthy
+  // fingerprint. Recording it earlier (before deletions are reconciled) let a
+  // drip-eviction ratchet the collapse baseline downward each cycle so the
+  // >50%-collapse gate never fired against the true pre-incident count (F7/F6).
+  // A cycle WITH missing folders deliberately leaves the fingerprint stale; the
+  // next fully-reconciled clean cycle updates it.
+  if (missing.length === 0) {
+    recordHealthyFingerprint(topNames);
+    return;
+  }
 
   // ── Phase 2: cycle aggregate cap (above the per-action bulkGuard) ───────
   // N individually-small deletes still add up to a mass deletion. A top-level
-  // folder is one whose relative path has no separator.
-  const missingTopLevel = missing.filter((r) => !String(r.localPath).includes('/')).length;
+  // folder is one whose SYNC-ROOT-RELATIVE path has no separator. Compute the
+  // relative form first: legacy absolute localPaths contain '/' and would
+  // otherwise be miscounted as nested, undercounting missingTopLevel and
+  // weakening the top-level cap (F7b).
+  const missingTopLevel = missing.filter((r) => !_relForm(r.localPath, watchRoot).includes('/')).length;
   const aggregate = checkCycleAggregate({
     missingTopLevel,
     missingTotal: missing.length,
@@ -164,4 +172,15 @@ function _toAbs(root, rel) {
   const segs = rel.split('/').filter((s) => s.trim() !== '');
   if (segs.length === 0) return root;
   return PathUtils.join(root, ...segs);
+}
+
+/**
+ * Sync-root-relative form of a (possibly legacy-absolute) tracked localPath, so
+ * "top-level" can be judged by "no separator" regardless of how the path was
+ * stored. Strips a leading watchRoot + separators; normalizes '\\' to '/'.
+ */
+function _relForm(localPath, watchRoot) {
+  let rel = String(localPath || '');
+  if (watchRoot && rel.startsWith(watchRoot)) rel = rel.slice(watchRoot.length);
+  return rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
 }

@@ -46,6 +46,10 @@ vi.mock('../../content/canonicalPath.mjs', () => ({
     constructor(m) { super(m); this.name = 'SyncRootMissingError'; }
   },
   UNFILED: Object.freeze({ isUnfiled: true }),
+  // Default collection scope: confirmFirstLibraryDelete short-circuits to true,
+  // so the existing Mode-3 deletion tests are unaffected. Library-scope cases
+  // override this per-test.
+  getScopeMode: vi.fn(() => 'collection'),
 }));
 
 vi.mock('../../content/fileMissing.mjs', () => {

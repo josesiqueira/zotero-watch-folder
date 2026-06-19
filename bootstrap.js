@@ -158,23 +158,47 @@ function _initDefaultPrefs() {
 // and conservative: only acts when it's confident the install pre-dates 2.7.0.
 // ---------------------------------------------------------------------------
 function _migrateScopeModeForExistingInstall() {
+  const PREFIX = "extensions.zotero.watchFolder.";
+  let user = null;
   try {
-    const PREFIX = "extensions.zotero.watchFolder.";
-    const user = Services.prefs.getBranch(PREFIX);
+    user = Services.prefs.getBranch(PREFIX);
     // Already has an explicit scopeMode choice → nothing to migrate.
     if (user.prefHasUserValue("scopeMode")) return;
-    // Signature of a pre-2.7.0 configured install: it completed setup AND it
-    // has a sync-root collection key on the user branch. A fresh 2.7.0 install
-    // has neither, so it is left on the new 'library' default.
-    const hadSetup = user.prefHasUserValue("setupCompleted") && user.getBoolPref("setupCompleted", false);
-    const hadSyncRoot = user.prefHasUserValue("syncRootCollectionKey")
-      && (user.getCharPref("syncRootCollectionKey", "") || "").length > 0;
-    if (hadSetup && hadSyncRoot) {
+    // Signature of a pre-2.7.0 configured install: it has a sync-root collection
+    // key on the user branch (the wizard/prefs always co-set setupCompleted, but
+    // an about:config-only user may have set the key + sourcePath alone — so the
+    // sync-root key is the load-bearing signal). A fresh 2.7.0 install has none,
+    // so it is left on the new 'library' default.
+    //
+    // getBoolPref throws if a pref was hand-edited to the wrong type; isolate it
+    // so a corrupt setupCompleted can't abort the whole migration (M5).
+    let hadSetup = false;
+    try {
+      hadSetup = user.prefHasUserValue("setupCompleted") && user.getBoolPref("setupCompleted", false);
+    } catch (_e) { hadSetup = false; }
+    let syncRootKey = "";
+    try {
+      if (user.prefHasUserValue("syncRootCollectionKey")) syncRootKey = user.getCharPref("syncRootCollectionKey", "") || "";
+    } catch (_e) { syncRootKey = ""; }
+    let sourcePath = "";
+    try {
+      if (user.prefHasUserValue("sourcePath")) sourcePath = user.getCharPref("sourcePath", "") || "";
+    } catch (_e) { sourcePath = ""; }
+    // Pin to 'collection' if EITHER the wizard/prefs signature (setup + key) OR a
+    // hand-configured install (key + a watch folder) is present (M11).
+    const looksPreV27 = (hadSetup && syncRootKey.length > 0) || (syncRootKey.length > 0 && sourcePath.length > 0);
+    if (looksPreV27) {
       user.setCharPref("scopeMode", "collection");
       try { Zotero.debug("[WatchFolder] v2.7 migration: pinned existing install to scopeMode 'collection' (behavior-preserving; whole-library mode is opt-in via setup)."); }
       catch (_e) { /* Zotero may not be ready */ }
     }
   } catch (e) {
-    try { Zotero.logError(`[WatchFolder] v2.7 scopeMode migration failed (leaving prefs as-is): ${e}`); } catch (_e) { /* */ }
+    // FAIL CLOSED (M1): the new default is 'library' (whole-library deletes), so
+    // leaving prefs "as-is" on an error would silently escalate an existing
+    // install's blast radius. Pin to the SAFE 'collection' value instead — a
+    // false pin only means a real fresh install must opt in via setup, which is
+    // strictly safer than an accidental whole-library escalation.
+    try { user = user || Services.prefs.getBranch(PREFIX); user.setCharPref("scopeMode", "collection"); } catch (_e) { /* */ }
+    try { Zotero.logError(`[WatchFolder] v2.7 scopeMode migration error — pinned to 'collection' (fail-safe): ${e}`); } catch (_e) { /* */ }
   }
 }

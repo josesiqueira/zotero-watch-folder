@@ -65,10 +65,13 @@ export const UNFILED = Object.freeze({ isUnfiled: true });
  * chosen collection anchors everything). `'library'` = the whole-library
  * mirror (root → Unfiled, every top-level collection → a top-level folder).
  *
- * During the 2.7.0 build the default stays `'collection'` so the existing
- * suite + installs are unchanged while library mode is built alongside; the
- * default flips to `'library'` (and the collection path is removed) once the
- * whole-library feature is complete and verified (task #53).
+ * The default is `'library'` as of 2.7.0 (prefs.js / bootstrap.js). The legacy
+ * collection-scope code paths are RETAINED (not removed) because the upgrade
+ * migration (`bootstrap.js::_migrateScopeModeForExistingInstall`) pins every
+ * pre-2.7 install to `'collection'` to preserve its behavior — so both branches
+ * are live. Do NOT delete the migration or the collection-scope branches as
+ * "dead code": they are what keeps the default flip from silently escalating an
+ * existing install's delete blast radius.
  *
  * @returns {'library'|'collection'}
  */
@@ -423,7 +426,10 @@ export async function relativePathToCollection(relativePathStr, { createIfMissin
     for (const name of segs) {
       const siblings = (parent === null)
         ? (Zotero.Collections.getByLibrary(libraryID) || []).filter(c => !c.parentID && !isSpecialCollection(c))
-        : (Zotero.Collections.getByParent(parent.id, libraryID) || []);
+        // Filter specials at EVERY depth (defense-in-depth, symmetric with the
+        // top-level filter and baseline._enumerateFrom) — isSpecialCollection is
+        // the sole scope boundary, so never let a virtual row become a folder.
+        : (Zotero.Collections.getByParent(parent.id, libraryID) || []).filter(c => !isSpecialCollection(c));
       const found = siblings.find(c => c.name === name);
       if (found) { parent = found; continue; }
       if (!createIfMissing) return null;

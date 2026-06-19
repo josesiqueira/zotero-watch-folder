@@ -338,3 +338,46 @@ describe('UT-608: delete-safety gates (library-scale)', () => {
     expect(mirrorExecutor.execute).toHaveBeenCalledTimes(3);
   });
 });
+
+// ─── UT-609: F7 — fingerprint refreshes ONLY on a fully-clean cycle ─────────
+
+describe('UT-609: healthy fingerprint only on a clean cycle (anti-drip-poison)', () => {
+  it('does NOT refresh the fingerprint on a cycle that has missing folders', async () => {
+    Zotero.Prefs.get = vi.fn(() => JSON.stringify({ count: 10, namesHash: 'x' }));
+    const setSpy = vi.fn();
+    Zotero.Prefs.set = setSpy;
+    // 2 of 10 top-level folders missing (under collapse + aggregate caps) → emits,
+    // but must leave the count=10 baseline intact so a drip can't ratchet it down.
+    const records = ['A', 'B'].map((k) => (
+      { type: 'collection', zoteroCollectionKey: k, localPath: k, state: 'clean' }));
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch', '/watch/C', '/watch/D', '/watch/E', '/watch/F', '/watch/G', '/watch/H', '/watch/I']),
+      watchRoot: '/watch',
+    });
+    // Deletions emitted...
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(2);
+    // ...but the fingerprint pref was NOT rewritten this cycle.
+    const wroteFingerprint = setSpy.mock.calls.some(
+      (c) => String(c[0]).includes('watchRootTopLevelFingerprint'));
+    expect(wroteFingerprint).toBe(false);
+  });
+
+  it('DOES refresh the fingerprint on a clean cycle (no missing folders)', async () => {
+    Zotero.Prefs.get = vi.fn(() => '');
+    const setSpy = vi.fn();
+    Zotero.Prefs.set = setSpy;
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'A', state: 'clean' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch', '/watch/A']), // A present → nothing missing
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    const wroteFingerprint = setSpy.mock.calls.some(
+      (c) => String(c[0]).includes('watchRootTopLevelFingerprint'));
+    expect(wroteFingerprint).toBe(true);
+  });
+});
