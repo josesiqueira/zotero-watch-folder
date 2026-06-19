@@ -781,6 +781,12 @@
         }
         group.hidden = false;
 
+        // Bulk "Stop tracking all" button — labelled with the live count.
+        const stopAllBtn = document.getElementById('watch-folder-missing-stop-all');
+        if (stopAllBtn && stopAllBtn.setAttribute) {
+            stopAllBtn.setAttribute('label', `Stop tracking all (${entries.length})`);
+        }
+
         for (const entry of entries) {
             const path = (entry && (entry.localPath || entry.path)) || String(entry);
             const row = document.createXULElement
@@ -835,6 +841,51 @@
             }
         } catch (e) {
             Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        await refreshMissingFilesDisplay();
+    }
+
+    /**
+     * Stop tracking ALL currently-missing files in one action (instead of
+     * clicking each row). Confirms once, then calls the tracking-only
+     * stopTrackingMissing for every listed path. Tracking-only: nothing is
+     * deleted or trashed in Zotero — the plugin just forgets these files.
+     */
+    async function stopTrackingAllMissing() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver || typeof resolver.listMissing !== 'function'
+            || typeof resolver.stopTrackingMissing !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Stop-tracking unavailable — plugin not fully loaded?');
+            return;
+        }
+        let entries = [];
+        try {
+            const r = resolver.listMissing();
+            entries = (r && typeof r.then === 'function') ? await r : r;
+        } catch (_e) { entries = []; }
+        if (!Array.isArray(entries) || entries.length === 0) {
+            await refreshMissingFilesDisplay();
+            return;
+        }
+        const paths = entries
+            .map((e) => (typeof e === 'string') ? e : (e && (e.localPath || e.path)))
+            .filter((p) => typeof p === 'string' && p);
+        const proceed = Services.prompt.confirm(window, 'Watch Folder',
+            `Stop tracking all ${paths.length} file(s) removed from disk?\n\n`
+            + 'They stay in Zotero — this only makes the plugin forget them so they '
+            + 'stop appearing here. This cannot be undone (re-adding the files to the '
+            + 'watch folder would re-import them).');
+        if (!proceed) return;
+        let failed = 0;
+        for (const path of paths) {
+            try {
+                const result = await resolver.stopTrackingMissing(path);
+                if (result && result.ok === false) failed++;
+            } catch (_e) { failed++; }
+        }
+        if (failed > 0) {
+            Services.prompt.alert(window, 'Watch Folder',
+                `Stopped tracking ${paths.length - failed} of ${paths.length} file(s); ${failed} could not be cleared.`);
         }
         await refreshMissingFilesDisplay();
     }
@@ -1323,6 +1374,7 @@
         showStorageReport,
         emptyZoteroTrash,
         stopTrackingMissing,
+        stopTrackingAllMissing,
         onLoad: init,
     };
 
