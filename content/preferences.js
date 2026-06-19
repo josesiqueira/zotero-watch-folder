@@ -684,6 +684,20 @@
                 `Watch folder on disk: ${r.watchFolderFileCount} file(s) (${formatBytes(r.watchFolderBytes)})`,
                 `Trashed Zotero attachments with files: ${r.trashedAttachmentCount} (${formatBytes(r.trashedBytes)})`,
             ];
+            // File-sync destination for the personal library (the "Stored in
+            // Zotero" files sync here). Group libraries always use Zotero
+            // storage regardless — WebDAV is personal-library only.
+            const fs = r.fileSync;
+            if (fs) {
+                let where;
+                if (!fs.enabled) where = 'off (files stay local only)';
+                else if (fs.protocol === 'webdav') where = `WebDAV${fs.webdavHost ? ' — ' + fs.webdavHost : ''}`;
+                else where = 'Zotero storage';
+                lines.push(`File sync (My Library): ${where}`);
+                if (fs.enabled && fs.protocol === 'webdav') {
+                    lines.push('  • Group-library files still use Zotero storage (WebDAV is personal-library only).');
+                }
+            }
             const text = lines.join('\n');
             if (out) {
                 out.value = text;
@@ -753,6 +767,58 @@
     }
 
     /**
+     * Purge orphaned files from the WebDAV file-sync server (e.g. pCloud).
+     * Delegates to Zotero's own purge routines via
+     * storageStrategy.purgeWebDAVOrphans — the plugin never deletes files
+     * itself, so a live attachment's file can't be mistaken for an orphan.
+     */
+    async function purgeWebDAVOrphans() {
+        const api = _storageStrategyAPI();
+        if (!api || typeof api.purgeWebDAVOrphans !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Storage tools not available — plugin not fully loaded?');
+            return;
+        }
+        // Cancel is the DEFAULT-focused button (this writes deletions to your
+        // cloud server). "Purge orphaned files" is button 0.
+        const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+            + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
+            + Services.prompt.BUTTON_POS_1_DEFAULT;
+        const pressed = Services.prompt.confirmEx(
+            window,
+            'Purge WebDAV orphans?',
+            'This removes orphaned files from your WebDAV file-sync server — the '
+            + '.zip/.prop files left behind for items no longer in your library. '
+            + 'Files for items still in your library are never touched (Zotero '
+            + 'decides what counts as an orphan). This frees space on your server '
+            + 'and cannot be undone.',
+            flags,
+            'Purge orphaned files',
+            null, null, null, {}
+        );
+        if (pressed !== 0) return; // cancelled
+
+        try {
+            const result = await api.purgeWebDAVOrphans();
+            if (result && result.ok) {
+                Services.prompt.alert(window, 'Watch Folder',
+                    'WebDAV orphan purge complete. Orphaned files for deleted items have been removed from your server.');
+            } else {
+                const reasonMap = {
+                    'not-webdav': 'WebDAV file sync is not configured (your file-sync protocol is not WebDAV), so there is nothing to purge here.',
+                    'webdav-api-unavailable': 'This Zotero build does not expose the WebDAV purge API.',
+                    'purge-api-unavailable': 'This Zotero build does not expose the WebDAV purge API.',
+                    'credentials-failed': 'Could not authenticate with your WebDAV server. Check Settings → Sync → File Syncing.',
+                };
+                const msg = (result && reasonMap[result.reason])
+                    || `Could not purge${result && result.error ? ': ' + result.error : '.'}`;
+                Services.prompt.alert(window, 'Watch Folder', msg);
+            }
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `WebDAV purge failed: ${e?.message ?? e}`);
+        }
+    }
+
+    /**
      * Refresh the "Files removed from disk (kept in Zotero)" list. Calls
      * suppressionResolver.listMissing() defensively (the API is provided by
      * another module and may be absent on older builds). Each entry gets a
@@ -780,6 +846,12 @@
             return;
         }
         group.hidden = false;
+
+        // Bulk "Stop tracking all" button — labelled with the live count.
+        const stopAllBtn = document.getElementById('watch-folder-missing-stop-all');
+        if (stopAllBtn && stopAllBtn.setAttribute) {
+            stopAllBtn.setAttribute('label', `Stop tracking all (${entries.length})`);
+        }
 
         for (const entry of entries) {
             const path = (entry && (entry.localPath || entry.path)) || String(entry);
@@ -835,6 +907,51 @@
             }
         } catch (e) {
             Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        await refreshMissingFilesDisplay();
+    }
+
+    /**
+     * Stop tracking ALL currently-missing files in one action (instead of
+     * clicking each row). Confirms once, then calls the tracking-only
+     * stopTrackingMissing for every listed path. Tracking-only: nothing is
+     * deleted or trashed in Zotero — the plugin just forgets these files.
+     */
+    async function stopTrackingAllMissing() {
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        if (!resolver || typeof resolver.listMissing !== 'function'
+            || typeof resolver.stopTrackingMissing !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Stop-tracking unavailable — plugin not fully loaded?');
+            return;
+        }
+        let entries = [];
+        try {
+            const r = resolver.listMissing();
+            entries = (r && typeof r.then === 'function') ? await r : r;
+        } catch (_e) { entries = []; }
+        if (!Array.isArray(entries) || entries.length === 0) {
+            await refreshMissingFilesDisplay();
+            return;
+        }
+        const paths = entries
+            .map((e) => (typeof e === 'string') ? e : (e && (e.localPath || e.path)))
+            .filter((p) => typeof p === 'string' && p);
+        const proceed = Services.prompt.confirm(window, 'Watch Folder',
+            `Stop tracking all ${paths.length} file(s) removed from disk?\n\n`
+            + 'They stay in Zotero — this only makes the plugin forget them so they '
+            + 'stop appearing here. This cannot be undone (re-adding the files to the '
+            + 'watch folder would re-import them).');
+        if (!proceed) return;
+        let failed = 0;
+        for (const path of paths) {
+            try {
+                const result = await resolver.stopTrackingMissing(path);
+                if (result && result.ok === false) failed++;
+            } catch (_e) { failed++; }
+        }
+        if (failed > 0) {
+            Services.prompt.alert(window, 'Watch Folder',
+                `Stopped tracking ${paths.length - failed} of ${paths.length} file(s); ${failed} could not be cleared.`);
         }
         await refreshMissingFilesDisplay();
     }
@@ -1322,7 +1439,9 @@
         // Storage report + Empty Zotero trash + Missing files.
         showStorageReport,
         emptyZoteroTrash,
+        purgeWebDAVOrphans,
         stopTrackingMissing,
+        stopTrackingAllMissing,
         onLoad: init,
     };
 

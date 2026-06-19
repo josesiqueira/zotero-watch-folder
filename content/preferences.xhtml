@@ -281,6 +281,9 @@
       <button id="watch-folder-empty-trash-btn"
               data-l10n-id="watch-folder-pref-empty-trash-btn"
               oncommand="WatchFolderPrefs.emptyZoteroTrash()"/>
+      <button id="watch-folder-purge-webdav-btn"
+              label="Purge WebDAV orphans"
+              oncommand="WatchFolderPrefs.purgeWebDAVOrphans()"/>
     </hbox>
 
     <html:pre id="watch-folder-storage-report-output"
@@ -296,6 +299,10 @@
              style="font-weight: 600;"/>
       <html:p data-l10n-id="watch-folder-pref-missing-files-explainer"
               style="margin: 2px 0 6px 0; font-size: 0.9em; opacity: 0.8; line-height: 1.45;"/>
+      <hbox style="margin-bottom: 6px;">
+        <button id="watch-folder-missing-stop-all" label="Stop tracking all"
+                oncommand="WatchFolderPrefs.stopTrackingAllMissing()"/>
+      </hbox>
       <vbox id="watch-folder-missing-files-list"/>
     </vbox>
   </groupbox>
