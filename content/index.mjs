@@ -129,6 +129,7 @@ export async function runSetupWizard(window) {
         const committed = await _commitWizardResult({
             window,
             watchFolder: xhtmlResult.watchFolder,
+            scopeMode: xhtmlResult.scopeMode,
             syncRootKey: xhtmlResult.syncRootKey,
             syncRootLibraryID: xhtmlResult.syncRootLibraryID,
             modeKey: xhtmlResult.mode,
@@ -206,6 +207,7 @@ export async function runSetupWizard(window) {
     const committed = await _commitWizardResult({
         window,
         watchFolder,
+        scopeMode: "library",
         syncRootKey: syncRootChoice.key,
         syncRootLibraryID: syncRootChoice.libraryID,
         modeKey: modeChoice.key,
