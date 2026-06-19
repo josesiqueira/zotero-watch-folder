@@ -343,7 +343,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <div class="label">✓ Inclusion</div>
         <h2>Things the plugin acts on</h2>
         <p>Files arriving, items being added or moved, restores after a trash, baseline reconciles. The plugin <em>does</em> something visible — imports, copies, renames, mkdirs, recovers.</p>
-        <div class="ct">28 cases</div>
+        <div class="ct">29 cases</div>
       </div>
       <div class="summary-card no">
         <div class="label">✕ Exclusion</div>
@@ -374,7 +374,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
     <!-- INCLUSION COLUMN                                                -->
     <!-- ============================================================== -->
     <div class="column ok" id="inclusion">
-      <h3><span class="glyph">✓</span>Inclusion<span class="count">28 cases</span></h3>
+      <h3><span class="glyph">✓</span>Inclusion<span class="count">29 cases</span></h3>
 
       <div class="case">
         <div class="case-id">I.1 <span class="mode-tag all">ALL</span></div>
@@ -572,6 +572,13 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <h4>Item leaves its last collection → becomes Unfiled, file moves to watch root</h4>
         <p class="when">A tracked item is removed from its last library collection (anywhere in the library), leaving it with no collection membership.</p>
         <p class="then">The item becomes Unfiled in Zotero. Its local file is relocated to the top level of the watch folder to stay consistent with the Unfiled state. Tracking record updates accordingly.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.29 <span class="mode-tag all">ALL</span></div>
+        <h4>Check &amp; Repair reconciles drift</h4>
+        <p class="when">The user runs the Check &amp; Repair tool from Settings. Detected issues may include: a file whose canonical copy moved (shadow-orphaned), a stale dead-state tracking record blocking a folder rename, or an orphan tracking entry with no disk or Zotero counterpart.</p>
+        <p class="then">Each inconsistency is listed with a plain-English explanation and a recommended fix. Items with annotations or notes are shown first and are never a deletion target. Fixes are applied only to those the user approves. Every fix re-validates at apply time; if the relevant state changed since the scan, the fix is skipped. Repairs are additive: tracking corrections and collection membership only — no file deletions, no Zotero bypassing.</p>
       </div>
 
     </div>
@@ -821,7 +828,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.7.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.8.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

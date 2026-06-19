@@ -406,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.7.0 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.8.0 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -422,7 +422,7 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>872</b> unit tests passing</span>
+        <span><b>899</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
         <span><b>33</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
@@ -625,7 +625,7 @@ footer .fine {
 <section id="features">
   <div class="wrap">
     <div class="section-eyebrow">What's inside</div>
-    <h2>Every feature that ships in v2.7.</h2>
+    <h2>Every feature that ships in v2.8.</h2>
     <p class="section-lede">
       Reality, not roadmap. If it's on this list, it works end-to-end against
       a live Zotero and is covered by the unit suite.
@@ -696,6 +696,11 @@ footer .fine {
         <div class="icon">⚙</div>
         <h4>Runtime mode switch</h4>
         <p>Flip <code>mode1</code> ↔ <code>mode2</code> ↔ <code>mode3</code> live. Coordinators start/stop in-process — no restart.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">✔</div>
+        <h4>Check &amp; Repair</h4>
+        <p>A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking. Each issue is shown with a plain-English explanation and a recommended fix; applies only what you approve. Items with annotations or notes are shown first and never deleted. Never deletes files and never bypasses Zotero — repairs are tracking fixes and additive collection membership only.</p>
       </div>
     </div>
   </div>
@@ -926,13 +931,20 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.7.0 is the current stable release: whole-library mirror as the new
-      default scope, on top of the v2.6.x data-safety and UX hardening wave.
-      The bar to ship was: 872 unit tests passing across 26 files,
+      v2.8.0 is the current stable release: Check &amp; Repair, on top of the
+      v2.7 whole-library mirror default and the v2.6.x data-safety wave.
+      The bar to ship was: 899 unit tests passing across 26 files,
       live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
     <ul class="roadmap-list">
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.8.0 — Check &amp; Repair</b>
+          <span class="meta">A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking (shadow-orphaned files, stale dead-state records blocking a folder rename, orphan tracking entries). Each issue is presented with a plain-English explanation and a recommended fix; applies only what you approve, and re-validates at apply time. Items with annotations or notes are surfaced first and never deleted. Additive-only: tracking fixes and collection membership — no file deletions, no Zotero bypassing. 899 unit tests across 26 files.</span>
+        </div>
+      </li>
       <li>
         <span class="status done">Done</span>
         <div>
@@ -1078,7 +1090,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (872 passing, 26 files)</span>
+<span class="c"># unit tests (899 passing, 26 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1108,7 +1120,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.7.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-19
+      GPL-3.0 · v2.8.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-19
     </div>
   </div>
 </footer>

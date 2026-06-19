@@ -12,12 +12,13 @@ import * as warningSink from './warningSink.mjs';
 import * as suppressionResolver from './suppressionResolver.mjs';
 import * as baseline from './baseline.mjs';
 import * as storageStrategy from './storageStrategy.mjs';
+import * as reconcile from './reconcile.mjs';
 import * as hashCache from './_hashCache.mjs';
 import { isWatchRootUnsafe } from './utils.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
-// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy}.
-export { warningSink, suppressionResolver, baseline, storageStrategy };
+// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy,reconcile}.
+export { warningSink, suppressionResolver, baseline, storageStrategy, reconcile };
 
 // Diagnostic surface — read-only stats from the WP-A1 hash cache plus
 // a clear hook for fresh measurements. Used to verify steady-state

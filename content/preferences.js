@@ -767,6 +767,23 @@
     }
 
     /**
+     * Open the Check & Repair dialog — a standalone window that scans for
+     * disk/Zotero/tracking inconsistencies and applies the selected fixes.
+     */
+    function openCheckAndRepair() {
+        try {
+            window.openDialog(
+                'chrome://zotero-watch-folder/content/reconcileDialog.xhtml',
+                'watchFolderReconcile',
+                'chrome,centerscreen,resizable,dependent,modal',
+                {},
+            );
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Could not open Check & Repair: ${e?.message ?? e}`);
+        }
+    }
+
+    /**
      * Purge orphaned files from the WebDAV file-sync server (e.g. pCloud).
      * Delegates to Zotero's own purge routines via
      * storageStrategy.purgeWebDAVOrphans — the plugin never deletes files
@@ -1440,6 +1457,7 @@
         showStorageReport,
         emptyZoteroTrash,
         purgeWebDAVOrphans,
+        openCheckAndRepair,
         stopTrackingMissing,
         stopTrackingAllMissing,
         onLoad: init,
