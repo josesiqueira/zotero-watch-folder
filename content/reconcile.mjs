@@ -28,6 +28,7 @@ import {
   collectionKeyToDiskRelativePath,
 } from './canonicalPath.mjs';
 import { getTrackingStore, createCollectionRecord, STATE } from './trackingStore.mjs';
+import { isWatchRootAvailable, classifyMissingFile, MISSING_CLASSIFICATION } from './fileMissing.mjs';
 
 /**
  * Collection-record states that are "dead" — not actively syncing. A dead
@@ -41,6 +42,18 @@ const DEAD_COLL_STATES = new Set([
   STATE.PAUSED,
   STATE.RECOVERABLE,
   STATE.MISSING,
+]);
+
+/**
+ * File-record states excluded from shadow-survivor consideration (M1): a
+ * USER_DETACHED / suppressed / conflict-blocked on-disk copy must NOT be
+ * promoted to canonical — that would reverse an explicit user choice. Mirrors
+ * the `_byHash` detached-state exclusion.
+ */
+const NON_SYNCING_FILE_STATES = new Set([
+  STATE.USER_DETACHED,
+  STATE.OUT_OF_SCOPE_SUPPRESSED,
+  STATE.CONFLICT_BLOCKED,
 ]);
 
 const FINDING = Object.freeze({
@@ -66,17 +79,23 @@ export function countAnnotationsNotes(attachment) {
   let annotations = 0;
   let notes = 0;
   let unknown = false;
+  // M4: fail OPEN to unknown on ANY uncertainty — a missing method or a
+  // non-array return (not just a throw) means we can't prove zero, so treat the
+  // item as high-value. Mirrors storageStrategy's fail-closed child classifier.
   try {
-    if (typeof attachment.getAnnotations === 'function') {
+    if (typeof attachment.getAnnotations !== 'function') { unknown = true; }
+    else {
       const a = attachment.getAnnotations();
-      annotations = Array.isArray(a) ? a.length : 0;
+      if (Array.isArray(a)) annotations = a.length; else unknown = true;
     }
   } catch (_e) { unknown = true; }
+  // M3: count the attachment's OWN child notes (att.getNotes), not the parent's
+  // — reading the parent counts sibling notes that don't belong to this file.
   try {
-    const parent = attachment.parentItem || attachment;
-    if (parent && typeof parent.getNotes === 'function') {
-      const n = parent.getNotes();
-      notes = Array.isArray(n) ? n.length : 0;
+    if (typeof attachment.getNotes !== 'function') { unknown = true; }
+    else {
+      const n = attachment.getNotes();
+      if (Array.isArray(n)) notes = n.length; else unknown = true;
     }
   } catch (_e) { unknown = true; }
   return { annotations, notes, unknown };
@@ -106,6 +125,23 @@ async function _exists(p) {
 }
 
 /**
+ * Is a tracked FILE genuinely gone (C5)? Uses classifyMissingFile so a
+ * cloud-evicted placeholder (iCloud/OneDrive/Dropbox dehydration),
+ * permission-denied, or a disconnected drive is treated as STILL PRESENT — only
+ * a real USER_DELETED counts as absent. A bare IOUtils.exists would misread a
+ * dehydrated cloud file as deleted on the owner's pCloud setup.
+ * @returns {Promise<boolean>} true only when the file is genuinely deleted.
+ */
+async function _fileGone(abs, watchRoot) {
+  try {
+    const cls = await classifyMissingFile(abs, watchRoot);
+    return cls === MISSING_CLASSIFICATION.USER_DELETED;
+  } catch (_e) {
+    return false; // uncertain → treat as present (never act on uncertainty)
+  }
+}
+
+/**
  * Walk the three views and classify drift. READ-ONLY.
  * @returns {Promise<{ok:boolean, reason?:string, findings:Array}>}
  */
@@ -118,6 +154,13 @@ export async function detect() {
 
   const watchRoot = getPref('sourcePath');
   if (!watchRoot) return { ok: false, reason: 'no-watch-root', findings: [] };
+
+  // C1 (SYNC-1): never reconcile against an unreachable watch root — a transient
+  // unmount/cloud-drop would make every file read "missing" and mass-flag
+  // deletions. Bail exactly as the scan + folderEventDetector do.
+  if (!(await isWatchRootAvailable(watchRoot))) {
+    return { ok: false, reason: 'watch-root-unavailable', findings: [] };
+  }
 
   const libraryID = syncRoot.libraryID ?? Zotero?.Libraries?.userLibraryID;
   const findings = [];
@@ -136,17 +179,22 @@ export async function detect() {
   }
 
   for (const [attKey, recs] of byKey) {
-    // Disk presence per record.
+    // Disk presence per record (C5: cloud-placeholder-aware — only a genuine
+    // USER_DELETED counts as gone).
     const withDisk = [];
     for (const r of recs) {
       const abs = _absPath(watchRoot, r.localPath);
-      const on = await _exists(abs);
+      const on = !(await _fileGone(abs, watchRoot));
       withDisk.push({ rec: r, abs, onDisk: on });
     }
     const canonical = withDisk.find((x) => x.rec.localPath === (x.rec.canonicalLocalPath || x.rec.localPath))
       || withDisk[0];
     const canonicalOnDisk = canonical ? canonical.onDisk : false;
-    const survivingShadows = withDisk.filter((x) => x !== canonical && x.onDisk);
+    // M1: a surviving shadow eligible for promotion must be on disk AND in a
+    // syncing state — never promote a USER_DETACHED / suppressed copy (that
+    // would reverse an explicit user choice).
+    const survivingShadows = withDisk.filter((x) =>
+      x !== canonical && x.onDisk && !NON_SYNCING_FILE_STATES.has(x.rec.state));
     const anyOnDisk = withDisk.some((x) => x.onDisk);
 
     // Resolve the Zotero attachment once (for annotation/note counting + state).
@@ -178,7 +226,13 @@ export async function detect() {
           { id: 'skip', label: 'Leave as-is', recommended: false, destructive: false },
         ],
         defaultActionId: 'rehome',
-        _payload: { attKey, survivingLocalPath: surv.rec.localPath, folderRel, canonicalLocalPath: canonical?.rec.localPath },
+        _payload: {
+          attKey,
+          survivingLocalPath: surv.rec.localPath,
+          allSurvivingLocalPaths: survivingShadows.map((x) => x.rec.localPath),
+          folderRel,
+          canonicalLocalPath: canonical?.rec.localPath,
+        },
       }));
       continue;
     }
@@ -268,6 +322,12 @@ export async function applyRepairs(findings, decisions) {
   if (!store) return { ok: false, reason: 'no-store', applied: 0, skipped: 0, failed: 0, results: [] };
   const syncRoot = await resolveSyncRoot().catch(() => null);
   const libraryID = syncRoot?.libraryID ?? Zotero?.Libraries?.userLibraryID;
+  const watchRoot = getPref('sourcePath');
+  // C2: re-validation re-probes disk; refuse to mutate against an unavailable
+  // watch root (would mis-read every file as gone).
+  if (!watchRoot || !(await isWatchRootAvailable(watchRoot))) {
+    return { ok: false, reason: 'watch-root-unavailable', applied: 0, skipped: 0, failed: 0, results: [] };
+  }
 
   let applied = 0, skipped = 0, failed = 0;
   const results = [];
@@ -276,7 +336,7 @@ export async function applyRepairs(findings, decisions) {
     const action = (decisions && decisions[f.id]) || f.defaultActionId;
     if (!action || action === 'skip') { skipped++; results.push({ id: f.id, action: 'skip', ok: true }); continue; }
     try {
-      const r = await _applyOne(f, action, { store, libraryID });
+      const r = await _applyOne(f, action, { store, libraryID, watchRoot });
       if (r && r.ok) { applied++; results.push({ id: f.id, action, ok: true }); }
       else { failed++; results.push({ id: f.id, action, ok: false, reason: r?.reason }); }
     } catch (e) {
@@ -289,48 +349,98 @@ export async function applyRepairs(findings, decisions) {
   return { ok: true, applied, skipped, failed, results };
 }
 
-async function _applyOne(f, action, { store, libraryID }) {
+async function _applyOne(f, action, { store, libraryID, watchRoot }) {
   switch (f.type) {
     case FINDING.SHADOW_ORPHANED: {
       if (action !== 'rehome') return { ok: false, reason: 'unknown-action' };
-      const { attKey, survivingLocalPath, folderRel, canonicalLocalPath } = f._payload;
-      // 1) Promote the surviving shadow to canonical in tracking: drop the dead
-      //    canonical record (its file is gone) and mark the survivor canonical.
+      const { attKey, survivingLocalPath, allSurvivingLocalPaths, folderRel, canonicalLocalPath } = f._payload;
+
+      // C2/C3 re-validate at apply time (the detect→Apply window is interactive):
+      //  - the dead canonical must STILL be gone on disk, and
+      //  - the survivor record must STILL exist and STILL be on disk.
+      // Abort (don't mutate) if the world changed under us.
       if (canonicalLocalPath && canonicalLocalPath !== survivingLocalPath) {
-        store.remove(canonicalLocalPath);
+        const canonGone = await _fileGone(_absPath(watchRoot, canonicalLocalPath), watchRoot);
+        if (!canonGone) return { ok: false, reason: 'state-changed: canonical reappeared' };
       }
-      // 2) Add the surviving folder's collection to the Zotero item (additive —
-      //    never removes memberships) so it appears where the file now lives.
+      const survRec = store.getByLocalPath ? store.getByLocalPath(survivingLocalPath) : null;
+      if (!survRec) return { ok: false, reason: 'state-changed: survivor record gone' };
+      if (await _fileGone(_absPath(watchRoot, survivingLocalPath), watchRoot)) {
+        return { ok: false, reason: 'state-changed: survivor file gone' };
+      }
+
+      // Resolve / create the destination collection FIRST (so a failure here
+      // aborts before any tracking mutation).
       let newCanonicalCollectionKey = null;
+      let collId = null;
       if (folderRel) {
         const coll = await relativePathToCollection(folderRel, { createIfMissing: true }).catch(() => null);
-        if (coll && coll.id) {
-          newCanonicalCollectionKey = coll.key;
-          try {
-            const att = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, attKey);
-            const owner = att && (att.parentItem || att);
-            if (owner && typeof owner.addToCollection === 'function') {
-              const cur = (owner.getCollections && owner.getCollections()) || [];
-              if (!cur.includes(coll.id)) { owner.addToCollection(coll.id); await owner.saveTx(); }
-            }
-          } catch (e) { return { ok: false, reason: 'membership-add-failed: ' + (e?.message ?? e) }; }
-        }
+        if (coll && coll.id) { newCanonicalCollectionKey = coll.key; collId = coll.id; }
       }
-      // 3) Point the survivor record at itself as canonical + record the key.
+
+      // C3 atomic ordering: PROMOTE the survivor first, then drop the dead
+      // canonical. If promotion can't happen the dead record stays (re-detectable).
+      // M5: root re-home (folderRel '') → canonicalCollectionKey null is correct
+      // (Unfiled); a non-empty folder sets the resolved key.
       store.update(survivingLocalPath, {
         canonicalLocalPath: survivingLocalPath,
         canonicalCollectionKey: newCanonicalCollectionKey,
         state: STATE.CLEAN,
       });
+      // C4: re-point EVERY other surviving shadow's canonical to the new
+      // canonical so none dangle at the removed path.
+      for (const lp of (allSurvivingLocalPaths || [])) {
+        if (lp === survivingLocalPath) continue;
+        if (store.getByLocalPath && store.getByLocalPath(lp)) {
+          store.update(lp, { canonicalLocalPath: survivingLocalPath });
+        }
+      }
+      // Now drop the dead canonical record (its file is genuinely gone).
+      if (canonicalLocalPath && canonicalLocalPath !== survivingLocalPath) {
+        store.remove(canonicalLocalPath);
+      }
+
+      // Additive Zotero membership (consistent with suppressionResolver._reinstate,
+      // which also adds directly). Never removes memberships.
+      if (collId != null) {
+        try {
+          const att = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, attKey);
+          const owner = att && (att.parentItem || att);
+          if (owner && typeof owner.addToCollection === 'function') {
+            const cur = (owner.getCollections && owner.getCollections()) || [];
+            if (!cur.includes(collId)) { owner.addToCollection(collId); await owner.saveTx(); }
+          }
+        } catch (e) {
+          // Tracking is already consistent; surface the membership failure but
+          // don't unwind (the file is correctly re-homed on disk + in tracking).
+          return { ok: false, reason: 'rehomed-tracking-ok-but-membership-add-failed: ' + (e?.message ?? e) };
+        }
+      }
       return { ok: true };
     }
     case FINDING.ORPHAN_TRACKING: {
       if (action !== 'drop') return { ok: false, reason: 'unknown-action' };
-      for (const lp of (f._payload.localPaths || [])) store.remove(lp);
+      const { attKey, localPaths } = f._payload;
+      // C2 re-validate: only drop if the file is STILL gone from disk for every
+      // path AND the Zotero item is STILL absent. If anything reappeared, abort
+      // (dropping a live record causes a re-import loop — suppress-not-drop).
+      for (const lp of (localPaths || [])) {
+        if (!(await _fileGone(_absPath(watchRoot, lp), watchRoot))) {
+          return { ok: false, reason: 'state-changed: file reappeared' };
+        }
+      }
+      let att = null;
+      try { att = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, attKey); } catch (_e) { att = null; }
+      if (att && att.deleted !== true) return { ok: false, reason: 'state-changed: zotero item alive' };
+      for (const lp of (localPaths || [])) store.remove(lp);
       return { ok: true };
     }
     case FINDING.STALE_COLLECTION: {
       if (action !== 'cleanup') return { ok: false, reason: 'unknown-action' };
+      // C2 re-validate: only clean up if the record is STILL dead-state.
+      const rec = store.getCollectionRecord(f._payload.zoteroCollectionKey);
+      if (!rec) return { ok: true }; // already gone — nothing to do
+      if (!DEAD_COLL_STATES.has(rec.state)) return { ok: false, reason: 'state-changed: record is live again' };
       store.removeCollectionRecord(f._payload.zoteroCollectionKey);
       return { ok: true };
     }

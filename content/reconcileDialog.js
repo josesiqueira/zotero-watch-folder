@@ -177,7 +177,14 @@ const ReconcileDialog = (function () {
     $("status").textContent = "Applying…";
     let res;
     try { res = await api.applyRepairs(_findings, decisions); }
-    catch (e) { _fail("Repair failed: " + (e && e.message ? e.message : e)); return; }
+    catch (e) {
+      // C6: don't dead-end — surface the error AND re-enable so the user can
+      // retry or close (a finally-style recovery; the dialog stays usable).
+      _fail("Repair failed: " + (e && e.message ? e.message : e));
+      $("apply-btn").removeAttribute("disabled");
+      $("status").textContent = "";
+      return;
+    }
 
     const applied = (res && res.applied) || 0;
     const failed = (res && res.failed) || 0;
