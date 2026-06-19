@@ -375,7 +375,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 
         <li><span class="num">1</span><a href="#ch-setup"><b>Setting it up for the first time</b></a><span class="ct">6 stories</span></li>
         <li><span class="num">2</span><a href="#ch-daily"><b>Using it day to day</b></a><span class="ct">11 stories</span></li>
-        <li><span class="num">3</span><a href="#ch-off"><b>When something looks off</b></a><span class="ct">12 stories</span></li>
+        <li><span class="num">3</span><a href="#ch-off"><b>When something looks off</b></a><span class="ct">13 stories</span></li>
         <li><span class="num">4</span><a href="#ch-change"><b>Changing how I use it</b></a><span class="ct">10 stories</span></li>
         <li><span class="num">5</span><a href="#ch-device"><b>Second computer, cloud, or removable drive</b></a><span class="ct">4 stories</span></li>
       </ol>
@@ -709,6 +709,16 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <div class="ref"><b>Covers:</b> WARN.1</div>
     </div>
 
+    <div class="story">
+      <div class="story-tag">3.13 · check and repair</div>
+      <h3>Things look out of sync and I'm not sure what drifted</h3>
+      <p class="voice">I open Settings, find the "Check &amp; repair" tool, and ask it to scan. A list of issues comes back — some files whose canonical copy moved, a folder that stopped syncing, a stale entry blocking a rename. I want to fix what I choose and leave the rest alone.</p>
+      <div class="row"><span class="label">I want to</span><span class="body">Open Settings, run the Check &amp; Repair scan, review each suggested fix with its plain-English explanation, apply only the ones I want.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">The tool scans tracking state, the watch folder on disk, and Zotero, then lists every inconsistency it finds. Items with annotations or notes are shown first and are never deleted. Suggested fixes are additive (tracking corrections, collection membership additions) — no file deletions, no bypassing of Zotero. Each fix re-validates at apply time; if conditions changed since the scan, the fix is skipped with a note. Applying a subset works: uncheck what you want to skip.</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">An issue you expected isn't listed → it may already be covered by an existing warning in the Sync warnings panel. Issues that require a manual decision (e.g. a conflict-blocked file) appear in the Sync warnings panel instead, with their own resolution UI.</span></div>
+      <div class="ref"><b>Covers:</b> I.29</div>
+    </div>
+
   </div>
 </section>
 
@@ -873,7 +883,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap-wide">
     <div class="row">
-      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.7.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
+      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.8.0 · Covers Zotero 7, 8, 9 · Last updated 2026-06-19</div>
       <ul>
         <li><a href="index.html">Back to overview</a></li>
         <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>

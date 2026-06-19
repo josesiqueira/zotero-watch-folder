@@ -22,7 +22,7 @@ Zotero plugin: watches a folder, imports PDFs, mirrors a Zotero library to disk,
 - For complex multi-part work, prefer delegating disjoint slices to parallel sub-agents and coordinating; keep live-MCP testing serial (one flaky bridge).
 
 ## TESTING — never assume it works
-- Run `npx vitest run` (single file: `npx vitest run test/unit/<m>.test.mjs`; by name: `-t "<name>"`). Suite must stay green before any commit/checkpoint. **872 tests across 26 files** — update this count when it changes.
+- Run `npx vitest run` (single file: `npx vitest run test/unit/<m>.test.mjs`; by name: `-t "<name>"`). Suite must stay green before any commit/checkpoint. **899 tests across 27 files** — update this count when it changes.
 - New module → `test/unit/<m>.test.mjs`, import SUT from `../../content/<m>.mjs`, `vi.mock` deps per-file, reset in `beforeEach`. `test/setup/geckoMocks.js` stubs `Zotero`/`IOUtils`/`PathUtils`/`Services`/`crypto.subtle`. The `_hashCache.mjs` singleton must be cleared in `beforeEach` if you mock `getFileHash`.
 - Live verification = `.private/mcp-runbooks/` (maintainer-only). Run **SMOKE.md S.1–S.7** before tagging a release. Version-guard first: `zotero_plugin_list` must equal source version, else you're testing stale code.
 
@@ -66,7 +66,7 @@ Zotero plugin: watches a folder, imports PDFs, mirrors a Zotero library to disk,
 - `content/*.mjs` — ES source; entry `content/index.mjs` (exports `hooks` + re-exports for the prefs sandbox/MCP). Key modules:
   - Core: `canonicalPath` (scope resolution, `UNFILED`, `isSpecialCollection`), `trackingStore` (file/collection/tombstone records, singleton), `watchFolder` (poll loop, `_processNewFile`, `_handleZoteroTrash`/`_handleExternalDeletions`/`_handleFileMoves`), `utils`, `fileScanner`, `fileImporter`, `fileRenamer`, `duplicateDetector`.
   - Mirror (Mode 2/3): `syncCoordinator` (start/stop + mode observer + scan bridge), `collectionWatcher`, `folderEventDetector`, `itemMembershipHandler`, `itemAddHandler`, `mirrorExecutor` (ALL fs mutations + per-key locks), `baseline`.
-  - Safety/UX: `bulkGuard`, `watchRootGuard`, `suppressionResolver`, `warningSink`, `fileMissing`, `storageStrategy`, `_hashCache`.
+  - Safety/UX: `bulkGuard`, `watchRootGuard`, `suppressionResolver`, `warningSink`, `fileMissing`, `storageStrategy`, `reconcile` (Check & Repair: detect() READ-ONLY + applyRepairs() additive-only, re-validates each finding at apply time), `_hashCache`.
 - `content/preferences.{xhtml,js}` + `content/setupWizard.{xhtml,js}` — copied verbatim, not bundled.
 - `dist/content/scripts/watchFolder.js` — esbuild IIFE bundle. **What Zotero runs.**
 - `prefs.js` / bootstrap `_set` — **33 default keys** under `extensions.zotero.watchFolder.*` (kept in lockstep). `build/*.mjs` — release pipeline. `.private/` — gitignored maintainer docs/runbooks. `tools/hooks/commit-msg` strips AI trailers (`git config core.hooksPath tools/hooks`).
