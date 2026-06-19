@@ -510,6 +510,70 @@ export async function emptyZoteroTrash(libraryID) {
   }
 }
 
+// ─── Purge orphaned WebDAV files (FEAT-WEBDAV-PURGE) ─────────────────────────
+
+/**
+ * Remove orphaned files from the WebDAV file-sync server (e.g. pCloud). When
+ * items are deleted, their `<key>.zip` / `<key>.prop` files on the WebDAV server
+ * are NOT removed in lockstep — Zotero only purges them lazily (throttled to
+ * roughly once a week), so deleted/emptied libraries leave orphan files behind.
+ *
+ * This delegates ENTIRELY to Zotero's own WebDAV purge routines
+ * (`purgeOrphanedStorageFiles` = files with no corresponding item;
+ * `purgeDeletedStorageFiles` = files for items emptied from the trash). We do
+ * NOT enumerate or DELETE files ourselves — Zotero owns the orphan detection,
+ * so a live attachment's file can never be mistaken for an orphan. The plugin
+ * never touches the local Zotero storage directory.
+ *
+ * Guarded throughout: only runs when WebDAV file sync is the configured
+ * protocol and the internal API is present; any absence yields a clear,
+ * non-destructive reason instead of a thrown error.
+ *
+ * @param {number} [libraryID] - library for the deleted-files pass; defaults to user library.
+ * @returns {Promise<{ok:boolean, reason?:string, error?:string, orphaned?:*, deleted?:*}>}
+ */
+export async function purgeWebDAVOrphans(libraryID) {
+  // Full pref path + global=true: Zotero.Prefs.get(key, true) reads `key`
+  // verbatim, so the `extensions.zotero.` prefix must be included (passing the
+  // short 'sync.storage.protocol' with global=true reads the wrong branch).
+  let protocol;
+  try { protocol = Zotero.Prefs.get('extensions.zotero.sync.storage.protocol', true); } catch (_e) { protocol = null; }
+  if (protocol !== 'webdav') return { ok: false, reason: 'not-webdav' };
+
+  const WebDAV = Zotero?.Sync?.Storage?.Mode?.WebDAV;
+  if (typeof WebDAV !== 'function') return { ok: false, reason: 'webdav-api-unavailable' };
+
+  let inst;
+  try {
+    inst = new WebDAV();
+    // Initialises rootURI from the sync-storage URL pref + the password from the
+    // login manager. Non-destructive (no file ops).
+    if (typeof inst.cacheCredentials === 'function') await inst.cacheCredentials();
+  } catch (e) {
+    return { ok: false, reason: 'credentials-failed', error: String(e?.message ?? e) };
+  }
+  if (typeof inst.purgeOrphanedStorageFiles !== 'function') {
+    return { ok: false, reason: 'purge-api-unavailable' };
+  }
+
+  const lib = (typeof libraryID === 'number') ? libraryID : Zotero?.Libraries?.userLibraryID;
+  try {
+    // Orphaned = files on the server with no corresponding item at all (the
+    // empty-library case). This is the primary purge.
+    const orphaned = await inst.purgeOrphanedStorageFiles();
+    // Deleted = files for items emptied from this library's trash. Best-effort;
+    // a failure here doesn't undo the orphan purge above.
+    let deleted = null;
+    if (typeof inst.purgeDeletedStorageFiles === 'function' && typeof lib === 'number') {
+      try { deleted = await inst.purgeDeletedStorageFiles(lib); } catch (_e) { /* best effort */ }
+    }
+    return { ok: true, orphaned: orphaned ?? null, deleted: deleted ?? null };
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] purgeWebDAVOrphans: ${e?.message ?? e}`);
+    return { ok: false, reason: 'purge-failed', error: String(e?.message ?? e) };
+  }
+}
+
 // ─── Build / Repair Watch Folder Mirror (stored_plus_mirror) ────────────────
 
 /**

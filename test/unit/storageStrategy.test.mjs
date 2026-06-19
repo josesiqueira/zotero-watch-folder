@@ -517,3 +517,66 @@ describe('UT-909: emptyZoteroTrash', () => {
     expect(r.reason).toBe('empty-trash-failed');
   });
 });
+
+// ─── UT-908: purgeWebDAVOrphans delegates to Zotero's WebDAV purge ──────────
+
+describe('UT-908: purgeWebDAVOrphans', () => {
+  beforeEach(() => {
+    globalThis.Zotero = globalThis.Zotero || {};
+    globalThis.Zotero.logError = vi.fn();
+    globalThis.Zotero.Libraries = { userLibraryID: 1 };
+    // Key-aware: only the correct FULL pref path resolves to 'webdav', so a
+    // wrong key (e.g. missing the extensions.zotero. prefix) is caught.
+    globalThis.Zotero.Prefs = { get: vi.fn((k) => k === 'extensions.zotero.sync.storage.protocol' ? 'webdav' : undefined) };
+    globalThis.Zotero.Sync = { Storage: { Mode: {} } };
+  });
+
+  it('returns not-webdav when the storage protocol is not webdav', async () => {
+    globalThis.Zotero.Prefs.get = vi.fn(() => 'zotero');
+    const r = await storageStrategy.purgeWebDAVOrphans();
+    expect(r).toMatchObject({ ok: false, reason: 'not-webdav' });
+  });
+
+  it('returns webdav-api-unavailable when the WebDAV mode is missing', async () => {
+    globalThis.Zotero.Sync.Storage.Mode.WebDAV = undefined;
+    const r = await storageStrategy.purgeWebDAVOrphans();
+    expect(r).toMatchObject({ ok: false, reason: 'webdav-api-unavailable' });
+  });
+
+  it('delegates to purgeOrphanedStorageFiles (+ purgeDeletedStorageFiles) on success', async () => {
+    const purgeOrphaned = vi.fn(async () => ({ deleted: 3 }));
+    const purgeDeleted = vi.fn(async () => ({ deleted: 0 }));
+    const cacheCredentials = vi.fn(async () => {});
+    globalThis.Zotero.Sync.Storage.Mode.WebDAV = function () {
+      this.cacheCredentials = cacheCredentials;
+      this.purgeOrphanedStorageFiles = purgeOrphaned;
+      this.purgeDeletedStorageFiles = purgeDeleted;
+    };
+    const r = await storageStrategy.purgeWebDAVOrphans();
+    expect(r.ok).toBe(true);
+    expect(cacheCredentials).toHaveBeenCalledTimes(1);
+    expect(purgeOrphaned).toHaveBeenCalledTimes(1);
+    expect(purgeDeleted).toHaveBeenCalledWith(1); // user library
+  });
+
+  it('returns credentials-failed when cacheCredentials throws', async () => {
+    globalThis.Zotero.Sync.Storage.Mode.WebDAV = function () {
+      this.cacheCredentials = vi.fn(async () => { throw new Error('401'); });
+      this.purgeOrphanedStorageFiles = vi.fn();
+    };
+    const r = await storageStrategy.purgeWebDAVOrphans();
+    expect(r).toMatchObject({ ok: false, reason: 'credentials-failed' });
+  });
+
+  it('still succeeds if the deleted-files pass throws (orphan purge is primary)', async () => {
+    const purgeOrphaned = vi.fn(async () => ({ deleted: 2 }));
+    globalThis.Zotero.Sync.Storage.Mode.WebDAV = function () {
+      this.cacheCredentials = vi.fn(async () => {});
+      this.purgeOrphanedStorageFiles = purgeOrphaned;
+      this.purgeDeletedStorageFiles = vi.fn(async () => { throw new Error('boom'); });
+    };
+    const r = await storageStrategy.purgeWebDAVOrphans();
+    expect(r.ok).toBe(true);
+    expect(purgeOrphaned).toHaveBeenCalledTimes(1);
+  });
+});
