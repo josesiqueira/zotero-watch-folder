@@ -31,6 +31,12 @@ vi.mock('../../content/watchRootGuard.mjs', async (importOriginal) => {
   return { ...actual, recordHealthyFingerprint: vi.fn(actual.recordHealthyFingerprint) };
 });
 
+// The drip-eviction guard resolves the library to check whether a suppressed-
+// missing folder's collection still exists (eviction) or is gone (orphan).
+vi.mock('../../content/canonicalPath.mjs', () => ({
+  resolveSyncRoot: vi.fn(async () => ({ libraryID: 1 })),
+}));
+
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import { isWatchRootAvailable } from '../../content/fileMissing.mjs';
 import { recordHealthyFingerprint } from '../../content/watchRootGuard.mjs';
@@ -46,6 +52,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   Zotero.debug = vi.fn();
   Zotero.logError = vi.fn();
+  Zotero.Libraries = { userLibraryID: 1 };
+  // Drip-guard collection-existence check: default → collection still EXISTS
+  // (so a suppressed-missing folder reads as eviction). Orphan tests override.
+  Zotero.Collections = { getByLibraryAndKey: vi.fn(() => ({ key: 'X', name: 'X' })) };
   IOUtils.exists = vi.fn(async () => false);
   // Restore the default available-root behavior after clearAllMocks wiped
   // any per-test mockResolvedValueOnce/mockImplementation.
@@ -262,6 +272,23 @@ describe('UT-607c: drip-eviction fingerprint guard', () => {
       watchRoot: '/watch',
     });
     expect(recordHealthyFingerprint).not.toHaveBeenCalled();
+  });
+
+  it('DOES refresh when the suppressed-missing folder is an ORPHAN (Zotero collection gone)', async () => {
+    // Live-found case: a suppressed record whose Zotero collection was deleted
+    // AND whose disk folder is gone is stale cruft, not eviction — it must not
+    // freeze the fingerprint forever.
+    Zotero.Collections.getByLibraryAndKey = vi.fn(() => null); // collection gone
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'GONE', localPath: 'X', state: 'out-of-scope-suppressed' },
+    ];
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(recordHealthyFingerprint).toHaveBeenCalledTimes(1);
   });
 });
 

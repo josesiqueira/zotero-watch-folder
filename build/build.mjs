@@ -165,7 +165,7 @@ async function build() {
     if (await exists(bundledScript)) {
         console.log(`✓ Bundled script verified: content/scripts/watchFolder.js`);
     } else {
-        console.log(`⚠ Warning: Bundled script not found. Run 'npm run bundle' first.`);
+        console.log(`⚠ Bundled script not present yet — run 'npm run bundle' next (package will HARD-FAIL without it).`);
     }
     console.log();
 

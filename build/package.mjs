@@ -134,6 +134,20 @@ async function package_() {
         process.exit(1);
     }
 
+    // Step 1b: HARD-FAIL if the esbuild bundle is missing. Packaging a dist
+    // without it produces an XPI that installs but never starts (the #1
+    // bundle-trap footgun). build runs before bundle in the release order, so
+    // this guard lives here (at package time the bundle MUST exist), not in
+    // build.mjs.
+    const bundledScript = path.join(DIST_DIR, 'content', 'scripts', 'watchFolder.js');
+    try {
+        await fs.access(bundledScript);
+    } catch {
+        console.error(`Error: bundled script not found at ${bundledScript}.`);
+        console.error('Run "npm run bundle" before packaging (release order: build → bundle → package).');
+        process.exit(1);
+    }
+
     // Step 2: Read version from manifest
     console.log('Reading version from manifest.json...');
     const version = await getVersion();

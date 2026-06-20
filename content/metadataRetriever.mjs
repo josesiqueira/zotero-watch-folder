@@ -148,6 +148,26 @@ export class MetadataRetriever {
   }
 
   /**
+   * Invoke the per-item completion callback. The callback (see
+   * watchFolder._processNewFile, Step 6) is ASYNC — it stamps the content
+   * hash, renames the attachment, and persists the tracking store. Calling it
+   * without awaiting let its promise rejections escape the surrounding
+   * try-catch as UNHANDLED rejections, silently dropping those data-integrity
+   * failures. Await it here and log (never throw) so a callback failure is
+   * observable but can't wedge the queue.
+   * @private
+   */
+  async _runOnComplete(onComplete, success, itemID) {
+    if (!onComplete) return;
+    try {
+      const r = onComplete(success, itemID);
+      if (r && typeof r.then === 'function') await r;
+    } catch (callbackError) {
+      Zotero.logError(`[WatchFolder] Metadata callback failed for item ${itemID}: ${callbackError?.message ?? callbackError}`);
+    }
+  }
+
+  /**
    * Process the queue respecting concurrency limits
    * Called automatically when items are queued or processing completes
    */
@@ -165,22 +185,10 @@ export class MetadataRetriever {
 
     try {
       const success = await this._retrieveMetadata(itemID);
-      if (onComplete) {
-        try {
-          onComplete(success, itemID);
-        } catch (callbackError) {
-          Zotero.debug(`[WatchFolder] Callback error for item ${itemID}: ${callbackError.message}`);
-        }
-      }
+      await this._runOnComplete(onComplete, success, itemID);
     } catch (error) {
       Zotero.logError(`[WatchFolder] Metadata retrieval error for item ${itemID}: ${error.message}`);
-      if (onComplete) {
-        try {
-          onComplete(false, itemID);
-        } catch (callbackError) {
-          Zotero.debug(`[WatchFolder] Callback error for item ${itemID}: ${callbackError.message}`);
-        }
-      }
+      await this._runOnComplete(onComplete, false, itemID);
     } finally {
       this._processing--;
 

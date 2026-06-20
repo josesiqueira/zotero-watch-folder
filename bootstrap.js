@@ -57,7 +57,12 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
 
   // Set _rootURI BEFORE calling onStartup() so preference pane registration works
   Zotero.WatchFolder.hooks._rootURI = rootURI;
-  await Zotero.WatchFolder.hooks.onStartup();
+  // Defensive: an uncaught rejection here would wedge plugin init with no log.
+  try {
+    await Zotero.WatchFolder.hooks.onStartup();
+  } catch (e) {
+    Zotero.logError("[WatchFolder] onStartup failed: " + (e && e.message ? e.message : e));
+  }
 }
 
 async function onMainWindowLoad({ window }, reason) {
@@ -76,7 +81,13 @@ async function shutdown({ id, version, resourceURI, rootURI }, reason) {
   if (reason === APP_SHUTDOWN) return;
 
   if (Zotero.WatchFolder && Zotero.WatchFolder.hooks) {
-    await Zotero.WatchFolder.hooks.onShutdown();
+    // Wrap so a shutdown throw can't skip the chrome cleanup below (which would
+    // leak the chrome registration and block a clean reload/reinstall).
+    try {
+      await Zotero.WatchFolder.hooks.onShutdown();
+    } catch (e) {
+      Zotero.logError("[WatchFolder] onShutdown failed: " + (e && e.message ? e.message : e));
+    }
   }
 
   if (chromeHandle) {

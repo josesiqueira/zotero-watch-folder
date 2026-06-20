@@ -28,6 +28,7 @@
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { STATE } from './trackingStore.mjs';
 import { isWatchRootAvailable } from './fileMissing.mjs';
+import { resolveSyncRoot } from './canonicalPath.mjs';
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import {
   topLevelDirNames,
@@ -127,6 +128,15 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
   // a suppressed record whose folder also vanished is exactly the drip-eviction
   // signature, so we fail safe and leave the baseline stale.)
   if (missing.length === 0) {
+    // Genuine cloud-eviction = a disk folder vanishes while its Zotero
+    // collection STILL EXISTS. A suppressed record whose Zotero collection is
+    // ALSO gone is an orphan (the collection was deleted), not eviction —
+    // counting it here would freeze the fingerprint forever on installs that
+    // accumulate such orphans. So only treat a suppressed-missing top-level
+    // folder as a drip-eviction signal when its collection is still present.
+    let libraryID = null;
+    try { const sr = await resolveSyncRoot(); libraryID = sr?.libraryID ?? null; } catch (_e) { libraryID = null; }
+    if (libraryID == null) { try { libraryID = Zotero.Libraries.userLibraryID; } catch (_e) { libraryID = null; } }
     let suppressedTopLevelMissing = 0;
     for (const rec of records) {
       if (!rec || typeof rec.localPath !== 'string' || rec.localPath === '') continue;
@@ -138,12 +148,21 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
       try { exists = await IOUtils.exists(absPath); }
       catch (_e) { exists = false; }
       if (exists) continue;
+      // Orphan check: if the Zotero collection is gone, this is stale cruft, not
+      // eviction — don't let it freeze the fingerprint. (On lookup failure we
+      // keep the conservative behavior and count it.)
+      if (libraryID != null && rec.zoteroCollectionKey) {
+        let coll = null;
+        try { coll = Zotero.Collections.getByLibraryAndKey(libraryID, rec.zoteroCollectionKey); }
+        catch (_e) { coll = null; }
+        if (!coll) continue;
+      }
       suppressedTopLevelMissing++;
     }
     if (suppressedTopLevelMissing === 0) {
       recordHealthyFingerprint(topNames);
     } else {
-      Zotero.debug(`[WatchFolder] folderEventDetector: ${suppressedTopLevelMissing} suppressed top-level folder(s) missing from disk — leaving healthy fingerprint stale (drip-eviction guard)`);
+      Zotero.debug(`[WatchFolder] folderEventDetector: ${suppressedTopLevelMissing} suppressed top-level folder(s) missing from disk (collection still present) — leaving healthy fingerprint stale (drip-eviction guard)`);
     }
     return;
   }

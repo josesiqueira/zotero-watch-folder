@@ -516,16 +516,23 @@ export const hooks = {
     async onStartup() {
         Zotero.debug("Zotero Watch Folder: Starting up");
 
-        // Register preference pane
+        // Register preference pane. Isolated in its own try-catch: the pane is
+        // NOT load-bearing for watching/mirroring, so a registration failure
+        // (bad XHTML, missing icon, Zotero API change) must NOT abort the
+        // service init below — it would dark-fail the whole plugin otherwise.
         const rootURI = this._rootURI || '';
         if (rootURI) {
-            await Zotero.PreferencePanes.register({
-                pluginID: "watch-folder@zotero-plugin.org",
-                src: rootURI + "content/preferences.xhtml",
-                label: "Watch Folder",
-                image: rootURI + "content/icons/watch-folder-16.png",
-                scripts: [rootURI + "content/preferences.js"],
-            });
+            try {
+                await Zotero.PreferencePanes.register({
+                    pluginID: "watch-folder@zotero-plugin.org",
+                    src: rootURI + "content/preferences.xhtml",
+                    label: "Watch Folder",
+                    image: rootURI + "content/icons/watch-folder-16.png",
+                    scripts: [rootURI + "content/preferences.js"],
+                });
+            } catch (e) {
+                Zotero.logError(`[WatchFolder] preference pane registration failed (continuing startup): ${e && e.message ? e.message : e}`);
+            }
         }
 
         // Initialize services

@@ -306,8 +306,16 @@ export class WatchFolderService {
     }
 
     this._pollTimer = setTimeout(async () => {
-      await this._scan();
-      this._scheduleNextScan();
+      // Guard the loop: if _scan() ever throws past its own internal guards,
+      // an unhandled rejection here would also skip _scheduleNextScan() and
+      // silently kill the poll loop. Always reschedule.
+      try {
+        await this._scan();
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] scan cycle failed: ${e && e.message ? e.message : e}`);
+      } finally {
+        this._scheduleNextScan();
+      }
     }, this._currentInterval);
   }
 

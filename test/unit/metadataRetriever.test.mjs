@@ -124,3 +124,43 @@ describe('UT-029 — queueItem dedup via _queuedIDs Set (WP-B / B6)', () => {
     expect(order).toEqual([10, 20, 30]);
   });
 });
+
+// ─── UT-030: _runOnComplete awaits async callbacks (anti-swallow) ────────────
+// The per-item onComplete callback (watchFolder._processNewFile Step 6) is
+// ASYNC and persists data-integrity state (hash stamp, rename, tracking save).
+// Calling it without awaiting let its promise rejections escape as UNHANDLED
+// rejections — silent data loss. _runOnComplete must await + log, never swallow.
+describe('UT-030 — _runOnComplete awaits async callbacks and surfaces failures', () => {
+  it('awaits a REJECTING async callback and logs the error (not swallowed)', async () => {
+    const r = makeRetriever();
+    const onComplete = vi.fn(async () => { await Promise.resolve(); throw new Error('save failed'); });
+    await r._runOnComplete(onComplete, true, 42);
+    expect(onComplete).toHaveBeenCalledWith(true, 42);
+    expect(Zotero.logError).toHaveBeenCalled();
+    expect(String(Zotero.logError.mock.calls[0][0])).toMatch(/save failed/);
+  });
+
+  it('catches a synchronously-throwing callback', async () => {
+    const r = makeRetriever();
+    const onComplete = vi.fn(() => { throw new Error('sync boom'); });
+    await r._runOnComplete(onComplete, false, 7);
+    expect(Zotero.logError).toHaveBeenCalled();
+    expect(String(Zotero.logError.mock.calls[0][0])).toMatch(/sync boom/);
+  });
+
+  it('actually AWAITS a resolving async callback (ordering proof) and logs nothing', async () => {
+    const r = makeRetriever();
+    const order = [];
+    const onComplete = vi.fn(async () => { await Promise.resolve(); order.push('cb-done'); });
+    await r._runOnComplete(onComplete, true, 1);
+    order.push('after-await');
+    expect(order).toEqual(['cb-done', 'after-await']); // proves the await happened
+    expect(Zotero.logError).not.toHaveBeenCalled();
+  });
+
+  it('no-ops safely when onComplete is absent', async () => {
+    const r = makeRetriever();
+    await expect(r._runOnComplete(null, true, 1)).resolves.toBeUndefined();
+    expect(Zotero.logError).not.toHaveBeenCalled();
+  });
+});
