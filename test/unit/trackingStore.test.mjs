@@ -208,6 +208,25 @@ describe('UT-104: TrackingStore — key-based lookup', () => {
     expect(store.findByHash('H2')?.localPath).toBe('a.pdf');
   });
 
+  it('removeByAttachmentKey removes ALL records for the key — canonical + shadows (no orphans)', () => {
+    // Two on-disk copies of one file → one attachment, canonical + shadow.
+    store.add(createFileRecord({ localPath: 'a.pdf', canonicalLocalPath: 'a.pdf', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'H1' }));
+    store.add(createFileRecord({ localPath: 'a-copy.pdf', canonicalLocalPath: 'a.pdf', zoteroAttachmentKey: 'AK1', lastSyncedHash: 'H1' }));
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(2);
+    expect(store.removeByAttachmentKey('AK1')).toBe(true);
+    // The shadow must NOT survive as an orphan pointing at the gone attachment.
+    expect(store.getByLocalPath('a.pdf')).toBe(null);
+    expect(store.getByLocalPath('a-copy.pdf')).toBe(null);
+    expect(store.getAllByAttachmentKey('AK1')).toHaveLength(0);
+  });
+
+  it('update() returns true on a hit and false on a key miss', () => {
+    store.add(createFileRecord({ localPath: 'a.pdf', zoteroAttachmentKey: 'AK1' }));
+    expect(store.update('a.pdf', { renamed: true })).toBe(true);
+    // An absolute path where a relative key was stored must NOT silently pass.
+    expect(store.update('/abs/a.pdf', { renamed: true })).toBe(false);
+  });
+
   // ─── UT-107: tombstone queries (v2.2 restore matrix support) ──────────────
 
   it('findTombstoneByHash returns the most-recent recoverable tombstone', () => {
@@ -945,6 +964,44 @@ describe('UT-116: debounced save (WP-B / B3)', () => {
     const savePromise = store.save();
     store.destroy();
     await expect(savePromise).rejects.toThrow(/destroyed/i);
+  });
+
+  it('re-persists a mutation that lands DURING an in-flight write (B3 race fix)', async () => {
+    // Race: _doSave snapshots + writes, and a mutation arrives while writeJSON
+    // is still awaiting. The old code cleared _dirty AFTER the await, so that
+    // mutation (e.g. a CONFLICT_BLOCKED flip) was stranded in memory — never
+    // written, a Mode-3 delete-safety hazard. The fix clears _dirty BEFORE the
+    // write and re-saves if it was re-dirtied mid-write.
+    const store = makeStore();
+    store.dataFile = '/fake/tracking.json';
+    const origWriteJSON = globalThis.IOUtils.writeJSON.getMockImplementation();
+    let releaseFirstWrite;
+    const firstWriteGate = new Promise((r) => { releaseFirstWrite = r; });
+    const writtenPaths = [];
+    let writeCount = 0;
+    globalThis.IOUtils.writeJSON.mockImplementation(async (_f, data) => {
+      writeCount++;
+      writtenPaths.push(data.files.map((f) => f.localPath));
+      if (writeCount === 1) await firstWriteGate; // hold ONLY the first write open
+    });
+
+    store.add(createFileRecord({ localPath: 'a.pdf' }));
+    const firstSave = store.save();
+    await new Promise((r) => setTimeout(r, 80)); // debounce fires; write #1 starts + blocks
+
+    // A mutation lands mid-write. No explicit save() — the fix must re-arm.
+    store.add(createFileRecord({ localPath: 'b.pdf' }));
+
+    releaseFirstWrite();
+    await firstSave;
+    await new Promise((r) => setTimeout(r, 80)); // let the re-armed debounced save fire
+
+    expect(writeCount).toBe(2);
+    expect(writtenPaths[0]).not.toContain('b.pdf'); // #1 predates the mutation
+    expect(writtenPaths[1]).toContain('b.pdf');     // #2 captures it — not stranded
+    expect(store.isDirty).toBe(false);
+
+    globalThis.IOUtils.writeJSON.mockImplementation(origWriteJSON); // restore for later tests
   });
 });
 

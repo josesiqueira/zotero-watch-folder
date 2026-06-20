@@ -115,8 +115,36 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
   // >50%-collapse gate never fired against the true pre-incident count (F7/F6).
   // A cycle WITH missing folders deliberately leaves the fingerprint stale; the
   // next fully-reconciled clean cycle updates it.
+  //
+  // SUPPRESSED-DRIP HOLE: Phase 1 above skips OUT_OF_SCOPE_SUPPRESSED records
+  // (emit-idempotency), so a top-level folder that was evicted and has since
+  // flipped to suppressed no longer appears in `missing` — making the cycle
+  // look "clean" while a folder is in fact gone from disk. Left unchecked, a
+  // gradual eviction (one folder suppressed per cycle) would ratchet the
+  // fingerprint downward one notch at a time and never trip the >50% collapse
+  // gate. So before refreshing, also confirm no SUPPRESSED top-level folder is
+  // missing from disk. (Suppression normally keeps the local folder in place;
+  // a suppressed record whose folder also vanished is exactly the drip-eviction
+  // signature, so we fail safe and leave the baseline stale.)
   if (missing.length === 0) {
-    recordHealthyFingerprint(topNames);
+    let suppressedTopLevelMissing = 0;
+    for (const rec of records) {
+      if (!rec || typeof rec.localPath !== 'string' || rec.localPath === '') continue;
+      if (rec.state !== STATE.OUT_OF_SCOPE_SUPPRESSED) continue;
+      if (_relForm(rec.localPath, watchRoot).includes('/')) continue; // top-level only
+      const absPath = _toAbs(watchRoot, rec.localPath);
+      if (dirSet.has(absPath)) continue;
+      let exists = false;
+      try { exists = await IOUtils.exists(absPath); }
+      catch (_e) { exists = false; }
+      if (exists) continue;
+      suppressedTopLevelMissing++;
+    }
+    if (suppressedTopLevelMissing === 0) {
+      recordHealthyFingerprint(topNames);
+    } else {
+      Zotero.debug(`[WatchFolder] folderEventDetector: ${suppressedTopLevelMissing} suppressed top-level folder(s) missing from disk — leaving healthy fingerprint stale (drip-eviction guard)`);
+    }
     return;
   }
 

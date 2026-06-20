@@ -23,8 +23,17 @@ vi.mock('../../content/fileMissing.mjs', () => ({
   isWatchRootAvailable: vi.fn(async () => true),
 }));
 
+// Keep the real collapse/aggregate logic, but spy recordHealthyFingerprint so
+// tests can assert WHEN the healthy baseline is (not) refreshed — the
+// drip-eviction guard hinges on suppressing that refresh on a dirty cycle.
+vi.mock('../../content/watchRootGuard.mjs', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, recordHealthyFingerprint: vi.fn(actual.recordHealthyFingerprint) };
+});
+
 import * as mirrorExecutor from '../../content/mirrorExecutor.mjs';
 import { isWatchRootAvailable } from '../../content/fileMissing.mjs';
+import { recordHealthyFingerprint } from '../../content/watchRootGuard.mjs';
 import { detectFolderEvents } from '../../content/folderEventDetector.mjs';
 
 function makeStore(records = []) {
@@ -183,8 +192,10 @@ describe('UT-607: skips records already in OUT_OF_SCOPE_SUPPRESSED', () => {
       onDiskAbsDirs: new Set(['/watch']),
       watchRoot: '/watch',
     });
+    // Core guarantee: a suppressed record is never RE-EMITTED to the executor.
+    // (Its disk presence may be consulted by the drip-eviction fingerprint
+    // guard below — that's covered by UT-607c, not asserted here.)
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
-    expect(IOUtils.exists).not.toHaveBeenCalled();
   });
 
   it('still emits for non-suppressed records', async () => {
@@ -199,6 +210,58 @@ describe('UT-607: skips records already in OUT_OF_SCOPE_SUPPRESSED', () => {
     });
     expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
     expect(mirrorExecutor.execute.mock.calls[0][0].payload.collectionKey).toBe('A');
+  });
+});
+
+// ─── UT-607c (drip-eviction fingerprint guard) ─────────────────────────────
+// Phase 1 skips OUT_OF_SCOPE_SUPPRESSED records for emit-idempotency, so a
+// top-level folder evicted-then-suppressed drops out of `missing` and the
+// cycle LOOKS clean. Refreshing the healthy fingerprint on such a cycle would
+// ratchet the collapse baseline down one folder at a time, letting a gradual
+// cloud-eviction slip past the >50% collapse gate. The fix: don't refresh the
+// fingerprint while a suppressed top-level folder is missing from disk.
+describe('UT-607c: drip-eviction fingerprint guard', () => {
+  it('does NOT refresh the healthy fingerprint when a suppressed top-level folder is gone from disk', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'X', state: 'out-of-scope-suppressed' },
+    ];
+    // Disk shows the root only; the suppressed folder X is gone (IOUtils.exists
+    // defaults to false). missing.length===0 (suppressed skipped), but the
+    // drip-guard must keep the baseline stale.
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(recordHealthyFingerprint).not.toHaveBeenCalled();
+  });
+
+  it('DOES refresh the fingerprint when the suppressed folder is still present on disk', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'X', state: 'out-of-scope-suppressed' },
+    ];
+    // Suppression normally keeps the local folder in place — a clean cycle.
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch', '/watch/X']),
+      watchRoot: '/watch',
+    });
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+    expect(recordHealthyFingerprint).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT refresh while a non-suppressed (still-missing) folder is being reconciled', async () => {
+    const records = [
+      { type: 'collection', zoteroCollectionKey: 'A', localPath: 'X', state: 'clean' },
+    ];
+    // X is gone from disk and still CLEAN → it's in `missing`, an unclean cycle.
+    await detectFolderEvents({
+      trackingStore: makeStore(records),
+      onDiskAbsDirs: new Set(['/watch']),
+      watchRoot: '/watch',
+    });
+    expect(recordHealthyFingerprint).not.toHaveBeenCalled();
   });
 });
 

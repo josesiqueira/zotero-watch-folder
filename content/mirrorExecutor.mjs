@@ -37,7 +37,6 @@ import { createFileRecord, createCollectionRecord, STATE } from './trackingStore
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { collectionKeyToRelativePath, resolveSyncRoot, getScopeMode } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete, confirmFirstLibraryDelete } from './bulkGuard.mjs';
-import { hashFile as _hashFileCached } from './_hashCache.mjs';
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;
@@ -204,19 +203,18 @@ export async function canSafelyMove(record, absPath) {
     return { ok: false, reason: 'io-error', error: String(e?.message ?? e) };
   }
   if (!exists) return { ok: false, reason: 'missing-file' };
-  // WP-C #2: consult the (path, size, mtime) hash cache. An unchanged
-  // file hits O(1); an edited file (mtime advances) naturally misses
-  // and computes a fresh hash. Runtime safety net: if hashFile throws
-  // or returns null we fall through to direct getFileHash so a cache
-  // bug can never wedge the move gate.
+  // Delete-safety gate: hash the file DIRECTLY, never via the
+  // (path, size, mtime) hash cache. A mtime-preserving same-size overwrite
+  // (`rsync -t`, `touch`-then-edit, some cloud clients) yields a stale cache
+  // HIT — which would let this gate approve MOVING locally-edited bytes, a
+  // fail-OPEN that violates the delete-safety contract. The cache is a
+  // read-avoidance optimization for the scan path only; this gate must be
+  // authoritative, so it always recomputes.
   let currentHash = null;
   try {
-    currentHash = await _hashFileCached(absPath);
+    currentHash = await getFileHash(absPath);
   } catch (_e) {
     currentHash = null;
-  }
-  if (!currentHash) {
-    currentHash = await getFileHash(absPath);
   }
   if (!currentHash) return { ok: false, reason: 'hash-failed' };
   if (currentHash !== record.lastSyncedHash) {
@@ -272,9 +270,11 @@ export async function canSafelyTrashZoteroAttachment(record, attachmentItem) {
   let exists = false;
   try { exists = await IOUtils.exists(storedPath); } catch (_e) { exists = false; }
   if (!exists) return { ok: false, reason: 'file-unavailable' };
+  // Delete-safety gate: recompute directly (see canSafelyMove) — never trust
+  // the (path, size, mtime) cache when a Zotero attachment is about to be
+  // trashed, or a mtime-preserving drift could pass as "unchanged".
   let currentHash = null;
-  try { currentHash = await _hashFileCached(storedPath); } catch (_e) { currentHash = null; }
-  if (!currentHash) currentHash = await getFileHash(storedPath);
+  try { currentHash = await getFileHash(storedPath); } catch (_e) { currentHash = null; }
   if (!currentHash) return { ok: false, reason: 'file-unavailable' };
   if (currentHash !== record.lastSyncedHash) {
     return {

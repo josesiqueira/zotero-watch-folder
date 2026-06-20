@@ -416,17 +416,21 @@ export class TrackingStore {
    * No-op if no such record exists.
    * @param {string} localPath
    * @param {Partial<FileRecord>} updates
+   * @returns {boolean} true if a record matched and was updated; false if the
+   *   key missed (e.g. an absolute path passed where a sync-root-relative key
+   *   was stored). Callers on data-safety paths should treat false as a bug.
    */
   update(localPath, updates) {
     this._ensureInitialized();
     const rec = this._files.get(localPath);
     if (!rec) {
       Zotero.debug(`[WatchFolder] TrackingStore.update: no file record at ${localPath}`);
-      return;
+      return false;
     }
     Object.assign(rec, updates);
     this._rebuildIndexes();
     this._dirty = true;
+    return true;
   }
 
   /**
@@ -444,15 +448,28 @@ export class TrackingStore {
   }
 
   /**
-   * Remove a file record by Zotero attachment key.
-   * @returns {boolean} true if removed.
+   * Remove EVERY file record sharing a Zotero attachment key — the canonical
+   * record plus any shadow copies (two on-disk copies of one file map to one
+   * attachment + multiple FileRecords). Removing only the first the index
+   * returns would strand the siblings as orphans pointing at an attachment
+   * that's being trashed/gone, so a later reappearance of the file re-imports
+   * as a new item instead of re-linking. Tracking-only — performs NO disk
+   * action (shadows are never disk-acted).
+   * @returns {boolean} true if at least one record was removed.
    */
   removeByAttachmentKey(attachmentKey) {
     this._ensureInitialized();
     if (!attachmentKey) return false;
-    const rec = this._byAttachmentKey.get(attachmentKey);
-    if (!rec) return false;
-    return this.remove(rec.localPath);
+    let removedAny = false;
+    // Snapshot first: remove() mutates _files and rebuilds the index.
+    const matches = [];
+    for (const rec of this._files.values()) {
+      if (rec && rec.zoteroAttachmentKey === attachmentKey) matches.push(rec.localPath);
+    }
+    for (const localPath of matches) {
+      if (this.remove(localPath)) removedAny = true;
+    }
+    return removedAny;
   }
 
   /**
@@ -839,6 +856,14 @@ export class TrackingStore {
   async _doSave() {
     if (!this._dirty) return;
     if (!this.dataFile) return;
+    // Clear the dirty flag BEFORE snapshotting + the async write. A mutation
+    // that lands DURING the write (Zotero notifiers can fire while writeJSON
+    // awaits) re-sets _dirty=true, and we re-persist below. Clearing AFTER the
+    // await would be wrong: the in-flight write's snapshot predates the mid-
+    // write mutation, yet _dirty=false would suppress the next save and strand
+    // that mutation (e.g. a CONFLICT_BLOCKED flip) in memory only — a Mode-3
+    // delete-safety hazard. On failure we restore _dirty so the retry fires.
+    this._dirty = false;
     try {
       const data = {
         version: SCHEMA_VERSION,
@@ -848,12 +873,15 @@ export class TrackingStore {
         tombstones: this._tombstones.slice(),
       };
       await IOUtils.writeJSON(this.dataFile, data, { tmpPath: `${this.dataFile}.tmp` });
-      this._dirty = false;
       Zotero.debug(`[WatchFolder] TrackingStore: saved (files=${data.files.length} collections=${data.collections.length} tombstones=${data.tombstones.length})`);
     } catch (e) {
+      this._dirty = true;
       Zotero.logError(`[WatchFolder] TrackingStore.save: ${e?.message ?? e}`);
       throw e;
     }
+    // A mutation arrived while the write was in flight — schedule another pass
+    // (debounced) so it reaches disk instead of being stranded in memory.
+    if (this._dirty) this.save();
   }
 
   /**

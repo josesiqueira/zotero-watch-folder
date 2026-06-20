@@ -143,6 +143,24 @@ describe('UT-402: canSafelyMove conflict gate', () => {
     expect(await canSafelyMove(null, '/watch/a.pdf')).toMatchObject({ ok: false, reason: 'invalid-record' });
     expect(await canSafelyMove({ lastSyncedHash: 'x' }, '')).toMatchObject({ ok: false, reason: 'invalid-record' });
   });
+
+  it('hashes DIRECTLY, never via the (path,size,mtime) cache (mtime-preserving drift must not pass)', async () => {
+    // A delete gate that trusted the cache would get a STALE matching hash on a
+    // (path,size,mtime) HIT after a mtime-preserving same-size edit (rsync -t),
+    // approving a move of locally-edited bytes — a fail-OPEN. The gate must
+    // recompute via getFileHash and never consult the cache wrapper.
+    const record = createFileRecord({
+      localPath: 'a.pdf', zoteroAttachmentKey: 'K1', lastSyncedHash: 'oldhash',
+    });
+    const hashFileSpy = vi.spyOn(hashCache, 'hashFile');
+    getFileHash.mockResolvedValueOnce('driftedhash'); // the real, drifted bytes
+    const result = await canSafelyMove(record, '/watch/a.pdf');
+    expect(getFileHash).toHaveBeenCalledWith('/watch/a.pdf');
+    expect(hashFileSpy).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('hash-drifted');
+    hashFileSpy.mockRestore();
+  });
 });
 
 // ─── UT-403 ────────────────────────────────────────────────────────────────

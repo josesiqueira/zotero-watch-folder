@@ -368,6 +368,13 @@ async function _applyOne(f, action, { store, libraryID, watchRoot }) {
       if (await _fileGone(_absPath(watchRoot, survivingLocalPath), watchRoot)) {
         return { ok: false, reason: 'state-changed: survivor file gone' };
       }
+      // C2/C3 state re-validation: if the user (or a background sync) detached
+      // or suppressed the survivor during the detect→Apply window, promoting it
+      // back to CLEAN would silently reverse that choice and resume syncing a
+      // file they stopped tracking. Abort — leave the finding re-detectable.
+      if (NON_SYNCING_FILE_STATES.has(survRec.state)) {
+        return { ok: false, reason: 'state-changed: survivor now detached/suppressed' };
+      }
 
       // Resolve / create the destination collection FIRST (so a failure here
       // aborts before any tracking mutation).

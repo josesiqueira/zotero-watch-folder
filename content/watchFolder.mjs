@@ -892,7 +892,7 @@ export class WatchFolderService {
                 // the newly-created parent (was the attachment key as a
                 // placeholder before recognition).
                 if (this._trackingStore && attachmentItem.parentItem) {
-                  this._trackingStore.update(finalPath, {
+                  this._trackingStore.update(finalRelKey, {
                     zoteroItemKey: attachmentItem.parentItem.key,
                   });
                 }
@@ -911,7 +911,7 @@ export class WatchFolderService {
                 if (renameResult.success && renameResult.oldName !== renameResult.newName) {
                   Zotero.debug(`[WatchFolder] Renamed: "${renameResult.oldName}" → "${renameResult.newName}"`);
                   if (this._trackingStore) {
-                    this._trackingStore.update(finalPath, { renamed: true });
+                    this._trackingStore.update(finalRelKey, { renamed: true });
                   }
                 }
               }
@@ -2635,6 +2635,11 @@ export class WatchFolderService {
           localPath: newRelLocal,
           canonicalLocalPath: newRelLocal,
           canonicalCollectionKey: newCanonicalCollectionKey,
+          // Moved to Unfiled (null canonical) → drop the stale membership keys
+          // carried over from the prior location, so the record doesn't claim
+          // membership in the collection it just left. Non-Unfiled moves leave
+          // membership for the Zotero notifier to reconcile.
+          ...(newCanonicalCollectionKey === null ? { collectionMembershipKeys: [] } : {}),
         }));
       } catch (e) {
         Zotero.debug(`[WatchFolder] Move: tracking update failed: ${e.message}`);
@@ -2642,38 +2647,6 @@ export class WatchFolderService {
     }
 
     try { await this._trackingStore.save(); } catch (_) {}
-  }
-
-  /**
-   * Look up a Zotero collection by its slash-separated path, e.g.
-   * "Inbox/Research/AI". Returns the leaf collection if every segment
-   * resolves; null if any segment is missing.
-   */
-  async _findCollectionByPath(path) {
-    if (!path) return null;
-    const parts = path.split('/').filter(p => p.trim() !== '');
-    if (parts.length === 0) return null;
-    try {
-      const libraryID = Zotero.Libraries.userLibraryID;
-      let parentID = null;
-      let current = null;
-      for (const name of parts) {
-        let candidates;
-        if (parentID === null) {
-          candidates = Zotero.Collections.getByLibrary(libraryID).filter(c => !c.parentID);
-        } else {
-          candidates = Zotero.Collections.getByParent(parentID, libraryID);
-        }
-        const found = candidates.find(c => c.name === name);
-        if (!found) return null;
-        current = found;
-        parentID = found.id;
-      }
-      return current;
-    } catch (e) {
-      Zotero.debug(`[WatchFolder] _findCollectionByPath error: ${e.message}`);
-      return null;
-    }
   }
 
   /**

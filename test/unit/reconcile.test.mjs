@@ -246,6 +246,28 @@ describe('UT-RC-6: applyRepairs', () => {
     expect(store.update).not.toHaveBeenCalled();
   });
 
+  it('C-state: rehome ABORTS (no mutation) if the survivor was detached/suppressed before apply (TOCTOU)', async () => {
+    // The survivor was CLEAN at detect() time, but during the interactive
+    // review window the user detached it (or a background sync suppressed it).
+    // Promoting it back to CLEAN would silently reverse that choice — abort.
+    const store = makeStore([
+      fileRec({ localPath: 'a.pdf', canonicalLocalPath: 'a.pdf', key: 'K1' }),
+      fileRec({ localPath: 'Topics/a.pdf', canonicalLocalPath: 'a.pdf', key: 'K1', state: 'user-detached' }),
+    ]);
+    getTrackingStore.mockReturnValue(store);
+    setGone(['/watch/a.pdf']); // canonical still gone; survivor file still present
+    const findings = [{
+      id: 'f0', type: reconcile.FINDING.SHADOW_ORPHANED, defaultActionId: 'rehome',
+      _payload: { attKey: 'K1', survivingLocalPath: 'Topics/a.pdf', allSurvivingLocalPaths: ['Topics/a.pdf'], folderRel: 'Topics', canonicalLocalPath: 'a.pdf' },
+    }];
+    const res = await reconcile.applyRepairs(findings, { f0: 'rehome' });
+    expect(res.applied).toBe(0);
+    expect(res.failed).toBe(1);
+    expect(res.results[0].reason).toMatch(/detached|suppressed/i);
+    expect(store.update).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+  });
+
   it('drop: removes the stale entries when STILL gone from disk + Zotero', async () => {
     const store = makeStore([fileRec({ localPath: 'ghost.pdf', key: 'GH' })]);
     getTrackingStore.mockReturnValue(store);
