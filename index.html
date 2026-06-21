@@ -406,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.8.0 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.8.1 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -758,7 +758,7 @@ footer .fine {
     <ol class="install-steps">
       <li>
         <h4>Download the <code>.xpi</code></h4>
-        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.0</code>.</p>
+        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.1</code>.</p>
       </li>
       <li>
         <h4>Install in Zotero</h4>
@@ -931,13 +931,21 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.8.0 is the current stable release: Check &amp; Repair, on top of the
+      v2.8.1 is the current stable release: an audit-hardening pass (data-safety
+      + error-handling fixes) on top of the v2.8.0 Check &amp; Repair tool, the
       v2.7 whole-library mirror default and the v2.6.x data-safety wave.
       The bar to ship was: 912 unit tests passing across 27 files,
       live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
     <ul class="roadmap-list">
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.8.1 — audit hardening</b>
+          <span class="meta">Two adversarial multi-agent audits plus live-Zotero verification closed three data-safety bugs (remove ALL tracking records for an attachment so a shadow copy can't orphan; a reconcile rehome TOCTOU; the per-file delete gates now hash directly instead of trusting the path/size/mtime cache, closing a fail-open on mtime-preserving edits) and added error-handling robustness (the async metadata callback is now awaited so its failures surface; bootstrap, preference-pane registration, and the poll loop are guarded so a throw can't silently wedge startup or kill the scan loop). No behavior changes — pure correctness + resilience.</span>
+        </div>
+      </li>
       <li>
         <span class="status done">Done</span>
         <div>
@@ -1120,7 +1128,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.8.0 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-20
+      GPL-3.0 · v2.8.1 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-21
     </div>
   </div>
 </footer>
