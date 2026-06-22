@@ -120,6 +120,7 @@
         const total = sink ? sink.getTotalCount() : 0;
         countEl.value = String(total);
         row.hidden = total === 0;
+        refreshAttentionStrip();
     }
 
     /**
@@ -173,6 +174,7 @@
             ? resolver.listConflicted() : [];
         countEl.value = String(records.length);
         row.hidden = records.length === 0;
+        refreshAttentionStrip();
     }
 
     /**
@@ -200,6 +202,7 @@
         if (foldersBtn) foldersBtn.hidden = folders.length === 0;
         const filesBtn = document.getElementById('watch-folder-suppressed-resolve-btn');
         if (filesBtn) filesBtn.hidden = files.length === 0;
+        refreshAttentionStrip();
     }
 
     /**
@@ -478,6 +481,7 @@
         refreshModeRadio(); // move the highlight + re-assert the radio to the new value
         refreshDeletionUI(); // show/hide the Mode-3-only deletion-disposition group live
         refreshExtDelUI();   // and the disk→Zotero external-deletion group
+        refreshStatusHeader(); // reflect the new mode in the header detail line
     }
 
     // ─── PDF storage strategy (orthogonal to sync mode) ───────────────────
@@ -536,6 +540,7 @@
         setPref('pdfStorageStrategy', value);
         Zotero.debug(`[Watch Folder] PDF storage strategy changed: ${current} → ${value}`);
         refreshStorageStrategyUI();
+        refreshStatusHeader(); // reflect the new storage strategy in the header
     }
 
     // ─── Mode-3 deletion disposition (diskDeleteOnTrash) ─────────────────
@@ -558,6 +563,10 @@
         const mode = getPref('mode') || 'mode1';
         const showGroup = mode === 'mode3';
         if (group) group.hidden = !showGroup;
+        // Gating banner on the Deletions tab — shown when the controls are inert
+        // (any mode other than Mode 3).
+        const gate = document.getElementById('watch-folder-deletions-gate');
+        if (gate) gate.hidden = showGroup;
         if (!showGroup) return;
 
         const current = getDiskDeleteOnTrashPref();
@@ -1009,14 +1018,138 @@
     }
 
     /**
-     * Toggle the Advanced section's visibility + caret arrow.
+     * Switch the active tab: mark the clicked tab button .is-active and show
+     * only the matching .wf-tabpanel. Matching is by the data-tab attribute,
+     * so tab buttons and panels stay paired by name (general/storage/…).
      */
-    function toggleAdvanced() {
-        const body = document.getElementById('watch-folder-advanced-body');
-        const caret = document.getElementById('watch-folder-advanced-caret');
-        if (!body || !caret) return;
-        body.hidden = !body.hidden;
-        caret.value = body.hidden ? '▸' : '▾';
+    function selectTab(name) {
+        const bar = document.getElementById('watch-folder-tabs');
+        if (bar) {
+            for (const t of bar.children) {
+                if (t.classList) t.classList.toggle('is-active', t.getAttribute('data-tab') === name);
+            }
+        }
+        const panels = document.getElementsByClassName('wf-tabpanel');
+        for (const p of panels) p.hidden = p.getAttribute('data-tab') !== name;
+    }
+
+    /**
+     * Basename of a path (last segment), normalizing Windows backslashes and
+     * trailing slashes. Used for the compact "<folder> → <target>" summary.
+     */
+    function _basename(p) {
+        if (typeof p !== 'string' || !p) return '';
+        const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
+        const idx = norm.lastIndexOf('/');
+        return idx >= 0 ? norm.slice(idx + 1) : norm;
+    }
+
+    const STATUS_MODE_LABELS = {
+        mode1: 'Import only', mode2: 'Mirror, no delete', mode3: 'Mirror, safe delete',
+    };
+    const STATUS_STORAGE_LABELS = {
+        stored: 'Store PDFs in Zotero',
+        linked_watch_folder: 'Link from watch folder',
+        stored_plus_mirror: 'Store + mirror',
+    };
+
+    /**
+     * Refresh the persistent status header: the state pill (Not set up /
+     * Paused / Watching), the "<folder> → <target>" summary, the
+     * "<mode> · <storage>" detail line, and the attention strip. All reads
+     * are synchronous off prefs + the live sinks, so this is cheap to call
+     * after any state change.
+     */
+    function refreshStatusHeader() {
+        const pill = document.getElementById('watch-folder-status-pill');
+        const summary = document.getElementById('watch-folder-status-summary');
+        const detail = document.getElementById('watch-folder-status-detail');
+        if (!pill || !summary || !detail) return;
+
+        const enabled = getPref('enabled') === true;
+        const setupCompleted = getPref('setupCompleted') === true;
+        const sourcePath = getPref('sourcePath') || '';
+        const scopeMode = getPref('scopeMode') || 'library';
+        const mode = getPref('mode') || 'mode1';
+        const strategy = getStorageStrategyPref();
+
+        // State pill — Not set up → Paused → Watching.
+        let state, label;
+        if (!setupCompleted || !sourcePath) { state = 'is-unset'; label = 'Not set up'; }
+        else if (!enabled) { state = 'is-paused'; label = 'Paused'; }
+        else { state = 'is-watching'; label = 'Watching'; }
+        pill.className = 'wf-pill ' + state;
+        pill.textContent = label;
+
+        // Summary — <folder> → <target>.
+        const folderName = sourcePath ? _basename(sourcePath) : 'no folder yet';
+        let target = 'My Library';
+        if (scopeMode !== 'library') {
+            const key = getPref('syncRootCollectionKey');
+            target = 'no destination yet';
+            if (key) {
+                try {
+                    const libraryID = getPref('syncRootLibraryID') || Zotero.Libraries.userLibraryID;
+                    const col = Zotero.Collections.getByLibraryAndKey(libraryID, key);
+                    if (col) target = collectionDisplayPath(col);
+                } catch (_e) { /* leave default */ }
+            }
+        }
+        summary.textContent = `${folderName} → ${target}`;
+
+        // Detail — <mode> · <storage>.
+        detail.textContent = `${STATUS_MODE_LABELS[mode] || mode} · ${STATUS_STORAGE_LABELS[strategy] || strategy}`;
+
+        refreshAttentionStrip();
+    }
+
+    /**
+     * Refresh the header's attention strip (warnings/suppressed/conflicts)
+     * and the Maintenance tab's "Nothing needs attention" placeholder. The
+     * strip is fast/sync; trashed-folder counts are async and stay surfaced
+     * in their own Maintenance row (folded into the placeholder via live row
+     * visibility, not recomputed here).
+     */
+    function refreshAttentionStrip() {
+        const strip = document.getElementById('watch-folder-attention-strip');
+        const text = document.getElementById('watch-folder-attention-text');
+        const empty = document.getElementById('watch-folder-attention-empty');
+
+        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
+        const resolver = Zotero.WatchFolder && Zotero.WatchFolder.suppressionResolver;
+        let warnings = 0, suppressed = 0, conflicted = 0;
+        if (sink) { try { warnings = sink.getTotalCount() || 0; } catch (_e) {} }
+        if (resolver) {
+            try {
+                suppressed = (resolver.listSuppressed() || []).length
+                    + (typeof resolver.listSuppressedCollections === 'function'
+                        ? (resolver.listSuppressedCollections() || []).length : 0);
+            } catch (_e) {}
+            try {
+                conflicted = typeof resolver.listConflicted === 'function'
+                    ? (resolver.listConflicted() || []).length : 0;
+            } catch (_e) {}
+        }
+
+        const parts = [];
+        if (warnings) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
+        if (suppressed) parts.push(`${suppressed} suppressed`);
+        if (conflicted) parts.push(`${conflicted} conflict-blocked`);
+        const total = warnings + suppressed + conflicted;
+        if (strip) strip.hidden = total === 0;
+        if (text) text.textContent = total === 0 ? '' : `⚠ ${parts.join(' · ')} — review in Maintenance →`;
+
+        // Placeholder hides if ANY attention row is currently visible (covers
+        // trashed folders, whose count is set asynchronously elsewhere).
+        const rowIds = [
+            'watch-folder-warnings-row', 'watch-folder-suppressed-row',
+            'watch-folder-conflicted-row', 'watch-folder-trashed-folders-row',
+        ];
+        const anyVisible = rowIds.some((id) => {
+            const el = document.getElementById(id);
+            return el && !el.hidden;
+        });
+        if (empty) empty.hidden = anyVisible;
     }
 
     /**
@@ -1156,6 +1289,7 @@
         // eventually own this too.
         setPref('setupCompleted', true);
         refreshSyncRootDisplay();
+        refreshStatusHeader();
         Zotero.debug(`[Watch Folder] Sync root set to ${chosen.label} (key=${chosen.key})`);
     }
 
@@ -1192,6 +1326,7 @@
                 setPref('sourcePath', selectedPath);
                 const pathInput = document.getElementById('watch-folder-source-path');
                 if (pathInput) pathInput.value = selectedPath;
+                refreshStatusHeader();
                 Zotero.debug(`[Watch Folder] Source path set to: ${selectedPath}`);
             }
         }
@@ -1215,7 +1350,9 @@
      */
     async function handleEnableCommand(event) {
         const checkbox = event.target;
-        if (!checkbox.checked) return; // disabling is always OK
+        // Defer the header refresh so the pref-binding's own 'command' handler
+        // has committed the new `enabled` value before we read it back.
+        if (!checkbox.checked) { window.setTimeout(refreshStatusHeader, 0); return; } // disabling is always OK
 
         const sourcePath = getPref('sourcePath');
         const isValid = await validateSourcePath(sourcePath);
@@ -1228,6 +1365,7 @@
                 'Please select a valid watch folder before enabling.'
             );
         }
+        window.setTimeout(refreshStatusHeader, 0);
     }
 
     /**
@@ -1248,6 +1386,7 @@
         }
         countEl.value = String(entries.length);
         row.hidden = entries.length === 0;
+        refreshAttentionStrip();
     }
 
     /**
@@ -1439,6 +1578,10 @@
             // (it walks disk + enumerates trash, so only on explicit request).
             refreshMissingFilesDisplay();
 
+            // Status header (pill + summary + attention strip) + default tab.
+            refreshStatusHeader();
+            selectTab('general');
+
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
         } catch (e) {
             Zotero.logError(`[Watch Folder] Preferences init error: ${e.message}`);
@@ -1465,6 +1608,9 @@
         refreshSyncRootDisplay();
         refreshModeRadio();
         refreshStorageStrategyUI();
+        refreshDeletionUI();
+        refreshExtDelUI();
+        refreshStatusHeader();
     }
 
     // Expose to window so oncommand attributes in the XHTML can reach these.
@@ -1478,9 +1624,9 @@
         resolveConflicts,
         restoreTrashedFolders,
         runSetupWizard,
-        // v2.5: new live mode picker + advanced disclosure + bundled docs + smart rules window.
+        // Live mode picker + tabbed pane navigation + bundled docs + smart rules window.
         changeMode,
-        toggleAdvanced,
+        selectTab,
         openDocs,
         openSmartRulesEditor,
         // PDF storage strategy + conversion tools.

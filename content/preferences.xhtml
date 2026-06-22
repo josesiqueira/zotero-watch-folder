@@ -4,9 +4,54 @@
       style="overflow: auto;"
       onload="if (typeof WatchFolderPrefs !== 'undefined' &amp;&amp; WatchFolderPrefs.onLoad) WatchFolderPrefs.onLoad()">
 
-  <!-- Selectable "option card" styling for the mode + storage pickers.
-       rgba colors adapt to light/dark themes; .wf-sel marks the live choice. -->
+  <!-- ─── Design system ──────────────────────────────────────────────
+       Theme-adaptive: neutral surfaces use rgba(127,127,127,…) so they
+       read on both Zotero light + dark Settings; the accent is Zotero
+       blue (#4072b8). .wf-sel marks the live choice on the option cards
+       (JS _markSelectedCard depends on it). -->
   <html:style>
+    /* — Status header — */
+    .wf-statusbar { padding: 10px 12px; margin: 0 0 4px;
+                    border: 1px solid rgba(127,127,127,0.22);
+                    border-radius: 8px; background: rgba(127,127,127,0.06); }
+    .wf-pill { display: inline-block; padding: 2px 10px 2px 8px; border-radius: 999px;
+               font-size: 0.8em; font-weight: 700; white-space: nowrap; }
+    .wf-pill::before { content: "\25CF"; margin-right: 5px; font-size: 0.9em; }
+    .wf-pill.is-watching { color: #1a7f37; background: rgba(26,127,55,0.14); }
+    .wf-pill.is-paused   { color: #9a6700; background: rgba(154,103,0,0.18); }
+    .wf-pill.is-unset    { color: #6b6b6b; background: rgba(127,127,127,0.18); }
+    .wf-status-summary { margin-left: 10px; font-size: 0.98em; font-weight: 600; }
+    .wf-status-detail  { margin: 5px 0 0 2px; font-size: 0.88em; opacity: 0.72; }
+    .wf-doclinks { gap: 8px; margin-right: 12px; font-size: 0.86em; opacity: 0.9; }
+    .wf-cta { font-weight: 600; padding: 5px 14px; }
+    .wf-attention { margin-top: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer;
+                    background: rgba(154,103,0,0.14); }
+    .wf-attention:hover { background: rgba(154,103,0,0.22); }
+    .wf-attention-text { font-size: 0.9em; font-weight: 600; color: #9a6700; }
+
+    /* — Tab bar — */
+    .wf-tabs { display: flex; gap: 2px; margin: 12px 0 0;
+               border-bottom: 1px solid rgba(127,127,127,0.28); }
+    .wf-tab { appearance: none; -moz-appearance: none; background: transparent;
+              border: none; border-bottom: 2px solid transparent; color: inherit;
+              padding: 7px 14px; font-size: 0.95em; cursor: pointer; opacity: 0.72;
+              border-radius: 5px 5px 0 0; }
+    .wf-tab:hover { background: rgba(127,127,127,0.10); opacity: 1; }
+    .wf-tab.is-active { opacity: 1; font-weight: 600;
+                        color: #4072b8; border-bottom-color: #4072b8; }
+
+    /* — Tab panels + cards — */
+    .wf-tabpanel { padding: 14px 2px 4px; }
+    .wf-card { border: 1px solid rgba(127,127,127,0.20); border-radius: 8px;
+               padding: 12px 14px; margin: 0 0 12px; }
+    .wf-h2 { font-size: 1.0em; font-weight: 600; margin: 0 0 8px; }
+    .wf-lede { font-size: 0.92em; opacity: 0.85; line-height: 1.5; margin: 0 0 12px; }
+    .wf-desc { font-size: 0.92em; opacity: 0.88; line-height: 1.5; margin: 0 0 10px; }
+    .wf-help { font-size: 0.85em; opacity: 0.62; line-height: 1.45; }
+    .wf-row { margin: 4px 0; }
+    .wf-subhead { font-size: 0.92em; font-weight: 600; margin: 0 0 4px; }
+
+    /* — Option cards (mode / storage / deletion pickers) — */
     .wf-opt { display: block; border: 1px solid rgba(127,127,127,0.35); border-radius: 6px;
               padding: 7px 10px; margin: 5px 0; cursor: pointer; }
     .wf-opt:hover { background: rgba(127,127,127,0.12); }
@@ -19,14 +64,19 @@
                   border-radius: 4px; font-size: 0.72em; font-weight: 700;
                   padding: 0 5px; margin-left: 8px; white-space: nowrap; }
     .wf-opt-desc { margin: 3px 0 0 24px; font-size: 0.95em; opacity: 0.95; line-height: 1.5; }
+
+    /* — Deletions gating banner — */
+    .wf-gate { margin: 0 0 12px; padding: 9px 12px; border-radius: 6px;
+               background: rgba(64,114,184,0.12); font-size: 0.92em; line-height: 1.5; }
   </html:style>
 
-  <!-- ─── About + doc links ──────────────────────────────────────── -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-about"/></label>
-    <vbox style="margin: 4px 8px;">
-      <html:p data-l10n-id="watch-folder-pref-about-blurb" style="margin: 4px 0; line-height: 1.5;"/>
-      <hbox align="center" style="margin: 6px 0; gap: 12px;">
+  <!-- ─── Persistent status header ───────────────────────────────── -->
+  <vbox id="watch-folder-statusbar" class="wf-statusbar">
+    <hbox align="center">
+      <html:span id="watch-folder-status-pill" class="wf-pill is-unset"/>
+      <html:span id="watch-folder-status-summary" class="wf-status-summary"/>
+      <spacer flex="1"/>
+      <hbox align="center" class="wf-doclinks">
         <html:a href="#" data-l10n-id="watch-folder-pref-docs-userguide"
                 onclick="WatchFolderPrefs.openDocs('index'); return false;"/>
         <label value="·" style="color: gray;"/>
@@ -36,393 +86,405 @@
         <html:a href="#" data-l10n-id="watch-folder-pref-docs-behavior"
                 onclick="WatchFolderPrefs.openDocs('test-cases'); return false;"/>
       </hbox>
-    </vbox>
-  </groupbox>
+      <button id="watch-folder-setup-cta-btn" class="wf-cta"
+              data-l10n-id="watch-folder-pref-setup-cta"
+              oncommand="WatchFolderPrefs.runSetupWizard()"/>
+    </hbox>
+    <html:span id="watch-folder-status-detail" class="wf-status-detail"/>
+    <hbox id="watch-folder-attention-strip" class="wf-attention" hidden="true"
+          align="center" onclick="WatchFolderPrefs.selectTab('maintenance')">
+      <html:span id="watch-folder-attention-text" class="wf-attention-text"/>
+    </hbox>
+  </vbox>
 
-  <!-- ─── Hero CTA: Set up Watch Folder ──────────────────────────── -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-setup"/></label>
-    <vbox style="margin: 4px 8px;">
-      <html:p data-l10n-id="watch-folder-pref-setup-blurb" style="margin: 4px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
-      <hbox style="margin: 8px 0;">
-        <button id="watch-folder-setup-cta-btn"
-                data-l10n-id="watch-folder-pref-setup-cta"
-                oncommand="WatchFolderPrefs.runSetupWizard()"
-                style="font-weight: 600; padding: 6px 16px;"/>
+  <!-- ─── Tab bar ────────────────────────────────────────────────── -->
+  <hbox id="watch-folder-tabs" class="wf-tabs">
+    <html:button class="wf-tab is-active" id="wf-tab-general" data-tab="general"
+                 data-l10n-id="watch-folder-pref-tab-general"
+                 onclick="WatchFolderPrefs.selectTab('general')"/>
+    <html:button class="wf-tab" id="wf-tab-storage" data-tab="storage"
+                 data-l10n-id="watch-folder-pref-tab-storage"
+                 onclick="WatchFolderPrefs.selectTab('storage')"/>
+    <html:button class="wf-tab" id="wf-tab-deletions" data-tab="deletions"
+                 data-l10n-id="watch-folder-pref-tab-deletions"
+                 onclick="WatchFolderPrefs.selectTab('deletions')"/>
+    <html:button class="wf-tab" id="wf-tab-naming" data-tab="naming"
+                 data-l10n-id="watch-folder-pref-tab-naming"
+                 onclick="WatchFolderPrefs.selectTab('naming')"/>
+    <html:button class="wf-tab" id="wf-tab-maintenance" data-tab="maintenance"
+                 data-l10n-id="watch-folder-pref-tab-maintenance"
+                 onclick="WatchFolderPrefs.selectTab('maintenance')"/>
+    <html:button class="wf-tab" id="wf-tab-advanced" data-tab="advanced"
+                 data-l10n-id="watch-folder-pref-tab-advanced"
+                 onclick="WatchFolderPrefs.selectTab('advanced')"/>
+  </hbox>
+
+  <!-- ════════════════════ GENERAL ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-general" data-tab="general">
+    <html:p data-l10n-id="watch-folder-pref-about-blurb" class="wf-lede"/>
+
+    <vbox class="wf-card">
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-enabled" control="watch-folder-enabled"/>
+        <checkbox id="watch-folder-enabled"
+                  preference="extensions.zotero.watchFolder.enabled"/>
+      </hbox>
+
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-source-path" control="watch-folder-source-path"/>
+        <html:input id="watch-folder-source-path" type="text" style="flex: 1;"
+                    preference="extensions.zotero.watchFolder.sourcePath"
+                    readonly="true"/>
+        <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"
+                oncommand="WatchFolderPrefs.browseForFolder()"/>
+      </hbox>
+
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-sync-root" control="watch-folder-sync-root-display"/>
+        <html:input id="watch-folder-sync-root-display" type="text" style="flex: 1;" readonly="true"/>
+        <button id="watch-folder-sync-root-btn" data-l10n-id="watch-folder-pref-sync-root-change"
+                oncommand="WatchFolderPrefs.pickSyncRoot()"/>
       </hbox>
     </vbox>
-  </groupbox>
-
-  <!-- ─── Watch Folder essentials ────────────────────────────────── -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-watch"/></label>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-enabled" control="watch-folder-enabled"/>
-      <checkbox id="watch-folder-enabled"
-                preference="extensions.zotero.watchFolder.enabled"/>
-    </hbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-source-path" control="watch-folder-source-path"/>
-      <html:input id="watch-folder-source-path" type="text" style="flex: 1;"
-                  preference="extensions.zotero.watchFolder.sourcePath"
-                  readonly="true"/>
-      <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"
-              oncommand="WatchFolderPrefs.browseForFolder()"/>
-    </hbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-sync-root" control="watch-folder-sync-root-display"/>
-      <html:input id="watch-folder-sync-root-display" type="text" style="flex: 1;" readonly="true"/>
-      <button id="watch-folder-sync-root-btn" data-l10n-id="watch-folder-pref-sync-root-change"
-              oncommand="WatchFolderPrefs.pickSyncRoot()"/>
-    </hbox>
 
     <!-- ─── Live mode picker (click anywhere on a card to select) ── -->
-    <vbox style="margin-top: 8px;">
-      <label data-l10n-id="watch-folder-pref-mode"/>
-      <radiogroup id="watch-folder-mode-radio" style="margin: 4px 0 0 8px;">
+    <vbox class="wf-card">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-mode"/>
+      <radiogroup id="watch-folder-mode-radio">
         <vbox class="wf-opt" id="wf-mode-opt-mode1" onclick="WatchFolderPrefs.changeMode('mode1')">
           <hbox align="center">
             <radio value="mode1" data-l10n-id="watch-folder-pref-mode1-label"/>
             <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
           </hbox>
-          <html:p data-l10n-id="watch-folder-pref-mode1-desc"
-                  class="wf-opt-desc"/>
+          <html:p data-l10n-id="watch-folder-pref-mode1-desc" class="wf-opt-desc"/>
         </vbox>
         <vbox class="wf-opt" id="wf-mode-opt-mode2" onclick="WatchFolderPrefs.changeMode('mode2')">
           <hbox align="center">
             <radio value="mode2" data-l10n-id="watch-folder-pref-mode2-label"/>
             <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
           </hbox>
-          <html:p data-l10n-id="watch-folder-pref-mode2-desc"
-                  class="wf-opt-desc"/>
+          <html:p data-l10n-id="watch-folder-pref-mode2-desc" class="wf-opt-desc"/>
         </vbox>
         <vbox class="wf-opt" id="wf-mode-opt-mode3" onclick="WatchFolderPrefs.changeMode('mode3')">
           <hbox align="center">
             <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label"/>
             <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
           </hbox>
-          <html:p data-l10n-id="watch-folder-pref-mode3-desc"
-                  class="wf-opt-desc"/>
+          <html:p data-l10n-id="watch-folder-pref-mode3-desc" class="wf-opt-desc"/>
         </vbox>
       </radiogroup>
     </vbox>
 
-    <hbox align="center" style="margin-top: 8px;">
+    <hbox align="center" class="wf-row">
       <button id="watch-folder-rerun-wizard-btn" data-l10n-id="watch-folder-pref-rerun-wizard"
               oncommand="WatchFolderPrefs.runSetupWizard()"/>
     </hbox>
+  </vbox>
 
-    <!-- ─── Attention rows (hidden when empty) ──────────────────── -->
-    <hbox id="watch-folder-warnings-row" align="center" hidden="true">
-      <label data-l10n-id="watch-folder-pref-warnings" control="watch-folder-warnings-count"/>
-      <html:input id="watch-folder-warnings-count" type="text" style="width: 60px;" readonly="true"/>
-      <button id="watch-folder-warnings-view-btn" data-l10n-id="watch-folder-pref-warnings-view"
-              oncommand="WatchFolderPrefs.viewWarnings()"/>
-      <button id="watch-folder-warnings-clear-btn" data-l10n-id="watch-folder-pref-warnings-clear"
-              oncommand="WatchFolderPrefs.clearWarnings()"/>
-    </hbox>
+  <!-- ════════════════════ STORAGE ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-storage" data-tab="storage" hidden="true">
+    <vbox class="wf-card">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-storage"/>
+      <html:p data-l10n-id="watch-folder-pref-storage-explainer" class="wf-desc"/>
+      <html:p data-l10n-id="watch-folder-pref-storage-webdav-hint"
+              style="margin: 0 0 10px 0; padding: 8px 11px; font-size: 0.98em; color: #ffffff;
+                     line-height: 1.45; background: #1a7f37; border-radius: 5px; font-weight: 500;"/>
+      <radiogroup id="watch-folder-storage-radio">
+        <vbox class="wf-opt" id="wf-storage-opt-stored" onclick="WatchFolderPrefs.changeStorageStrategy('stored')">
+          <hbox align="center">
+            <radio value="stored" data-l10n-id="watch-folder-pref-storage-stored-label"/>
+            <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-storage-webdav-badge"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-storage-stored-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-storage-opt-linked_watch_folder" onclick="WatchFolderPrefs.changeStorageStrategy('linked_watch_folder')">
+          <hbox align="center">
+            <radio value="linked_watch_folder" data-l10n-id="watch-folder-pref-storage-linked-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-storage-linked-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-storage-opt-stored_plus_mirror" onclick="WatchFolderPrefs.changeStorageStrategy('stored_plus_mirror')">
+          <hbox align="center">
+            <radio value="stored_plus_mirror" data-l10n-id="watch-folder-pref-storage-mirror-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-storage-mirror-desc" class="wf-opt-desc"/>
+        </vbox>
+      </radiogroup>
 
-    <hbox id="watch-folder-suppressed-row" align="center" hidden="true">
-      <label data-l10n-id="watch-folder-pref-suppressed" control="watch-folder-suppressed-count"/>
-      <html:input id="watch-folder-suppressed-count" type="text" style="width: 160px;" readonly="true"/>
-      <button id="watch-folder-suppressed-resolve-btn" data-l10n-id="watch-folder-pref-suppressed-resolve"
-              oncommand="WatchFolderPrefs.resolveSuppressed()"/>
-      <button id="watch-folder-suppressed-resolve-folders-btn" data-l10n-id="watch-folder-pref-suppressed-resolve-folders"
+      <html:p id="watch-folder-storage-warning"
+              data-l10n-id="watch-folder-pref-storage-linked-warning"
               hidden="true"
-              oncommand="WatchFolderPrefs.resolveSuppressedFolders()"/>
-    </hbox>
+              style="margin: 8px 0 0 16px; font-size: 0.92em; color: #e06c75; font-weight: 600; line-height: 1.45;"/>
 
-    <hbox id="watch-folder-conflicted-row" align="center" hidden="true">
-      <label data-l10n-id="watch-folder-pref-conflicted" control="watch-folder-conflicted-count"/>
-      <html:input id="watch-folder-conflicted-count" type="text" style="width: 60px;" readonly="true"/>
-      <button id="watch-folder-conflicted-resolve-btn" data-l10n-id="watch-folder-pref-conflicted-resolve"
-              oncommand="WatchFolderPrefs.resolveConflicts()"/>
-    </hbox>
-
-    <hbox id="watch-folder-trashed-folders-row" align="center" hidden="true">
-      <label data-l10n-id="watch-folder-pref-trashed-folders" control="watch-folder-trashed-folders-count"/>
-      <html:input id="watch-folder-trashed-folders-count" type="text" style="width: 60px;" readonly="true"/>
-      <button id="watch-folder-trashed-folders-restore-btn"
-              data-l10n-id="watch-folder-pref-trashed-folders-restore"
-              oncommand="WatchFolderPrefs.restoreTrashedFolders()"/>
-    </hbox>
-  </groupbox>
-
-  <!-- ─── PDF storage strategy ───────────────────────────────────── -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-storage"/></label>
-    <html:p data-l10n-id="watch-folder-pref-storage-explainer"
-            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
-    <html:p data-l10n-id="watch-folder-pref-storage-webdav-hint"
-            style="margin: 0 0 10px 0; padding: 8px 11px; font-size: 0.98em; color: #ffffff;
-                   line-height: 1.45; background: #1a7f37; border-radius: 5px; font-weight: 500;"/>
-    <radiogroup id="watch-folder-storage-radio" style="margin: 4px 0 0 8px;">
-      <vbox class="wf-opt" id="wf-storage-opt-stored" onclick="WatchFolderPrefs.changeStorageStrategy('stored')">
-        <hbox align="center">
-          <radio value="stored" data-l10n-id="watch-folder-pref-storage-stored-label"/>
-          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-storage-webdav-badge"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-storage-stored-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-storage-opt-linked_watch_folder" onclick="WatchFolderPrefs.changeStorageStrategy('linked_watch_folder')">
-        <hbox align="center">
-          <radio value="linked_watch_folder" data-l10n-id="watch-folder-pref-storage-linked-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-storage-linked-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-storage-opt-stored_plus_mirror" onclick="WatchFolderPrefs.changeStorageStrategy('stored_plus_mirror')">
-        <hbox align="center">
-          <radio value="stored_plus_mirror" data-l10n-id="watch-folder-pref-storage-mirror-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-storage-mirror-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-    </radiogroup>
-
-    <html:p id="watch-folder-storage-warning"
-            data-l10n-id="watch-folder-pref-storage-linked-warning"
-            hidden="true"
-            style="margin: 8px 0 0 16px; font-size: 0.92em; color: #e06c75; font-weight: 600; line-height: 1.45;"/>
-
-    <html:p id="watch-folder-storage-restore"
-            data-l10n-id="watch-folder-pref-storage-restore"
-            hidden="true"
-            style="margin: 6px 0 0 16px; font-size: 0.9em; opacity: 0.78; line-height: 1.45;"/>
-
-    <hbox align="center" style="margin-top: 8px;">
-      <button id="watch-folder-storage-reclaim-btn"
-              data-l10n-id="watch-folder-pref-storage-reclaim"
+      <html:p id="watch-folder-storage-restore"
+              data-l10n-id="watch-folder-pref-storage-restore"
               hidden="true"
-              oncommand="WatchFolderPrefs.reclaimStorage()"/>
-      <button id="watch-folder-storage-mirror-btn"
-              data-l10n-id="watch-folder-pref-storage-build-mirror"
-              hidden="true"
-              oncommand="WatchFolderPrefs.buildRepairMirror()"/>
-    </hbox>
-  </groupbox>
+              style="margin: 6px 0 0 16px; font-size: 0.9em; opacity: 0.78; line-height: 1.45;"/>
 
-  <!-- ─── Deletion disposition (Mode 3 only) ─────────────────────── -->
-  <groupbox id="watch-folder-deletion-group" hidden="true">
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-deletion"/></label>
-    <html:p data-l10n-id="watch-folder-pref-deletion-explainer"
-            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+      <hbox align="center" style="margin-top: 8px;">
+        <button id="watch-folder-storage-reclaim-btn"
+                data-l10n-id="watch-folder-pref-storage-reclaim"
+                hidden="true"
+                oncommand="WatchFolderPrefs.reclaimStorage()"/>
+        <button id="watch-folder-storage-mirror-btn"
+                data-l10n-id="watch-folder-pref-storage-build-mirror"
+                hidden="true"
+                oncommand="WatchFolderPrefs.buildRepairMirror()"/>
+      </hbox>
+    </vbox>
+  </vbox>
 
-    <!-- Warn + revert row, shown only when diskDeleteOnTrash currently
-         holds the dangerous 'permanent' value (set via about:config or an
-         older build). The card grid below deliberately omits 'permanent'. -->
-    <vbox id="watch-folder-deletion-permanent-warn" hidden="true"
-          style="margin: 0 0 10px 0; padding: 8px 11px; background: #5c2b2b;
-                 border-radius: 5px;">
-      <html:p data-l10n-id="watch-folder-pref-deletion-permanent-warn"
-              style="margin: 0 0 6px 0; font-size: 0.95em; color: #ffffff;
-                     font-weight: 600; line-height: 1.45;"/>
+  <!-- ════════════════════ DELETIONS (Mode 3) ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-deletions" data-tab="deletions" hidden="true">
+    <!-- Gating banner: shown by JS when the sync mode is not Mode 3. -->
+    <html:p id="watch-folder-deletions-gate" class="wf-gate" hidden="true"
+            data-l10n-id="watch-folder-pref-deletions-gate"/>
+
+    <!-- ─── Deletion disposition (Zotero → disk) ─────────────────── -->
+    <vbox id="watch-folder-deletion-group" class="wf-card" hidden="true">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-deletion"/>
+      <html:p data-l10n-id="watch-folder-pref-deletion-explainer" class="wf-desc"/>
+
+      <!-- Warn + revert row, shown only when diskDeleteOnTrash currently
+           holds the dangerous 'permanent' value (set via about:config or an
+           older build). The card grid below deliberately omits 'permanent'. -->
+      <vbox id="watch-folder-deletion-permanent-warn" hidden="true"
+            style="margin: 0 0 10px 0; padding: 8px 11px; background: #5c2b2b;
+                   border-radius: 5px;">
+        <html:p data-l10n-id="watch-folder-pref-deletion-permanent-warn"
+                style="margin: 0 0 6px 0; font-size: 0.95em; color: #ffffff;
+                       font-weight: 600; line-height: 1.45;"/>
+        <hbox>
+          <button id="watch-folder-deletion-revert-btn"
+                  data-l10n-id="watch-folder-pref-deletion-revert"
+                  oncommand="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')"/>
+        </hbox>
+      </vbox>
+
+      <radiogroup id="watch-folder-deletion-radio">
+        <vbox class="wf-opt" id="wf-deletion-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('ask')">
+          <hbox align="center">
+            <radio value="ask" data-l10n-id="watch-folder-pref-deletion-ask-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-deletion-ask-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-deletion-opt-plugin_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')">
+          <hbox align="center">
+            <radio value="plugin_trash" data-l10n-id="watch-folder-pref-deletion-plugin-trash-label"/>
+            <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-deletion-plugin-trash-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-deletion-opt-os_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('os_trash')">
+          <hbox align="center">
+            <radio value="os_trash" data-l10n-id="watch-folder-pref-deletion-os-trash-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-deletion-os-trash-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-deletion-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('never')">
+          <hbox align="center">
+            <radio value="never" data-l10n-id="watch-folder-pref-deletion-never-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-deletion-never-desc" class="wf-opt-desc"/>
+        </vbox>
+      </radiogroup>
+    </vbox>
+
+    <!-- ─── External-deletion disposition (disk → Zotero) ────────── -->
+    <vbox id="watch-folder-extdel-group" class="wf-card" hidden="true">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-extdel"/>
+      <html:p data-l10n-id="watch-folder-pref-extdel-explainer" class="wf-desc"/>
+
+      <radiogroup id="watch-folder-extdel-radio">
+        <vbox class="wf-opt" id="wf-extdel-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteSync('ask')">
+          <hbox align="center">
+            <radio value="ask" data-l10n-id="watch-folder-pref-extdel-ask-label"/>
+            <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-extdel-ask-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-extdel-opt-auto" onclick="WatchFolderPrefs.changeDiskDeleteSync('auto')">
+          <hbox align="center">
+            <radio value="auto" data-l10n-id="watch-folder-pref-extdel-auto-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-extdel-auto-desc" class="wf-opt-desc"/>
+        </vbox>
+        <vbox class="wf-opt" id="wf-extdel-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteSync('never')">
+          <hbox align="center">
+            <radio value="never" data-l10n-id="watch-folder-pref-extdel-never-label"/>
+            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+          </hbox>
+          <html:p data-l10n-id="watch-folder-pref-extdel-never-desc" class="wf-opt-desc"/>
+        </vbox>
+      </radiogroup>
+    </vbox>
+  </vbox>
+
+  <!-- ════════════════════ NAMING ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-naming" data-tab="naming" hidden="true">
+    <vbox class="wf-card">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-naming"/>
+
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-auto-rename" control="watch-folder-auto-rename"/>
+        <checkbox id="watch-folder-auto-rename"
+                  preference="extensions.zotero.watchFolder.autoRename"/>
+      </hbox>
+
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-rename-pattern" control="watch-folder-rename-pattern"/>
+        <html:input id="watch-folder-rename-pattern" type="text"
+                    preference="extensions.zotero.watchFolder.renamePattern"
+                    style="flex: 1;"/>
+      </hbox>
+
+      <label data-l10n-id="watch-folder-pref-rename-pattern-help" class="wf-help"/>
+    </vbox>
+
+    <vbox class="wf-card">
+      <hbox align="center" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-smart-rules-enabled" control="watch-folder-smart-rules-enabled"/>
+        <checkbox id="watch-folder-smart-rules-enabled"
+                  preference="extensions.zotero.watchFolder.smartRulesEnabled"/>
+      </hbox>
+      <label data-l10n-id="watch-folder-pref-smart-rules-blurb" class="wf-help"
+             style="margin: 4px 0 6px 0;"/>
       <hbox>
-        <button id="watch-folder-deletion-revert-btn"
-                data-l10n-id="watch-folder-pref-deletion-revert"
-                oncommand="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')"/>
+        <button id="watch-folder-smart-rules-open-editor-btn"
+                data-l10n-id="watch-folder-pref-smart-rules-open-editor"
+                oncommand="WatchFolderPrefs.openSmartRulesEditor()"/>
       </hbox>
     </vbox>
+  </vbox>
 
-    <radiogroup id="watch-folder-deletion-radio" style="margin: 4px 0 0 8px;">
-      <vbox class="wf-opt" id="wf-deletion-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('ask')">
-        <hbox align="center">
-          <radio value="ask" data-l10n-id="watch-folder-pref-deletion-ask-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-deletion-ask-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-deletion-opt-plugin_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('plugin_trash')">
-        <hbox align="center">
-          <radio value="plugin_trash" data-l10n-id="watch-folder-pref-deletion-plugin-trash-label"/>
-          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-deletion-plugin-trash-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-deletion-opt-os_trash" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('os_trash')">
-        <hbox align="center">
-          <radio value="os_trash" data-l10n-id="watch-folder-pref-deletion-os-trash-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-deletion-os-trash-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-deletion-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteOnTrash('never')">
-        <hbox align="center">
-          <radio value="never" data-l10n-id="watch-folder-pref-deletion-never-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-deletion-never-desc"
-                class="wf-opt-desc"/>
-      </vbox>
-    </radiogroup>
-  </groupbox>
+  <!-- ════════════════════ MAINTENANCE ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-maintenance" data-tab="maintenance" hidden="true">
 
-  <!-- ─── External-deletion disposition (disk → Zotero, Mode 3) ───── -->
-  <groupbox id="watch-folder-extdel-group" hidden="true">
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-extdel"/></label>
-    <html:p data-l10n-id="watch-folder-pref-extdel-explainer"
-            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+    <!-- ─── Needs attention (rows self-hide when their count is 0) ── -->
+    <vbox class="wf-card">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-maintenance-attention"/>
 
-    <radiogroup id="watch-folder-extdel-radio" style="margin: 4px 0 0 8px;">
-      <vbox class="wf-opt" id="wf-extdel-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteSync('ask')">
-        <hbox align="center">
-          <radio value="ask" data-l10n-id="watch-folder-pref-extdel-ask-label"/>
-          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-extdel-ask-desc" class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-extdel-opt-auto" onclick="WatchFolderPrefs.changeDiskDeleteSync('auto')">
-        <hbox align="center">
-          <radio value="auto" data-l10n-id="watch-folder-pref-extdel-auto-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-extdel-auto-desc" class="wf-opt-desc"/>
-      </vbox>
-      <vbox class="wf-opt" id="wf-extdel-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteSync('never')">
-        <hbox align="center">
-          <radio value="never" data-l10n-id="watch-folder-pref-extdel-never-label"/>
-          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
-        </hbox>
-        <html:p data-l10n-id="watch-folder-pref-extdel-never-desc" class="wf-opt-desc"/>
-      </vbox>
-    </radiogroup>
-  </groupbox>
-
-  <!-- ─── Storage report + maintenance ───────────────────────────── -->
-  <groupbox id="watch-folder-storage-report-group">
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-storage-report"/></label>
-    <html:p data-l10n-id="watch-folder-pref-storage-report-explainer"
-            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
-
-    <hbox align="center">
-      <button id="watch-folder-storage-report-btn"
-              data-l10n-id="watch-folder-pref-storage-report-show"
-              oncommand="WatchFolderPrefs.showStorageReport()"/>
-      <button id="watch-folder-empty-trash-btn"
-              data-l10n-id="watch-folder-pref-empty-trash-btn"
-              oncommand="WatchFolderPrefs.emptyZoteroTrash()"/>
-      <button id="watch-folder-purge-webdav-btn"
-              label="Purge WebDAV orphans"
-              oncommand="WatchFolderPrefs.purgeWebDAVOrphans()"/>
-      <button id="watch-folder-check-repair-btn"
-              label="Check &amp; repair…"
-              oncommand="WatchFolderPrefs.openCheckAndRepair()"/>
-    </hbox>
-
-    <html:pre id="watch-folder-storage-report-output"
-              hidden="true"
-              style="margin: 10px 0 0 0; padding: 10px 12px; font-size: 0.92em;
-                     line-height: 1.5; background: rgba(127,127,127,0.12);
-                     border-radius: 5px; white-space: pre-wrap;"/>
-
-    <!-- Files removed from disk but kept tracked in Zotero. Shown only
-         when the (other-agent) listMissing() API returns entries. -->
-    <vbox id="watch-folder-missing-files-group" hidden="true" style="margin-top: 12px;">
-      <label data-l10n-id="watch-folder-pref-missing-files-label"
-             style="font-weight: 600;"/>
-      <html:p data-l10n-id="watch-folder-pref-missing-files-explainer"
-              style="margin: 2px 0 6px 0; font-size: 0.9em; opacity: 0.8; line-height: 1.45;"/>
-      <hbox style="margin-bottom: 6px;">
-        <button id="watch-folder-missing-stop-all" label="Stop tracking all"
-                oncommand="WatchFolderPrefs.stopTrackingAllMissing()"/>
+      <hbox id="watch-folder-warnings-row" align="center" hidden="true" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-warnings" control="watch-folder-warnings-count"/>
+        <html:input id="watch-folder-warnings-count" type="text" style="width: 60px;" readonly="true"/>
+        <button id="watch-folder-warnings-view-btn" data-l10n-id="watch-folder-pref-warnings-view"
+                oncommand="WatchFolderPrefs.viewWarnings()"/>
+        <button id="watch-folder-warnings-clear-btn" data-l10n-id="watch-folder-pref-warnings-clear"
+                oncommand="WatchFolderPrefs.clearWarnings()"/>
       </hbox>
-      <vbox id="watch-folder-missing-files-list"/>
+
+      <hbox id="watch-folder-suppressed-row" align="center" hidden="true" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-suppressed" control="watch-folder-suppressed-count"/>
+        <html:input id="watch-folder-suppressed-count" type="text" style="width: 160px;" readonly="true"/>
+        <button id="watch-folder-suppressed-resolve-btn" data-l10n-id="watch-folder-pref-suppressed-resolve"
+                oncommand="WatchFolderPrefs.resolveSuppressed()"/>
+        <button id="watch-folder-suppressed-resolve-folders-btn" data-l10n-id="watch-folder-pref-suppressed-resolve-folders"
+                hidden="true"
+                oncommand="WatchFolderPrefs.resolveSuppressedFolders()"/>
+      </hbox>
+
+      <hbox id="watch-folder-conflicted-row" align="center" hidden="true" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-conflicted" control="watch-folder-conflicted-count"/>
+        <html:input id="watch-folder-conflicted-count" type="text" style="width: 60px;" readonly="true"/>
+        <button id="watch-folder-conflicted-resolve-btn" data-l10n-id="watch-folder-pref-conflicted-resolve"
+                oncommand="WatchFolderPrefs.resolveConflicts()"/>
+      </hbox>
+
+      <hbox id="watch-folder-trashed-folders-row" align="center" hidden="true" class="wf-row">
+        <label data-l10n-id="watch-folder-pref-trashed-folders" control="watch-folder-trashed-folders-count"/>
+        <html:input id="watch-folder-trashed-folders-count" type="text" style="width: 60px;" readonly="true"/>
+        <button id="watch-folder-trashed-folders-restore-btn"
+                data-l10n-id="watch-folder-pref-trashed-folders-restore"
+                oncommand="WatchFolderPrefs.restoreTrashedFolders()"/>
+      </hbox>
+
+      <html:p id="watch-folder-attention-empty" class="wf-help"
+              style="margin-top: 4px;">Nothing needs attention right now.</html:p>
     </vbox>
-  </groupbox>
 
-  <!-- ─── File Naming ────────────────────────────────────────────── -->
-  <groupbox>
-    <label><html:h2 data-l10n-id="watch-folder-pref-section-naming"/></label>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-auto-rename" control="watch-folder-auto-rename"/>
-      <checkbox id="watch-folder-auto-rename"
-                preference="extensions.zotero.watchFolder.autoRename"/>
-    </hbox>
-
-    <hbox align="center">
-      <label data-l10n-id="watch-folder-pref-rename-pattern" control="watch-folder-rename-pattern"/>
-      <html:input id="watch-folder-rename-pattern" type="text"
-                  preference="extensions.zotero.watchFolder.renamePattern"
-                  style="flex: 1;"/>
-    </hbox>
-
-    <vbox>
-      <label data-l10n-id="watch-folder-pref-rename-pattern-help" style="font-size: 0.9em; color: gray;"/>
-    </vbox>
-  </groupbox>
-
-  <!-- ─── Advanced (collapsed by default) ────────────────────────── -->
-  <groupbox>
-    <hbox align="center" style="cursor: pointer;"
-          onclick="WatchFolderPrefs.toggleAdvanced()">
-      <label id="watch-folder-advanced-caret" value="▸" style="font-family: monospace; margin-right: 6px;"/>
-      <html:h2 data-l10n-id="watch-folder-pref-section-advanced" style="margin: 0;"/>
-    </hbox>
-    <vbox id="watch-folder-advanced-body" hidden="true" style="margin-top: 8px;">
-      <html:p data-l10n-id="watch-folder-pref-advanced-blurb"
-              style="margin: 0 0 8px 0; font-size: 0.9em; color: #666; line-height: 1.4;"/>
+    <!-- ─── Storage report + maintenance tools ───────────────────── -->
+    <vbox class="wf-card" id="watch-folder-storage-report-group">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-storage-report"/>
+      <html:p data-l10n-id="watch-folder-pref-storage-report-explainer" class="wf-desc"/>
 
       <hbox align="center">
+        <button id="watch-folder-storage-report-btn"
+                data-l10n-id="watch-folder-pref-storage-report-show"
+                oncommand="WatchFolderPrefs.showStorageReport()"/>
+        <button id="watch-folder-empty-trash-btn"
+                data-l10n-id="watch-folder-pref-empty-trash-btn"
+                oncommand="WatchFolderPrefs.emptyZoteroTrash()"/>
+        <button id="watch-folder-purge-webdav-btn"
+                label="Purge WebDAV orphans"
+                oncommand="WatchFolderPrefs.purgeWebDAVOrphans()"/>
+        <button id="watch-folder-check-repair-btn"
+                label="Check &amp; repair…"
+                oncommand="WatchFolderPrefs.openCheckAndRepair()"/>
+      </hbox>
+
+      <html:pre id="watch-folder-storage-report-output"
+                hidden="true"
+                style="margin: 10px 0 0 0; padding: 10px 12px; font-size: 0.92em;
+                       line-height: 1.5; background: rgba(127,127,127,0.12);
+                       border-radius: 5px; white-space: pre-wrap;"/>
+
+      <!-- Files removed from disk but kept tracked in Zotero. Shown only
+           when listMissing() returns entries. -->
+      <vbox id="watch-folder-missing-files-group" hidden="true" style="margin-top: 12px;">
+        <label data-l10n-id="watch-folder-pref-missing-files-label" style="font-weight: 600;"/>
+        <html:p data-l10n-id="watch-folder-pref-missing-files-explainer"
+                style="margin: 2px 0 6px 0; font-size: 0.9em; opacity: 0.8; line-height: 1.45;"/>
+        <hbox style="margin-bottom: 6px;">
+          <button id="watch-folder-missing-stop-all" label="Stop tracking all"
+                  oncommand="WatchFolderPrefs.stopTrackingAllMissing()"/>
+        </hbox>
+        <vbox id="watch-folder-missing-files-list"/>
+      </vbox>
+    </vbox>
+  </vbox>
+
+  <!-- ════════════════════ ADVANCED ════════════════════ -->
+  <vbox class="wf-tabpanel" id="wf-tabpanel-advanced" data-tab="advanced" hidden="true">
+    <vbox class="wf-card">
+      <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-advanced"/>
+      <html:p data-l10n-id="watch-folder-pref-advanced-blurb" class="wf-desc"/>
+
+      <hbox align="center" class="wf-row">
         <label data-l10n-id="watch-folder-pref-poll-interval" control="watch-folder-poll-interval"/>
         <html:input id="watch-folder-poll-interval" type="number" min="1" max="60"
                     preference="extensions.zotero.watchFolder.pollInterval"
                     style="width: 60px;"/>
         <label data-l10n-id="watch-folder-pref-poll-interval-suffix"/>
       </hbox>
-      <vbox>
-        <label data-l10n-id="watch-folder-pref-poll-interval-help"
-               style="font-size: 0.85em; color: gray; margin: 0 0 6px 16px;"/>
-      </vbox>
+      <label data-l10n-id="watch-folder-pref-poll-interval-help" class="wf-help"
+             style="margin: 0 0 6px 16px;"/>
 
-      <hbox align="center">
+      <hbox align="center" class="wf-row">
         <label data-l10n-id="watch-folder-pref-file-types" control="watch-folder-file-types"/>
         <html:input id="watch-folder-file-types" type="text"
                     preference="extensions.zotero.watchFolder.fileTypes"
                     style="width: 200px;"/>
       </hbox>
-      <vbox>
-        <label data-l10n-id="watch-folder-pref-file-types-help"
-               style="font-size: 0.85em; color: gray; margin: 0 0 6px 16px;"/>
-      </vbox>
+      <label data-l10n-id="watch-folder-pref-file-types-help" class="wf-help"
+             style="margin: 0 0 6px 16px;"/>
 
-      <hbox align="center">
+      <hbox align="center" class="wf-row">
         <label data-l10n-id="watch-folder-pref-max-filename" control="watch-folder-max-filename"/>
         <html:input id="watch-folder-max-filename" type="number" min="50" max="255"
                     preference="extensions.zotero.watchFolder.maxFilenameLength"
                     style="width: 80px;"/>
         <label data-l10n-id="watch-folder-pref-max-filename-suffix"/>
       </hbox>
-
-      <vbox style="margin-top: 12px;">
-        <hbox align="center">
-          <label data-l10n-id="watch-folder-pref-smart-rules-enabled" control="watch-folder-smart-rules-enabled"/>
-          <checkbox id="watch-folder-smart-rules-enabled"
-                    preference="extensions.zotero.watchFolder.smartRulesEnabled"/>
-        </hbox>
-        <vbox style="margin: 4px 0 0 16px;">
-          <label data-l10n-id="watch-folder-pref-smart-rules-blurb"
-                 style="font-size: 0.85em; color: gray; line-height: 1.4;"/>
-          <hbox style="margin-top: 4px;">
-            <button id="watch-folder-smart-rules-open-editor-btn"
-                    data-l10n-id="watch-folder-pref-smart-rules-open-editor"
-                    oncommand="WatchFolderPrefs.openSmartRulesEditor()"/>
-          </hbox>
-        </vbox>
-      </vbox>
     </vbox>
-  </groupbox>
+  </vbox>
 
 </vbox>

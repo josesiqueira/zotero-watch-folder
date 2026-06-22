@@ -10,6 +10,37 @@ watch-folder-pref-section-advanced = Advanced settings
 watch-folder-pref-section-import = Import Settings
 watch-folder-pref-section-smart-rules = Smart Rules
 
+# ─── Status header (always visible, above the tabs) ───────────────
+watch-folder-pref-status-watching = Watching
+watch-folder-pref-status-paused = Paused
+watch-folder-pref-status-unset = Not set up
+watch-folder-pref-status-target-library = My Library
+watch-folder-pref-status-target-none = no destination yet
+watch-folder-pref-status-source-none = no folder yet
+watch-folder-pref-status-sep = ·
+watch-folder-pref-status-arrow = →
+# Attention strip — { $n } is a live count. Only the non-zero ones are shown.
+watch-folder-pref-attention-warnings = { $n } warnings
+watch-folder-pref-attention-suppressed = { $n } suppressed
+watch-folder-pref-attention-conflicted = { $n } conflict-blocked
+watch-folder-pref-attention-trashed = { $n } trashed folders
+watch-folder-pref-attention-resolve = Review in Maintenance →
+
+# ─── Tab bar labels ───────────────────────────────────────────────
+watch-folder-pref-tab-general = General
+watch-folder-pref-tab-storage = Storage
+watch-folder-pref-tab-deletions = Deletions
+watch-folder-pref-tab-naming = Naming
+watch-folder-pref-tab-maintenance = Maintenance
+watch-folder-pref-tab-advanced = Advanced
+
+# Shown on the Deletions tab when the current sync mode is not Mode 3,
+# where these dispositions have no effect.
+watch-folder-pref-deletions-gate = These options only take effect in “Mirror, safe delete” mode. Switch the sync mode on the General tab to use them.
+
+# Subsection heading inside the Maintenance tab for the attention rows.
+watch-folder-pref-maintenance-attention = Needs attention
+
 # ─── About box ────────────────────────────────────────────────────
 watch-folder-pref-about-blurb = Watch Folder watches a folder you pick. Drop a PDF in — the plugin imports it into Zotero, fetches metadata, renames the file, and (in mirror modes) keeps your Zotero collections in sync with the folder layout on disk.
 
