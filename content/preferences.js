@@ -477,6 +477,7 @@
         Zotero.debug(`[Watch Folder] Mode changed via prefs UI: ${current} → ${newMode}`);
         refreshModeRadio(); // move the highlight + re-assert the radio to the new value
         refreshDeletionUI(); // show/hide the Mode-3-only deletion-disposition group live
+        refreshExtDelUI();   // and the disk→Zotero external-deletion group
     }
 
     // ─── PDF storage strategy (orthogonal to sync mode) ───────────────────
@@ -581,6 +582,40 @@
         setPref('diskDeleteOnTrash', value);
         Zotero.debug(`[Watch Folder] Deletion disposition changed: ${current} → ${value}`);
         refreshDeletionUI();
+    }
+
+    // ─── External-deletion disposition (diskDeleteSync, disk → Zotero) ───
+    // What happens to the matching Zotero item(s) when a file is removed from
+    // the watch folder. 'ask' (default) prompts (Move to Trash / Keep / Delete
+    // Permanently); 'auto' silently moves item(s) to the Bin; 'never' leaves
+    // Zotero untouched. Only consumed in Mode 3. 'permanent' is never a
+    // persistable standing value here (the prompt downgrades it on save).
+    const EXTDEL_DISPOSITIONS = ['ask', 'auto', 'never'];
+
+    function getDiskDeleteSyncPref() {
+        return getPref('diskDeleteSync') || 'ask';
+    }
+
+    function refreshExtDelUI() {
+        const group = document.getElementById('watch-folder-extdel-group');
+        const mode = getPref('mode') || 'mode1';
+        const showGroup = mode === 'mode3';
+        if (group) group.hidden = !showGroup;
+        if (!showGroup) return;
+
+        const current = getDiskDeleteSyncPref();
+        const radio = document.getElementById('watch-folder-extdel-radio');
+        if (radio && EXTDEL_DISPOSITIONS.includes(current)) radio.value = current;
+        _markSelectedCard('wf-extdel-opt-', EXTDEL_DISPOSITIONS, current);
+    }
+
+    function changeDiskDeleteSync(value) {
+        if (!EXTDEL_DISPOSITIONS.includes(value)) return;
+        const current = getDiskDeleteSyncPref();
+        if (value === current) { refreshExtDelUI(); return; }
+        setPref('diskDeleteSync', value);
+        Zotero.debug(`[Watch Folder] External-deletion disposition changed: ${current} → ${value}`);
+        refreshExtDelUI();
     }
 
     async function reclaimStorage() {
@@ -1395,6 +1430,7 @@
             refreshModeRadio();
             refreshStorageStrategyUI();
             refreshDeletionUI();
+            refreshExtDelUI();
             refreshWarningsDisplay();
             refreshSuppressedDisplay();
             refreshConflictedDisplay();
@@ -1453,6 +1489,7 @@
         buildRepairMirror,
         // Mode-3 deletion disposition (diskDeleteOnTrash).
         changeDiskDeleteOnTrash,
+        changeDiskDeleteSync,
         // Storage report + Empty Zotero trash + Missing files.
         showStorageReport,
         emptyZoteroTrash,

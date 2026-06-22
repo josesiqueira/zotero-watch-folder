@@ -85,6 +85,16 @@ watch-folder-pref-deletion-never-desc = Never touch the source file. Zotero's bi
 watch-folder-pref-deletion-permanent-warn = Your current setting permanently deletes source files with no way to recover them. This is not offered here because it is unsafe as a standing choice.
 watch-folder-pref-deletion-revert = Switch to recoverable plugin trash
 
+# ─── External-deletion disposition (disk → Zotero, Mode 3 only) ───
+watch-folder-pref-section-extdel = When a file is removed from the watch folder
+watch-folder-pref-extdel-explainer = In "Mirror with safe delete" mode, when a file disappears from your watch folder the plugin can move the matching Zotero item to the Bin. Choose what happens. (Delete Permanently is never saved as a standing choice — if you pick it from the prompt it applies to that one batch only.)
+watch-folder-pref-extdel-ask-label = Ask me each time
+watch-folder-pref-extdel-ask-desc = Show a prompt every time files are removed — Move to Trash, Keep in Zotero, or Delete Permanently. The safe default.
+watch-folder-pref-extdel-auto-label = Move items to Zotero's Bin
+watch-folder-pref-extdel-auto-desc = Silently move the matching item(s) to Zotero's Bin (recoverable) and show a summary afterwards.
+watch-folder-pref-extdel-never-label = Keep items in Zotero
+watch-folder-pref-extdel-never-desc = Never touch Zotero. Items stay in your library even after their file is gone; the watch folder and Zotero can drift apart.
+
 # ─── Attention rows (only shown when non-zero) ────────────────────
 watch-folder-pref-warnings = Sync warnings:
 watch-folder-pref-warnings-view = View

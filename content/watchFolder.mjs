@@ -2253,7 +2253,10 @@ export class WatchFolderService {
    */
   async _handleExternalDeletions(diskPaths, allFiles = null) {
     if (!this._trackingStore) return;
-    if ((getPref('diskDeleteSync') || 'auto') === 'never') return;
+    // `diskDeleteSync`: 'never' → never propagate (early-out); 'auto' → silently
+    // trash; 'ask' (default) → prompt before touching Zotero (resolved below,
+    // once we know the affected file list).
+    if ((getPref('diskDeleteSync') || 'ask') === 'never') return;
 
     // Whole-mount sanity check: if the watch root itself is unreachable
     // (USB unplugged, network share gone, cloud client logged out), every
@@ -2439,6 +2442,30 @@ export class WatchFolderService {
       return;
     }
 
+    // ── Disposition prompt (v2.8.2) ──────────────────────────────────────
+    // `diskDeleteSync==='ask'` (the default) prompts before touching Zotero:
+    // Move to Trash / Keep / Delete Permanently, with an "always do this"
+    // checkbox that persists the choice (Trash→'auto', Keep→'never'; Permanent
+    // is honored for the batch but never persisted as a silent standing
+    // default, mirroring _promptDiskDelete). 'auto' keeps the legacy silent-
+    // trash behavior. Fail-safe: no UI (headless/mobile) → KEEP, so a deletion
+    // never propagates without explicit consent.
+    let permanent = false;       // erase the Zotero item(s) outright vs. trash
+    let userConfirmed = false;   // the ask-dialog already confirmed → skip the bulk prompt + after-popup
+    if ((getPref('diskDeleteSync') || 'ask') === 'ask') {
+      const choice = this._promptExternalDeletion(stillMissing.map(r => r.localPath));
+      userConfirmed = true;
+      if (choice === 'keep') {
+        for (const record of stillMissing) {
+          this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+        }
+        try { await this._trackingStore.save(); } catch (_) {}
+        Zotero.debug(`[WatchFolder] _handleExternalDeletions: user chose KEEP for ${stillMissing.length} deleted file(s) — Zotero items untouched, marked missing`);
+        return;
+      }
+      permanent = (choice === 'permanent');
+    }
+
     // Bulk-delete guard: if a single scan cycle detected many missing
     // files, prompt before propagating any of them to Zotero. Common
     // trigger: the user moved a big folder OUT of the watch root in
@@ -2447,7 +2474,7 @@ export class WatchFolderService {
     // the full stillMissing list (shadow protection further down only
     // SKIPS the propagation per-record; the user should still be
     // warned about the scale).
-    if (stillMissing.length > 0) {
+    if (!userConfirmed && stillMissing.length > 0) {
       const totalTracked = this._trackingStore.getAllOfType('file').length;
       if (isBulkDelete(stillMissing.length, totalTracked)) {
         const approved = await confirmBulkDelete({
@@ -2535,15 +2562,21 @@ export class WatchFolderService {
           } catch (_e) { /* sink unavailable */ }
           continue;
         }
-        if (!item.deleted) {
-          item.deleted = true;
-          await item.saveTx();
-        }
+        // Capture the title BEFORE any delete — eraseTx() invalidates the item.
         let title = '(untitled)';
         try {
           title = (item.getDisplayTitle && item.getDisplayTitle()) || item.getField('title') || title;
         } catch (_) {}
-        trashed.push({ path: record.localPath, attachmentKey: record.zoteroAttachmentKey, title });
+        if (permanent) {
+          // Erase the item outright (skips Zotero's Bin). The freshness gate
+          // above already proved the stored bytes are unchanged, so this never
+          // destroys content newer than we last saw.
+          await item.eraseTx();
+        } else if (!item.deleted) {
+          item.deleted = true;
+          await item.saveTx();
+        }
+        trashed.push({ path: record.localPath, attachmentKey: record.zoteroAttachmentKey, title, permanent });
       } catch (e) {
         Zotero.debug(`[WatchFolder] Failed to auto-bin item ${record.zoteroAttachmentKey}: ${e.message}`);
       }
@@ -2551,7 +2584,89 @@ export class WatchFolderService {
     }
 
     try { await this._trackingStore.save(); } catch (_) {}
-    if (trashed.length > 0) this._showExternalDeletionPopup(trashed);
+    // Only show the after-the-fact summary for the SILENT 'auto' path. When the
+    // user just answered the disposition prompt, they already know what happened.
+    if (trashed.length > 0 && !userConfirmed) this._showExternalDeletionPopup(trashed);
+  }
+
+  /**
+   * Show the disposition prompt for files removed from the watch folder
+   * (`diskDeleteSync==='ask'`). Three choices, plus an "always do this"
+   * checkbox that persists the standing default.
+   *
+   * Returns 'trash' | 'keep' | 'permanent'. Permanent is honored for the
+   * current batch only — checking "always do this" with Permanent selected
+   * persists the recoverable 'auto' (trash) instead and tells the user once,
+   * so a single click can never become a standing, unattended erase policy.
+   *
+   * Fail-safe: no UI available (headless/mobile) returns 'keep' — a deletion is
+   * never propagated to Zotero without explicit consent.
+   *
+   * @param {string[]} paths - sync-root-relative paths that disappeared.
+   * @returns {'trash' | 'keep' | 'permanent'}
+   */
+  _promptExternalDeletion(paths) {
+    const window = this._pickWindow();
+    if (!window || !Services || !Services.prompt || typeof Services.prompt.confirmEx !== 'function') {
+      Zotero.debug('[WatchFolder] _promptExternalDeletion: no UI — defaulting to KEEP (fail-closed)');
+      return 'keep';
+    }
+
+    const count = paths.length;
+    const sample = paths.slice(0, 8).map(p => `• ${p}`).join('\n');
+    const more = count > 8 ? `\n…and ${count - 8} more.` : '';
+    const header = count === 1
+      ? `A file was removed from your watch folder:\n\n${sample}\n\n`
+      : `${count} files were removed from your watch folder:\n\n${sample}${more}\n\n`;
+    const message = header
+      + 'What should happen to the matching Zotero item(s)?\n\n'
+      + '• Move to Trash — items go to Zotero\'s Bin (recoverable)\n'
+      + '• Keep in Zotero — leave the items; just stop tracking the deletion\n'
+      + '• Delete Permanently — remove the items from Zotero entirely (cannot be undone)';
+
+    const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_2 * Services.prompt.BUTTON_TITLE_IS_STRING
+                + Services.prompt.BUTTON_POS_1_DEFAULT; // Keep is the default (safe; Esc/close = keep)
+
+    const checkState = { value: false };
+    const result = Services.prompt.confirmEx(
+      window,
+      'Zotero Watch Folder',
+      message,
+      flags,
+      'Move to Trash',         // Button 0 → recoverable Bin
+      'Keep in Zotero',        // Button 1 → leave items (default)
+      'Delete Permanently',    // Button 2 → irreversible
+      'Always do this (you can change it in Settings)',
+      checkState
+    );
+
+    const action = result === 0 ? 'trash'
+                 : result === 2 ? 'permanent'
+                 : 'keep';
+
+    if (checkState.value) {
+      // Persist the standing default. 'permanent' is NEVER persisted (an
+      // unattended erase policy would silently destroy items forever); it
+      // downgrades to recoverable 'auto' trash on persist and we say so once.
+      const persisted = action === 'keep' ? 'never' : 'auto';
+      setPref('diskDeleteSync', persisted);
+      if (action === 'permanent') {
+        try {
+          Services.prompt.alert(
+            window,
+            'Zotero Watch Folder',
+            'Delete Permanently applies to this batch only — it is never saved as '
+            + 'your standing choice.\n\nFrom now on, files deleted from the watch '
+            + 'folder will move the matching items to Zotero\'s Bin (recoverable). '
+            + 'You can change this in the plugin settings.'
+          );
+        } catch (_) { /* advisory only */ }
+      }
+    }
+
+    return action;
   }
 
   /**

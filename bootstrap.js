@@ -126,7 +126,7 @@ function _initDefaultPrefs() {
   _set("postImportAction",       "leave");
   _set("autoRetrieveMetadata",   true);
   _set("diskDeleteOnTrash",      "ask");  // "ask" | "plugin_trash" | "os_trash" | "permanent" | "never" — no-op in Mode 1; consumed by v2.1/v2.2. plugin_trash = move to .zotero-watch-trash/ under watch root.
-  _set("diskDeleteSync",         "auto"); // "auto" | "never" — no-op in Mode 1; consumed by v2.1/v2.2.
+  _set("diskDeleteSync",         "ask");  // "ask" | "auto" | "never" — what happens to the matching Zotero item(s) when a watch-folder file is deleted. ask (v2.8.2 default) = prompt (Move to Trash / Keep / Delete Permanently + "always do this"); auto = silently move to Bin (legacy); never = leave Zotero untouched. No-op in Mode 1; consumed by v2.1+.
 
   // v2.0 sync model — sync root + mode
   _set("scopeMode",             "library"); // 'library' (whole-library mirror, default since 2.7.0) | 'collection' (legacy single sync-root, internal fallback).

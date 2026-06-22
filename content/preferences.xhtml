@@ -268,6 +268,38 @@
     </radiogroup>
   </groupbox>
 
+  <!-- ─── External-deletion disposition (disk → Zotero, Mode 3) ───── -->
+  <groupbox id="watch-folder-extdel-group" hidden="true">
+    <label><html:h2 data-l10n-id="watch-folder-pref-section-extdel"/></label>
+    <html:p data-l10n-id="watch-folder-pref-extdel-explainer"
+            style="margin: 0 0 10px 0; font-size: 0.95em; opacity: 0.9; line-height: 1.5;"/>
+
+    <radiogroup id="watch-folder-extdel-radio" style="margin: 4px 0 0 8px;">
+      <vbox class="wf-opt" id="wf-extdel-opt-ask" onclick="WatchFolderPrefs.changeDiskDeleteSync('ask')">
+        <hbox align="center">
+          <radio value="ask" data-l10n-id="watch-folder-pref-extdel-ask-label"/>
+          <html:span class="wf-opt-rec" data-l10n-id="watch-folder-pref-deletion-recommended-badge"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-extdel-ask-desc" class="wf-opt-desc"/>
+      </vbox>
+      <vbox class="wf-opt" id="wf-extdel-opt-auto" onclick="WatchFolderPrefs.changeDiskDeleteSync('auto')">
+        <hbox align="center">
+          <radio value="auto" data-l10n-id="watch-folder-pref-extdel-auto-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-extdel-auto-desc" class="wf-opt-desc"/>
+      </vbox>
+      <vbox class="wf-opt" id="wf-extdel-opt-never" onclick="WatchFolderPrefs.changeDiskDeleteSync('never')">
+        <hbox align="center">
+          <radio value="never" data-l10n-id="watch-folder-pref-extdel-never-label"/>
+          <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+        </hbox>
+        <html:p data-l10n-id="watch-folder-pref-extdel-never-desc" class="wf-opt-desc"/>
+      </vbox>
+    </radiogroup>
+  </groupbox>
+
   <!-- ─── Storage report + maintenance ───────────────────────────── -->
   <groupbox id="watch-folder-storage-report-group">
     <label><html:h2 data-l10n-id="watch-folder-pref-section-storage-report"/></label>

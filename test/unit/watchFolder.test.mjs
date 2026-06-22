@@ -1303,6 +1303,141 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
     expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
     expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
   });
+
+  // ── v2.8.2: diskDeleteSync='ask' disposition (prompt before touching Zotero) ──
+  it('diskDeleteSync=ask + Keep → no Zotero trash; records marked missing', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    // Watch-folder file is gone (only the Zotero-stored copy "exists") so the
+    // record lands in stillMissing and reaches the disposition prompt.
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    service._promptExternalDeletion = vi.fn(() => 'keep');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(service._promptExternalDeletion).toHaveBeenCalledTimes(1);
+    // 'keep' returns before the trash loop — the Zotero item is never trashed
+    // (no record removal) and the file record is flipped to MISSING.
+    expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'missing' });
+  });
+
+  it('diskDeleteSync=ask + Move to Trash → item to Bin (deleted=true, not erased)', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    const item = {
+      key: 'ATT001', deleted: false, saveTx: vi.fn(async () => {}), eraseTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => item);
+    service._promptExternalDeletion = vi.fn(() => 'trash');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(item.deleted).toBe(true);
+    expect(item.saveTx).toHaveBeenCalled();
+    expect(item.eraseTx).not.toHaveBeenCalled();
+  });
+
+  it('diskDeleteSync=ask + Delete Permanently → item erased (eraseTx), never just trashed', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    const item = {
+      key: 'ATT001', deleted: false, saveTx: vi.fn(async () => {}), eraseTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => item);
+    service._promptExternalDeletion = vi.fn(() => 'permanent');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(item.eraseTx).toHaveBeenCalledTimes(1);
+    expect(item.deleted).toBe(false); // erased outright, never moved to the Bin
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-EXTDEL-PROMPT: the disposition dialog itself (_promptExternalDeletion).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('UT-EXTDEL-PROMPT: _promptExternalDeletion (disposition dialog)', () => {
+  let service, utils;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    utils = await import('../../content/utils.mjs');
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    service._pickWindow = vi.fn(() => ({ document: {} }));
+    // Use the shared geckoMock Services.prompt (full BUTTON_* constants); just
+    // drive confirmEx per-test. Replacing the whole object would leak an
+    // incomplete prompt into later describes.
+    globalThis.Services.prompt.confirmEx.mockReturnValue(1); // default: Keep
+  });
+
+  it('no UI available → KEEP (fail-closed, never delete without consent)', () => {
+    service._pickWindow = vi.fn(() => null);
+    expect(service._promptExternalDeletion(['a.pdf'])).toBe('keep');
+  });
+
+  it('button 0 → trash, button 1 → keep, button 2 → permanent', () => {
+    globalThis.Services.prompt.confirmEx.mockReturnValue(0);
+    expect(service._promptExternalDeletion(['a.pdf'])).toBe('trash');
+    globalThis.Services.prompt.confirmEx.mockReturnValue(1);
+    expect(service._promptExternalDeletion(['a.pdf'])).toBe('keep');
+    globalThis.Services.prompt.confirmEx.mockReturnValue(2);
+    expect(service._promptExternalDeletion(['a.pdf'])).toBe('permanent');
+  });
+
+  it('"always do this" + Trash → persists diskDeleteSync=auto', () => {
+    globalThis.Services.prompt.confirmEx.mockImplementation((w, t, m, f, b0, b1, b2, cm, cs) => { if (cs) cs.value = true; return 0; });
+    service._promptExternalDeletion(['a.pdf']);
+    expect(utils.setPref).toHaveBeenCalledWith('diskDeleteSync', 'auto');
+  });
+
+  it('"always do this" + Keep → persists diskDeleteSync=never', () => {
+    globalThis.Services.prompt.confirmEx.mockImplementation((w, t, m, f, b0, b1, b2, cm, cs) => { if (cs) cs.value = true; return 1; });
+    service._promptExternalDeletion(['a.pdf']);
+    expect(utils.setPref).toHaveBeenCalledWith('diskDeleteSync', 'never');
+  });
+
+  it('"always do this" + Permanent → honored this batch but NEVER persisted as permanent (downgrades to auto + warns)', () => {
+    globalThis.Services.prompt.confirmEx.mockImplementation((w, t, m, f, b0, b1, b2, cm, cs) => { if (cs) cs.value = true; return 2; });
+    const action = service._promptExternalDeletion(['a.pdf']);
+    expect(action).toBe('permanent'); // this batch is erased
+    expect(utils.setPref).toHaveBeenCalledWith('diskDeleteSync', 'auto'); // but the saved default is recoverable
+    expect(utils.setPref).not.toHaveBeenCalledWith('diskDeleteSync', 'permanent');
+    expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
+  });
 });
 
 describe('UT-090: cascading-trash protection — _handleZoteroTrash v2 rewrite', () => {
