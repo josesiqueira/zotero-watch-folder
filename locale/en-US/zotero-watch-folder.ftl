@@ -40,6 +40,7 @@ watch-folder-pref-deletions-gate = These options only take effect in “Mirror, 
 
 # Subsection heading inside the Maintenance tab for the attention rows.
 watch-folder-pref-maintenance-attention = Needs attention
+watch-folder-pref-maintenance-attention-explainer = Edge cases the plugin froze instead of acting on by itself, to avoid losing data — usually a Zotero collection or item that was removed while its file still exists on disk. Review each row and choose what should happen.
 
 # ─── About box ────────────────────────────────────────────────────
 watch-folder-pref-about-blurb = Watch Folder watches a folder you pick. Drop a PDF in — the plugin imports it into Zotero, fetches metadata, renames the file, and (in mirror modes) keeps your Zotero collections in sync with the folder layout on disk.

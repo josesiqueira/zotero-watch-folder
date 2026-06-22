@@ -192,9 +192,11 @@
         const folders = resolver && typeof resolver.listSuppressedCollections === 'function'
             ? resolver.listSuppressedCollections()
             : [];
-        countEl.value = folders.length > 0
-            ? `${files.length} (+${folders.length} folders)`
-            : String(files.length);
+        // Readable count: "2 files", "3 folders", "2 files, 3 folders", or "0".
+        const countParts = [];
+        if (files.length) countParts.push(`${files.length} file${files.length === 1 ? '' : 's'}`);
+        if (folders.length) countParts.push(`${folders.length} folder${folders.length === 1 ? '' : 's'}`);
+        countEl.value = countParts.join(', ') || '0';
         row.hidden = files.length === 0 && folders.length === 0;
         // The folders Resolve button is independent of the files one: a user
         // may have suppressed folders but no suppressed files (or vice versa).
