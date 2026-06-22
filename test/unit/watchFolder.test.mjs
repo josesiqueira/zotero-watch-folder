@@ -1588,12 +1588,11 @@ describe('UT-EXTDEL-PROMPT: _promptExternalDeletion (disposition dialog)', () =>
     expect(utils.setPref).toHaveBeenCalledWith('diskDeleteSync', 'never');
   });
 
-  it('"always do this" + Permanent → honored this batch but NEVER persisted as permanent (downgrades to auto + warns)', () => {
+  it('"always do this" + Permanent → one-time only: default UNCHANGED (no setPref), warns once', () => {
     globalThis.Services.prompt.confirmEx.mockImplementation((w, t, m, f, b0, b1, b2, cm, cs) => { if (cs) cs.value = true; return 2; });
     const action = service._promptExternalDeletion(['a.pdf']);
-    expect(action).toBe('permanent'); // this batch is erased
-    expect(utils.setPref).toHaveBeenCalledWith('diskDeleteSync', 'auto'); // but the saved default is recoverable
-    expect(utils.setPref).not.toHaveBeenCalledWith('diskDeleteSync', 'permanent');
+    expect(action).toBe('permanent');             // this batch is erased
+    expect(utils.setPref).not.toHaveBeenCalled(); // but the standing default never changes
     expect(globalThis.Services.prompt.alert).toHaveBeenCalled();
   });
 });

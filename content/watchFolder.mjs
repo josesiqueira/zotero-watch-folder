@@ -2637,10 +2637,12 @@ export class WatchFolderService {
    * (`diskDeleteSync==='ask'`). Three choices, plus an "always do this"
    * checkbox that persists the standing default.
    *
-   * Returns 'trash' | 'keep' | 'permanent'. Permanent is honored for the
-   * current batch only — checking "always do this" with Permanent selected
-   * persists the recoverable 'auto' (trash) instead and tells the user once,
-   * so a single click can never become a standing, unattended erase policy.
+   * Returns 'trash' | 'keep' | 'permanent'. "Always do this" only ever sets a
+   * standing default for the RECOVERABLE choices (Trash→'auto', Keep→'never').
+   * Delete Permanently is a one-time action for the current batch — checking
+   * "always do this" with Permanent leaves the standing default UNCHANGED (and
+   * says so once), so a single click can never become an unattended erase
+   * policy. The dialog wording states this up front.
    *
    * Fail-safe: no UI available (headless/mobile) returns 'keep' — a deletion is
    * never propagated to Zotero without explicit consent.
@@ -2665,7 +2667,10 @@ export class WatchFolderService {
       + 'What should happen to the matching Zotero item(s)?\n\n'
       + '• Move to Trash — items go to Zotero\'s Bin (recoverable)\n'
       + '• Keep in Zotero — leave the items; just stop tracking the deletion\n'
-      + '• Delete Permanently — remove the items from Zotero entirely (cannot be undone)';
+      + '• Delete Permanently — remove the items from Zotero entirely (cannot be undone)\n\n'
+      + 'Tick "Always do this" to make Move to Trash or Keep your default and stop '
+      + 'asking. Delete Permanently is always a one-time action for this batch only '
+      + '— it is never saved as a default.';
 
     const flags = Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
                 + Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING
@@ -2681,7 +2686,7 @@ export class WatchFolderService {
       'Move to Trash',         // Button 0 → recoverable Bin
       'Keep in Zotero',        // Button 1 → leave items (default)
       'Delete Permanently',    // Button 2 → irreversible
-      'Always do this (you can change it in Settings)',
+      'Always do this — Move to Trash or Keep only (never Delete Permanently)',
       checkState
     );
 
@@ -2689,24 +2694,23 @@ export class WatchFolderService {
                  : result === 2 ? 'permanent'
                  : 'keep';
 
-    if (checkState.value) {
-      // Persist the standing default. 'permanent' is NEVER persisted (an
-      // unattended erase policy would silently destroy items forever); it
-      // downgrades to recoverable 'auto' trash on persist and we say so once.
-      const persisted = action === 'keep' ? 'never' : 'auto';
-      setPref('diskDeleteSync', persisted);
-      if (action === 'permanent') {
-        try {
-          Services.prompt.alert(
-            window,
-            'Zotero Watch Folder',
-            'Delete Permanently applies to this batch only — it is never saved as '
-            + 'your standing choice.\n\nFrom now on, files deleted from the watch '
-            + 'folder will move the matching items to Zotero\'s Bin (recoverable). '
-            + 'You can change this in the plugin settings.'
-          );
-        } catch (_) { /* advisory only */ }
-      }
+    if (checkState.value && action !== 'permanent') {
+      // "Always do this" sets the standing default — but only for the
+      // recoverable choices (Trash→'auto', Keep→'never').
+      setPref('diskDeleteSync', action === 'keep' ? 'never' : 'auto');
+    } else if (checkState.value && action === 'permanent') {
+      // Delete Permanently is one-time only: it NEVER becomes the standing
+      // default (an unattended erase policy would silently destroy items
+      // forever). Leave the default unchanged and say so once.
+      try {
+        Services.prompt.alert(
+          window,
+          'Zotero Watch Folder',
+          'Delete Permanently is a one-time action — it applies to this batch '
+          + 'only and is never saved as a default. Your standing choice is '
+          + 'unchanged. (To change your default, use the plugin settings.)'
+        );
+      } catch (_) { /* advisory only */ }
     }
 
     return action;
