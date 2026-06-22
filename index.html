@@ -406,7 +406,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.8.2 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.8.3 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -422,7 +422,7 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>920</b> unit tests passing</span>
+        <span><b>929</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
         <span><b>33</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
@@ -758,7 +758,7 @@ footer .fine {
     <ol class="install-steps">
       <li>
         <h4>Download the <code>.xpi</code></h4>
-        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.2</code>.</p>
+        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.3</code>.</p>
       </li>
       <li>
         <h4>Install in Zotero</h4>
@@ -931,15 +931,22 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.8.2 is the current stable release: a true two-way-delete prompt — when a
-      file leaves the watch folder, Mode 3 now asks before touching Zotero. On
-      top of the v2.8.1 audit-hardening pass, the v2.8.0 Check &amp; Repair tool,
+      v2.8.3 is the current stable release: deleting a watch-folder file now
+      removes the whole Zotero entry (no orphaned records), on top of the v2.8.2
+      two-way-delete prompt, the v2.8.1 audit-hardening pass, the v2.8.0 Check &amp; Repair tool,
       the v2.7 whole-library mirror default and the v2.6.x data-safety wave.
-      The bar to ship was: 920 unit tests passing across 27 files,
+      The bar to ship was: 929 unit tests passing across 27 files,
       live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
     <ul class="roadmap-list">
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.8.3 — no orphaned records on delete</b>
+          <span class="meta">When you remove a PDF from the watch folder, the deletion now targets the whole bibliographic entry, not just the attachment — so deleting the file no longer leaves a childless "ghost" record behind in your library. If the parent item still has other attachments or notes, only the one attachment is removed; the rest is preserved. Applies to Move to Trash and Delete Permanently alike.</span>
+        </div>
+      </li>
       <li>
         <span class="status done">Done</span>
         <div>
@@ -958,7 +965,7 @@ footer .fine {
         <span class="status done">Done</span>
         <div>
           <b>v2.8.0 — Check &amp; Repair</b>
-          <span class="meta">A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking (shadow-orphaned files, stale dead-state records blocking a folder rename, orphan tracking entries). Each issue is presented with a plain-English explanation and a recommended fix; applies only what you approve, and re-validates at apply time. Items with annotations or notes are surfaced first and never deleted. Additive-only: tracking fixes and collection membership — no file deletions, no Zotero bypassing. 920 unit tests across 27 files.</span>
+          <span class="meta">A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking (shadow-orphaned files, stale dead-state records blocking a folder rename, orphan tracking entries). Each issue is presented with a plain-English explanation and a recommended fix; applies only what you approve, and re-validates at apply time. Items with annotations or notes are surfaced first and never deleted. Additive-only: tracking fixes and collection membership — no file deletions, no Zotero bypassing. 929 unit tests across 27 files.</span>
         </div>
       </li>
       <li>
@@ -1106,7 +1113,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (920 passing, 27 files)</span>
+<span class="c"># unit tests (929 passing, 27 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1136,7 +1143,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.8.2 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-22
+      GPL-3.0 · v2.8.3 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-22
     </div>
   </div>
 </footer>

@@ -1384,6 +1384,164 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
     expect(item.eraseTx).toHaveBeenCalledTimes(1);
     expect(item.deleted).toBe(false); // erased outright, never moved to the Bin
   });
+
+  it('Delete Permanently on a SOLE-CHILD attachment → erases the PARENT bib item (no orphaned registry)', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    const parent = {
+      key: 'PAR', deleted: false, eraseTx: vi.fn(async () => {}), saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getAttachments: () => [1], getNotes: () => [],
+    };
+    const att = {
+      id: 1, key: 'ATT001', deleted: false, parentItem: parent,
+      eraseTx: vi.fn(async () => {}), saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => att);
+    globalThis.Zotero.Items.get = vi.fn((id) => (id === 1 ? att : null));
+    service._promptExternalDeletion = vi.fn(() => 'permanent');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(parent.eraseTx).toHaveBeenCalledTimes(1); // whole entry removed (cascades to the PDF)
+    expect(att.eraseTx).not.toHaveBeenCalled();      // not just the attachment → no orphan
+  });
+
+  it('Move to Trash on a SOLE-CHILD attachment → trashes the PARENT (whole entry to Bin)', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    const parent = {
+      key: 'PAR', deleted: false, eraseTx: vi.fn(async () => {}), saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getAttachments: () => [1], getNotes: () => [],
+    };
+    const att = {
+      id: 1, key: 'ATT001', deleted: false, parentItem: parent,
+      eraseTx: vi.fn(async () => {}), saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => att);
+    globalThis.Zotero.Items.get = vi.fn((id) => (id === 1 ? att : null));
+    service._promptExternalDeletion = vi.fn(() => 'trash');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(parent.deleted).toBe(true);             // whole entry to the Bin
+    expect(parent.saveTx).toHaveBeenCalled();
+    expect(att.deleted).toBe(false);               // we acted on the parent, not the attachment directly
+  });
+
+  it('Delete Permanently when the parent has ANOTHER live attachment → erases ONLY the attachment (keep parent + sibling)', async () => {
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation((k) => {
+      if (k === 'mode') return 'mode3';
+      if (k === 'sourcePath') return '/watch';
+      if (k === 'diskDeleteSync') return 'ask';
+      return undefined;
+    });
+    utils.getFileHash.mockResolvedValue('H1');
+    globalThis.IOUtils.exists = vi.fn(async (p) => p === '/zotero/storage/ATT001.pdf');
+    const sibling = { id: 2, deleted: false };
+    const parent = {
+      key: 'PAR', deleted: false, eraseTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getAttachments: () => [1, 2], getNotes: () => [],
+    };
+    const att = {
+      id: 1, key: 'ATT001', deleted: false, parentItem: parent,
+      eraseTx: vi.fn(async () => {}), saveTx: vi.fn(async () => {}),
+      getDisplayTitle: () => 'doc', getField: () => 'doc',
+      getFilePathAsync: async () => '/zotero/storage/ATT001.pdf',
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => att);
+    globalThis.Zotero.Items.get = vi.fn((id) => (id === 1 ? att : id === 2 ? sibling : null));
+    service._promptExternalDeletion = vi.fn(() => 'permanent');
+    store._records.push(
+      { type: 'file', localPath: 'A.pdf', canonicalLocalPath: 'A.pdf', zoteroAttachmentKey: 'ATT001', state: 'clean', lastSyncedHash: 'H1' },
+    );
+
+    await service._handleExternalDeletions(new Set(), []);
+
+    expect(att.eraseTx).toHaveBeenCalledTimes(1);  // only the attachment
+    expect(parent.eraseTx).not.toHaveBeenCalled(); // parent + sibling preserved
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-EXTDEL-TARGET: _resolveDeletionTarget (parent-vs-attachment resolution).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('UT-EXTDEL-TARGET: _resolveDeletionTarget (no orphaned parent)', () => {
+  let service;
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+  });
+
+  it('standalone attachment (no parent) → returns the attachment', () => {
+    const att = { id: 1, parentItem: null };
+    expect(service._resolveDeletionTarget(att)).toBe(att);
+  });
+
+  it('attachment is the parent\'s ONLY live child → returns the parent', () => {
+    const att = { id: 1 };
+    const parent = { getAttachments: () => [1], getNotes: () => [] };
+    att.parentItem = parent;
+    globalThis.Zotero.Items.get = vi.fn((id) => (id === 1 ? { id: 1, deleted: false } : null));
+    expect(service._resolveDeletionTarget(att)).toBe(parent);
+  });
+
+  it('parent has another LIVE attachment → returns the attachment only', () => {
+    const att = { id: 1 };
+    const parent = { getAttachments: () => [1, 2], getNotes: () => [] };
+    att.parentItem = parent;
+    globalThis.Zotero.Items.get = vi.fn((id) => ({ id, deleted: false }));
+    expect(service._resolveDeletionTarget(att)).toBe(att);
+  });
+
+  it('parent has a live NOTE → returns the attachment only', () => {
+    const att = { id: 1 };
+    const parent = { getAttachments: () => [1], getNotes: () => [9] };
+    att.parentItem = parent;
+    globalThis.Zotero.Items.get = vi.fn((id) => ({ id, deleted: false }));
+    expect(service._resolveDeletionTarget(att)).toBe(att);
+  });
+
+  it('parent\'s other attachment is TRASHED → returns the parent (this is the last live child)', () => {
+    const att = { id: 1 };
+    const parent = { getAttachments: () => [1, 2], getNotes: () => [] };
+    att.parentItem = parent;
+    globalThis.Zotero.Items.get = vi.fn((id) => (id === 2 ? { id: 2, deleted: true } : { id, deleted: false }));
+    expect(service._resolveDeletionTarget(att)).toBe(parent);
+  });
+
+  it('fails safe to the attachment when parent enumeration throws', () => {
+    const att = { id: 1, parentItem: { getAttachments: () => { throw new Error('boom'); } } };
+    expect(service._resolveDeletionTarget(att)).toBe(att);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

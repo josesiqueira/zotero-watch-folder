@@ -2562,19 +2562,25 @@ export class WatchFolderService {
           } catch (_e) { /* sink unavailable */ }
           continue;
         }
+        // Decide WHAT to remove: the attachment, or its whole bibliographic
+        // parent. Removing only the attachment leaves a childless "ghost" item
+        // in the library (the recurring orphaned-registry bug) — so when this
+        // attachment is the parent's last surviving child, target the PARENT
+        // (trash/erase cascades to the attachment + clears the record).
+        const target = this._resolveDeletionTarget(item);
         // Capture the title BEFORE any delete — eraseTx() invalidates the item.
         let title = '(untitled)';
         try {
-          title = (item.getDisplayTitle && item.getDisplayTitle()) || item.getField('title') || title;
+          title = (target.getDisplayTitle && target.getDisplayTitle()) || target.getField('title') || title;
         } catch (_) {}
         if (permanent) {
-          // Erase the item outright (skips Zotero's Bin). The freshness gate
-          // above already proved the stored bytes are unchanged, so this never
-          // destroys content newer than we last saw.
-          await item.eraseTx();
-        } else if (!item.deleted) {
-          item.deleted = true;
-          await item.saveTx();
+          // Erase outright (skips Zotero's Bin). The freshness gate above proved
+          // the stored bytes are unchanged, so this never destroys content newer
+          // than we last saw.
+          await target.eraseTx();
+        } else if (!target.deleted) {
+          target.deleted = true;
+          await target.saveTx();
         }
         trashed.push({ path: record.localPath, attachmentKey: record.zoteroAttachmentKey, title, permanent });
       } catch (e) {
@@ -2587,6 +2593,43 @@ export class WatchFolderService {
     // Only show the after-the-fact summary for the SILENT 'auto' path. When the
     // user just answered the disposition prompt, they already know what happened.
     if (trashed.length > 0 && !userConfirmed) this._showExternalDeletionPopup(trashed);
+  }
+
+  /**
+   * Decide which Zotero item a watch-folder deletion should remove: the
+   * attachment, or its bibliographic parent. Deleting only the attachment
+   * leaves a childless "ghost" item in the library (the recurring
+   * orphaned-registry bug). So if the attachment's parent would be left with NO
+   * other live children (attachments or notes), return the PARENT — trashing or
+   * erasing it cascades to this attachment and removes the whole entry. If the
+   * parent still has other children, or there is no parent, return the
+   * attachment alone (we never destroy unrelated siblings). Fail-safe: any error
+   * resolving the parent returns the attachment, so we only ever touch the
+   * narrowest target.
+   *
+   * @param {object} attachmentItem - the Zotero attachment for the deleted file.
+   * @returns {object} the item to trash/erase (the parent, or the attachment).
+   */
+  _resolveDeletionTarget(attachmentItem) {
+    try {
+      const parent = attachmentItem && attachmentItem.parentItem;
+      if (!parent) return attachmentItem;
+      let otherLiveChildren = 0;
+      const attIDs = (parent.getAttachments && parent.getAttachments(true)) || [];
+      for (const sid of attIDs) {
+        if (sid === attachmentItem.id) continue;
+        const sib = Zotero.Items.get(sid);
+        if (sib && !sib.deleted) otherLiveChildren++;
+      }
+      const noteIDs = (parent.getNotes && parent.getNotes(true)) || [];
+      for (const nid of noteIDs) {
+        const n = Zotero.Items.get(nid);
+        if (n && !n.deleted) otherLiveChildren++;
+      }
+      return otherLiveChildren === 0 ? parent : attachmentItem;
+    } catch (_e) {
+      return attachmentItem;
+    }
   }
 
   /**
