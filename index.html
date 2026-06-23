@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="google-site-verification" content="XP_ZFaIuLnJqQitqvEoixcqMnlcwW0aneb-vtvPbM4g" />
-<title>Zotero Watch Folder — drop a PDF, it lands in Zotero</title>
+<title>Zotero Watch Folder: auto-import PDFs on Zotero 7, 8 &amp; 9</title>
 <meta name="description" content="The Zotero 7/8/9 watch-folder plugin (a.k.a. watchfolder): watch a folder, auto-import new PDFs into the right collection, fetch metadata, rename files, mirror your collection tree to disk, and safely two-way-sync deletes with a recoverable trash.">
 <link rel="canonical" href="https://josesiqueira.github.io/zotero-watch-folder/">
 
@@ -424,11 +424,12 @@ footer .fine {
         <span class="dot"></span>
         v2.8.5 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
-      <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
+      <h1>Your <em>Zotero watch folder.</em></h1>
       <p class="lede">
-        A Zotero plugin that <b>watches a folder</b>, imports new files into the
-        right collection, <b>fetches metadata</b>, <b>renames</b> them from a
-        template, and keeps your collection tree <b>mirrored to disk</b> —
+        <b>Drop a PDF, it lands where it belongs.</b> A watch folder for
+        <b>Zotero 7, 8, and 9</b> that imports new files into the right
+        collection, <b>fetches metadata</b>, <b>renames</b> them from a
+        template, and keeps your collection tree <b>mirrored to disk</b>,
         both ways, with a recoverable trash and conflict gate so nothing
         gets shredded by accident.
       </p>
@@ -931,8 +932,8 @@ footer .fine {
         <p>More than 10 files <em>or</em> more than 20% of your tracked items in a single operation. Both <code>_handleZoteroTrash</code> (Zotero-side bulk trash) and <code>_handleExternalDeletions</code> (disk-side bulk rm) go through the same guard. Decline at the prompt and propagation is demoted to "mark missing".</p>
       </details>
       <details>
-        <summary>Can I run it on Zotero 7? Zotero 9?</summary>
-        <p>Yes to both. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 9.*</code>. Primary development target is Zotero 8.</p>
+        <summary>Can I run it on Zotero 7, 8, or 9?</summary>
+        <p>Yes to all three. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 9.*</code>, so it installs on Zotero 7, Zotero 8, and Zotero 9. Primary development target is Zotero 8, and it is live-verified on 9.0.4.</p>
       </details>
       <details>
         <summary>Where do my PDFs actually live — Zotero or my folder?</summary>
