@@ -396,6 +396,37 @@ footer .fine {
   font-family: var(--mono); letter-spacing: 0.04em;
 }
 </style>
+
+<!-- Structured data: tells Google this page describes a specific software
+     product (the canonical Zotero Watch Folder), with the repo as sameAs and
+     the releases as the download. Helps consolidate the entity and qualify
+     for rich results. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Zotero Watch Folder",
+  "alternateName": "Zotero watch folder plugin",
+  "applicationCategory": "Utilities",
+  "operatingSystem": "Zotero 7, 8, and 9 (Windows, macOS, Linux)",
+  "softwareVersion": "2.8.5",
+  "description": "A watch folder for Zotero 7, 8, and 9: drop a PDF into a folder and it auto-imports into your Zotero library with metadata retrieval, content-hash dedup, smart rules, template renaming, and optional two-way collection-to-disk mirroring with guarded, recoverable deletes.",
+  "url": "https://josesiqueira.github.io/zotero-watch-folder/",
+  "downloadUrl": "https://github.com/josesiqueira/zotero-watch-folder/releases/latest",
+  "sameAs": "https://github.com/josesiqueira/zotero-watch-folder",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "Jose Siqueira" },
+  "featureList": [
+    "Auto-import PDFs from a watched folder and its subfolders",
+    "Metadata retrieval with a parent-item fallback so no import is left an orphan",
+    "Full-content-hash duplicate detection",
+    "Two-way collection-to-disk mirroring",
+    "Works with WebDAV file sync (e.g. pCloud)"
+  ]
+}
+</script>
 </head>
 <body>
 
@@ -911,6 +942,14 @@ footer .fine {
     <h2>FAQ.</h2>
 
     <div class="faq">
+      <details>
+        <summary>Is this a ZotFile or Mendeley watch-folder alternative?</summary>
+        <p>Effectively, yes. ZotFile's folder-monitoring was always limited and ZotFile is not maintained for Zotero 7+; Mendeley's old "watch folder" has no Zotero equivalent built in. Zotero Watch Folder fills that gap on Zotero 7, 8, and 9: point it at a folder and new PDFs import automatically, with metadata, dedup, renaming, and an optional collection-to-disk mirror. It is an active, open-source plugin rather than a stalled fork.</p>
+      </details>
+      <details>
+        <summary>Can Zotero auto-import PDFs from a folder automatically?</summary>
+        <p>Not on its own, but that is exactly what this plugin adds. It polls your chosen folder every few seconds and imports anything new without a click; subfolders map to Zotero collections, so dropping a file into <code>Watch/AI/</code> files it under the matching collection. You can also leave it in plain import mode and never touch the mirror or delete features.</p>
+      </details>
       <details>
         <summary>Will this re-import everything if I move my Zotero data?</summary>
         <p>No. The plugin stamps a hash into each item's <code>Extra</code> field (<code>watchfolder-hash:&lt;sha256&gt;</code>). Even if the local tracking store is wiped, the library-side hash catches re-imports during the dedup pass.</p>
