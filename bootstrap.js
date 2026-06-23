@@ -125,6 +125,7 @@ function _initDefaultPrefs() {
   _set("pdfStorageStrategy",     "stored"); // "stored" | "linked_watch_folder" | "stored_plus_mirror"
   _set("postImportAction",       "leave");
   _set("autoRetrieveMetadata",   true);
+  _set("metadataFallback",       true);  // when the online recognizer can't identify a PDF, create a parent registry item anyway (page-1 DOI/arXiv/ISBN lookup, else a filename-titled parent) so no import is left a bare orphan attachment.
   _set("diskDeleteOnTrash",      "ask");  // "ask" | "plugin_trash" | "os_trash" | "permanent" | "never" — no-op in Mode 1; consumed by v2.1/v2.2. plugin_trash = move to .zotero-watch-trash/ under watch root.
   _set("diskDeleteSync",         "ask");  // "ask" | "auto" | "never" — what happens to the matching Zotero item(s) when a watch-folder file is deleted. ask (v2.8.2 default) = prompt (Move to Trash / Keep / Delete Permanently + "always do this"); auto = silently move to Bin (legacy); never = leave Zotero untouched. No-op in Mode 1; consumed by v2.1+.
 

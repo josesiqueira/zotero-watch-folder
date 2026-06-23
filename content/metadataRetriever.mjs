@@ -6,6 +6,7 @@
  */
 
 import { getPref, delay } from './utils.mjs';
+import { createParentFallback } from './metadataFallback.mjs';
 
 // Tag to add when metadata retrieval fails
 const NEEDS_REVIEW_TAG = '_needs-review';
@@ -39,6 +40,13 @@ export class MetadataRetriever {
     this._notifierID = null;
     /** @type {Map<number, {resolve: Function, timeout: number}>} Pending recognition tracking */
     this._pendingRecognition = new Map();
+    /**
+     * Fallback that creates a parent bibliographic item when the online
+     * recognizer can't identify a PDF. Held as an instance property so
+     * tests can stub it without touching the live identifier-lookup path.
+     * @type {(attachment: object) => Promise<{ok: boolean, via: string}>}
+     */
+    this._createParentFallback = createParentFallback;
   }
 
   /**
@@ -262,7 +270,11 @@ export class MetadataRetriever {
       const success = await recognitionPromise;
 
       if (!success) {
-        // Recognition failed or timed out - add needs-review tag
+        // The online recognizer couldn't identify the PDF. Try the
+        // conservative fallback (page-1 identifier lookup → filename
+        // parent) so the attachment still gains a parent registry item.
+        if (await this._tryFallback(item, itemID)) return true;
+        // Fallback disabled or failed - add needs-review tag.
         await this._addNeedsReviewTag(item);
         return false;
       }
@@ -270,11 +282,37 @@ export class MetadataRetriever {
       Zotero.debug(`[WatchFolder] Metadata retrieval succeeded for item ${itemID}`);
       return true;
     } catch (error) {
-      // Add _needs-review tag on failure
-      await this._addNeedsReviewTag(item);
       Zotero.debug(`[WatchFolder] Metadata retrieval failed for item ${itemID}: ${error.message}`);
+      // Even when recognition throws, give the fallback a chance before
+      // surrendering the item to manual review.
+      if (await this._tryFallback(item, itemID)) return true;
+      await this._addNeedsReviewTag(item);
       return false;
     }
+  }
+
+  /**
+   * Run the parent-creation fallback for an attachment the recognizer
+   * couldn't identify, gated by the `metadataFallback` pref (default on).
+   * Never throws — a fallback failure just returns false so the caller
+   * tags the item for review.
+   * @param {Zotero.Item} item - the standalone attachment
+   * @param {number} itemID
+   * @returns {Promise<boolean>} true if a parent was attached
+   * @private
+   */
+  async _tryFallback(item, itemID) {
+    if (getPref('metadataFallback') === false) return false;
+    try {
+      const result = await this._createParentFallback(item);
+      if (result && result.ok) {
+        Zotero.debug(`[WatchFolder] Fallback parent attached (${result.via}) for item ${itemID}`);
+        return true;
+      }
+    } catch (fallbackError) {
+      Zotero.debug(`[WatchFolder] Fallback failed for item ${itemID}: ${fallbackError?.message ?? fallbackError}`);
+    }
+    return false;
   }
 
   /**

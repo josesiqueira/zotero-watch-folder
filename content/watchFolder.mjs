@@ -226,6 +226,14 @@ export class WatchFolderService {
     // Run initial scan immediately
     await this._scan();
 
+    // One-shot per session: re-attempt metadata for any standalone PDF
+    // attachments the recognizer previously failed on (or that were
+    // imported while retrieval was disabled). Best-effort, fire-and-forget;
+    // the retriever is now connected (setMetadataRetriever ran at startup).
+    this.backfillStandaloneMetadata().catch((e) => {
+      Zotero.debug(`[WatchFolder] Standalone metadata backfill error: ${e?.message ?? e}`);
+    });
+
     // Schedule next scan
     this._scheduleNextScan();
   }
@@ -2919,6 +2927,71 @@ export class WatchFolderService {
     } else {
       Zotero.debug(`[WatchFolder] Backfill: no items needed stamping (skipped ${skipped})`);
     }
+  }
+
+  /**
+   * One-pass backfill: re-queue every plugin-managed standalone PDF
+   * attachment for metadata retrieval. Catches two cases that otherwise
+   * leave a permanent orphan with no parent registry item:
+   *   - the online recognizer failed/timed out on the original import and
+   *     was never retried, and
+   *   - the file was imported while `autoRetrieveMetadata` was disabled.
+   *
+   * Scoped to the tracking store (records this plugin wrote), so it never
+   * touches unrelated standalone attachments the user added by hand. Items
+   * that already have a parent, or already succeeded (`metadataRetrieved`),
+   * are skipped. `queueItem` dedups, so repeated calls are safe.
+   *
+   * @returns {Promise<{queued: number}>}
+   */
+  async backfillStandaloneMetadata() {
+    if (!this._trackingStore || !this._metadataRetriever) return { queued: 0 };
+    if (getPref('autoRetrieveMetadata') === false) return { queued: 0 };
+
+    const records = this._trackingStore.getAllOfType('file');
+    if (records.length === 0) return { queued: 0 };
+
+    const syncRoot = await resolveSyncRoot().catch(() => null);
+    const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
+
+    let queued = 0;
+    for (const record of records) {
+      try {
+        if (record.metadataRetrieved === true) continue;
+        if (!record.zoteroAttachmentKey) continue;
+
+        const item = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, record.zoteroAttachmentKey);
+        if (!item || item.deleted) continue;
+        if (!item.isAttachment || !item.isAttachment()) continue;
+        if (item.parentID) continue; // already has a parent registry item
+        if (item.attachmentContentType !== 'application/pdf') continue;
+
+        const finalRelKey = record.localPath;
+        this._metadataRetriever.queueItem(item.id, async (success, completedItemID) => {
+          if (!this._trackingStore) return;
+          this._trackingStore.update(finalRelKey, { metadataRetrieved: success });
+          if (success) {
+            try {
+              const refreshed = await Zotero.Items.getAsync(completedItemID);
+              if (refreshed && refreshed.parentItem) {
+                this._trackingStore.update(finalRelKey, { zoteroItemKey: refreshed.parentItem.key });
+              }
+            } catch (e) {
+              Zotero.debug(`[WatchFolder] backfill key-update failed: ${e?.message ?? e}`);
+            }
+          }
+          await this._trackingStore.save();
+        });
+        queued++;
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] backfillStandaloneMetadata error for ${record.zoteroAttachmentKey}: ${e?.message ?? e}`);
+      }
+    }
+
+    if (queued > 0) {
+      Zotero.debug(`[WatchFolder] backfillStandaloneMetadata: re-queued ${queued} standalone attachment(s)`);
+    }
+    return { queued };
   }
 
   /**

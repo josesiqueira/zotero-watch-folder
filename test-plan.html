@@ -412,7 +412,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <h3>My folder has PDFs in it, but my Zotero library is empty</h3>
       <p class="voice">I've been saving papers into <code>~/Papers</code> for years. I want Zotero to catch up with what I already have.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Point the plugin at my existing folder, let it import everything I already have, and preserve the way I've organized subfolders.</span></div>
-      <div class="row expected"><span class="label">What should happen</span><span class="body">Within a few scan cycles, every PDF in the folder appears in Zotero. Files at the root of the watch folder land as Unfiled items; subfolders become matching collections (<code>Papers/Methods/AI/</code> → <code>Methods › AI</code>). Metadata gets fetched for each file. Failures get a <code>_needs-review</code> tag.</span></div>
+      <div class="row expected"><span class="label">What should happen</span><span class="body">Within a few scan cycles, every PDF in the folder appears in Zotero. Files at the root of the watch folder land as Unfiled items; subfolders become matching collections (<code>Papers/Methods/AI/</code> → <code>Methods › AI</code>). Metadata gets fetched for each file; when Zotero's recognizer can't identify one, the plugin still creates a parent registry item (a page-1 identifier lookup, else a filename-titled record) so nothing is left a bare orphan attachment.</span></div>
       <div class="row offnote"><span class="label">If it looks off</span><span class="body">Some files imported, some didn't → check <code>fileTypes</code> matches your extensions (default is <code>pdf</code> only). Big folders take longer because metadata retrieval is throttled — give it a few minutes.</span></div>
       <div class="ref"><b>Covers:</b> ADD.1, ADD.2, ADD.3, E.4, P1.3, P1.4, P1.5, P1.8</div>
     </div>
@@ -481,7 +481,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
       <p class="voice">I clicked download in my browser, the PDF landed in my watch folder. Now I want to see it in Zotero, with the title and authors filled in.</p>
       <div class="row"><span class="label">I want to</span><span class="body">Open Zotero a few seconds later and see the new paper, recognized and named.</span></div>
       <div class="row expected"><span class="label">What should happen</span><span class="body">Within ~5 seconds the file shows up as an item — in the matching collection if dropped into a subfolder, or as Unfiled if dropped at the watch-folder root. Title, authors, year, DOI get populated. The file is renamed via the template (default: <code>{firstCreator} - {year} - {title}.pdf</code>) — both on disk and on the attachment.</span></div>
-      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Item appeared but metadata is missing → look for a <code>_needs-review</code> tag; Zotero's recognizer didn't find a match. You can run "Retrieve Metadata for PDF" manually. Filename didn't get rewritten → check <code>autoRename</code> is on and the template variables resolved (some fields like <code>{DOI}</code> are empty for non-DOI papers).</span></div>
+      <div class="row offnote"><span class="label">If it looks off</span><span class="body">Item appeared with a filename-titled parent instead of full metadata → Zotero's recognizer couldn't match it, so the plugin created an editable placeholder parent rather than leaving a bare attachment. You can fix the fields by hand or run "Retrieve Metadata for PDF" again. Filename didn't get rewritten → check <code>autoRename</code> is on and the template variables resolved (some fields like <code>{DOI}</code> are empty for non-DOI papers). Prefer the old leave-it-standalone behavior → turn off <code>metadataFallback</code>.</span></div>
       <div class="ref"><b>Covers:</b> S.2, P1.3, P1.4, P1.5</div>
     </div>
 
@@ -883,7 +883,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap-wide">
     <div class="row">
-      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.8.4 · Covers Zotero 7, 8, 9 · Last updated 2026-06-22</div>
+      <div><b>Zotero Watch Folder — what to try, what should happen</b> · v2.8.5 · Covers Zotero 7, 8, 9 · Last updated 2026-06-23</div>
       <ul>
         <li><a href="index.html">Back to overview</a></li>
         <li><a href="https://github.com/josesiqueira/zotero-watch-folder">GitHub</a></li>

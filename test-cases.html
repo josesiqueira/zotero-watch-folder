@@ -508,7 +508,21 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
         <h4>Metadata recognized + file renamed</h4>
         <p class="when">An imported PDF is recognizable by Zotero's metadata recognizer.</p>
         <p class="then">Parent item created with title / authors / year / DOI. File renamed via the template (default: <code>{firstCreator} - {year} - {title}</code>).</p>
-        <p class="note">Failures get a <code>_needs-review</code> tag; the file still imports.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.19a <span class="mode-tag all">ALL</span></div>
+        <h4>Recognizer miss → parent created anyway (no orphan)</h4>
+        <p class="when">Zotero's online recognizer returns "No matching references found" for an imported PDF (common for standards docs, reports, scanned files) — and <code>metadataFallback</code> is on (default).</p>
+        <p class="then">The plugin still attaches a parent registry item so the PDF is never a bare orphan attachment: (1) it extracts a high-confidence identifier from <b>page 1 only</b> — a single DOI / arXiv / ISBN — and looks it up via Zotero's translators; (2) if no trustworthy identifier is present, it creates a minimal parent titled from the filename. The attachment is reparented under the new item, inheriting its collections.</p>
+        <p class="note"><b>Safety:</b> page-1 + single-candidate gate. A page with multiple DOIs (a reference list) yields nothing — a <em>cited</em> reference's DOI is never mistaken for the document's own. If even the recognizer's pass failed and the fallback is off, the item still imports and gets a <code>_needs-review</code> tag.</p>
+      </div>
+
+      <div class="case">
+        <div class="case-id">I.19b <span class="mode-tag all">ALL</span></div>
+        <h4>Backfill: existing standalone PDFs swept once per session</h4>
+        <p class="when">Plugin-managed PDFs are sitting as standalone attachments (no parent) — they failed recognition on an earlier import, or were imported while retrieval was off.</p>
+        <p class="then">On the first scan each session (and on demand via <code>Zotero.WatchFolder.hooks.retrieveMissingMetadata()</code>), every tracked standalone PDF with <code>metadataRetrieved !== true</code> is re-queued through the same retrieval + fallback path. Scoped to the tracking store, so unrelated standalone attachments the user added by hand are never touched. Already-parented / already-succeeded / non-PDF records are skipped; <code>queueItem</code> dedups so repeat runs are safe.</p>
       </div>
 
       <div class="case">
@@ -828,7 +842,7 @@ footer ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 20px }
 <footer>
   <div class="wrap">
     <div class="row">
-      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.8.4 · Covers Zotero 7, 8, 9 · Last updated 2026-06-22</div>
+      <div><b>Zotero Watch Folder — inclusion / exclusion</b> · v2.8.5 · Covers Zotero 7, 8, 9 · Last updated 2026-06-23</div>
       <ul>
         <li><a href="index.html">Overview</a></li>
         <li><a href="test-plan.html">What to try</a></li>

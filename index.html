@@ -422,7 +422,7 @@ footer .fine {
     <div>
       <div class="eyebrow">
         <span class="dot"></span>
-        v2.8.4 · Zotero 7 / 8 / 9 · GPL-3.0
+        v2.8.5 · Zotero 7 / 8 / 9 · GPL-3.0
       </div>
       <h1>Drop a PDF.<br>It lands <em>where it belongs.</em></h1>
       <p class="lede">
@@ -438,9 +438,9 @@ footer .fine {
         <a class="btn btn-ghost" href="test-cases.html">Inclusion / Exclusion →</a>
       </div>
       <div class="hero-meta">
-        <span><b>929</b> unit tests passing</span>
+        <span><b>965</b> unit tests passing</span>
         <span><b>3</b> sync modes</span>
-        <span><b>33</b> tunable preferences</span>
+        <span><b>34</b> tunable preferences</span>
         <span><b>0</b> release-blocking issues</span>
       </div>
     </div>
@@ -481,7 +481,7 @@ footer .fine {
         <h3>Drop. Done.</h3>
         <ul>
           <li>Drop a PDF in your watched folder — it imports within 5s.</li>
-          <li>Metadata is fetched automatically (<code>_needs-review</code> tag on failure).</li>
+          <li>Metadata is fetched automatically — and if Zotero's recognizer can't identify the PDF, the plugin still creates a parent item (identifier lookup, else a filename-titled record) so it's never a bare orphan.</li>
           <li>File is renamed via your template, sanitized, length-capped.</li>
           <li>Hash + DOI + ISBN + fuzzy-title dedup, before and after metadata.</li>
           <li>Optional: your folder tree <em>is</em> your collection tree.</li>
@@ -774,7 +774,7 @@ footer .fine {
     <ol class="install-steps">
       <li>
         <h4>Download the <code>.xpi</code></h4>
-        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.4</code>.</p>
+        <p>Grab the latest release from <a href="https://github.com/josesiqueira/zotero-watch-folder/releases">GitHub Releases</a>. Current build: <code>v2.8.5</code>.</p>
       </li>
       <li>
         <h4>Install in Zotero</h4>
@@ -864,6 +864,11 @@ footer .fine {
           <td>Run Zotero's PDF metadata recognizer after import. Failures tagged <code>_needs-review</code>.</td>
         </tr>
         <tr>
+          <td><span class="key">metadataFallback</span></td>
+          <td><code>true</code></td>
+          <td>When the recognizer can't identify a PDF, still attach a parent registry item: a conservative page-1 DOI / arXiv / ISBN lookup, else a filename-titled parent. No import is left a bare orphan attachment.</td>
+        </tr>
+        <tr>
           <td><span class="key">autoRename</span> + <span class="key">renamePattern</span></td>
           <td><code>true</code> · <code>{firstCreator} - {year} - {title}</code></td>
           <td>Template-based file rename. Available vars: <code>{firstCreator}</code>, <code>{creators}</code>, <code>{year}</code>, <code>{title}</code>, <code>{shortTitle}</code>, <code>{DOI}</code>, <code>{itemType}</code>, <code>{publicationTitle}</code>.</td>
@@ -919,7 +924,7 @@ footer .fine {
       </details>
       <details>
         <summary>What if metadata retrieval fails for a paper?</summary>
-        <p>The item still imports. It gets a <code>_needs-review</code> tag and stays in your inbox / target collection until you fix it manually. Rename templates with missing fields fall back gracefully.</p>
+        <p>The item still imports, and it still gets a parent registry item. When Zotero's online recognizer can't identify the PDF, the plugin tries a conservative identifier lookup (a DOI / arXiv / ISBN found on page 1 only, so a <em>cited</em> reference's DOI can't be mistaken for the document's own), and if that finds nothing it creates a minimal parent titled from the filename. So you get an editable bibliographic record rather than a bare orphan attachment — tagged <code>_needs-review</code> if even the recognizer's own pass failed. This runs on new imports and, once per session, sweeps existing standalone PDFs the plugin imported. You can disable it with <code>metadataFallback</code>.</p>
       </details>
       <details>
         <summary>How is "bulk delete" defined?</summary>
@@ -947,16 +952,24 @@ footer .fine {
     <div class="section-eyebrow">Where we are, where we're going</div>
     <h2>Roadmap.</h2>
     <p class="section-lede">
-      v2.8.4 is the current stable release: a redesigned Settings pane — a live
-      status header plus a tabbed layout — on top of the v2.8.3 no-orphaned-records
+      v2.8.5 is the current stable release: every imported PDF now ends up with a
+      parent registry item, even when Zotero's recognizer can't identify it. It
+      builds on the v2.8.4 redesigned Settings pane, the v2.8.3 no-orphaned-records
       delete, the v2.8.2 two-way-delete prompt, the v2.8.1 audit-hardening pass,
       the v2.8.0 Check &amp; Repair tool, the v2.7 whole-library mirror default and
       the v2.6.x data-safety wave.
-      The bar to ship was: 929 unit tests passing across 27 files,
+      The bar to ship was: 965 unit tests passing across 28 files,
       live-Zotero MCP validation on Zotero 9.0.4, and no known data-loss path.
     </p>
 
     <ul class="roadmap-list">
+      <li>
+        <span class="status done">Done</span>
+        <div>
+          <b>v2.8.5: no orphan imports + metadata fallback</b>
+          <span class="meta">Every imported PDF now gets a parent registry item, never a bare standalone attachment. When Zotero's online recognizer can't identify a file, the plugin attaches a parent anyway: a conservative page-1 DOI / arXiv / ISBN lookup (page 1 only, so a cited reference's DOI can't be mistaken for the document's own), and otherwise a clean filename-titled parent (separators tidied, Title Case, acronyms kept, id-junk stripped). A startup and on-demand backfill sweeps standalone PDFs the plugin imported earlier. Gated by the new <code>metadataFallback</code> preference (on by default). Additive only: it creates parents, never deletes.</span>
+        </div>
+      </li>
       <li>
         <span class="status done">Done</span>
         <div>
@@ -989,7 +1002,7 @@ footer .fine {
         <span class="status done">Done</span>
         <div>
           <b>v2.8.0 — Check &amp; Repair</b>
-          <span class="meta">A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking (shadow-orphaned files, stale dead-state records blocking a folder rename, orphan tracking entries). Each issue is presented with a plain-English explanation and a recommended fix; applies only what you approve, and re-validates at apply time. Items with annotations or notes are surfaced first and never deleted. Additive-only: tracking fixes and collection membership — no file deletions, no Zotero bypassing. 929 unit tests across 27 files.</span>
+          <span class="meta">A Settings tool that scans for inconsistencies between your watch folder, Zotero, and the plugin's tracking (shadow-orphaned files, stale dead-state records blocking a folder rename, orphan tracking entries). Each issue is presented with a plain-English explanation and a recommended fix; applies only what you approve, and re-validates at apply time. Items with annotations or notes are surfaced first and never deleted. Additive-only: tracking fixes and collection membership — no file deletions, no Zotero bypassing. 965 unit tests across 28 files.</span>
         </div>
       </li>
       <li>
@@ -1137,7 +1150,7 @@ git clone https://github.com/josesiqueira/zotero-watch-folder
 cd zotero-watch-folder
 npm install
 
-<span class="c"># unit tests (929 passing, 27 files)</span>
+<span class="c"># unit tests (965 passing, 28 files)</span>
 npm test
 
 <span class="c"># build the bundle Zotero actually runs</span>
@@ -1167,7 +1180,7 @@ npm run package   <span class="c"># produces the .xpi + sha256 + update.json</sp
       </ul>
     </div>
     <div class="fine">
-      GPL-3.0 · v2.8.4 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-22
+      GPL-3.0 · v2.8.5 · Built for Zotero 7 / 8 / 9 (verified on 9.0.4) · Last updated 2026-06-23
     </div>
   </div>
 </footer>

@@ -617,6 +617,21 @@ export const hooks = {
         Zotero.debug("Zotero Watch Folder: Main window unloaded");
     },
 
+    /**
+     * Manual trigger for the standalone-metadata backfill. Re-queues every
+     * plugin-managed standalone PDF attachment (no parent registry item)
+     * for metadata retrieval + parent-creation fallback. Reachable from
+     * `zotero_execute_js` as `Zotero.WatchFolder.hooks.retrieveMissingMetadata()`.
+     * @returns {Promise<{queued: number}>}
+     */
+    async retrieveMissingMetadata() {
+        if (!watchFolderService) {
+            Zotero.debug("[WatchFolder] retrieveMissingMetadata: service not initialized");
+            return { queued: 0 };
+        }
+        return watchFolderService.backfillStandaloneMetadata();
+    },
+
     async onShutdown() {
         Zotero.debug("Zotero Watch Folder: Shutting down");
 

@@ -164,3 +164,43 @@ describe('UT-030 — _runOnComplete awaits async callbacks and surfaces failures
     expect(Zotero.logError).not.toHaveBeenCalled();
   });
 });
+
+// ─── UT-031: _tryFallback gating ─────────────────────────────────────────────
+// When the online recognizer can't identify a PDF, the retriever runs the
+// parent-creation fallback (page-1 identifier lookup → filename parent) unless
+// `metadataFallback` is disabled. The fallback fn is held as an instance
+// property (`_createParentFallback`) so it can be stubbed here.
+describe('UT-031 — _tryFallback gating + error handling', () => {
+  it('a: pref disabled (metadataFallback=false) → fallback NOT invoked, returns false', async () => {
+    const r = makeRetriever();
+    Zotero.Prefs.get = vi.fn((k, fallback) => (k.endsWith('metadataFallback') ? false : fallback));
+    r._createParentFallback = vi.fn(async () => ({ ok: true, via: 'filename' }));
+    const out = await r._tryFallback({ id: 5 }, 5);
+    expect(out).toBe(false);
+    expect(r._createParentFallback).not.toHaveBeenCalled();
+  });
+
+  it('b: pref enabled + fallback succeeds → returns true', async () => {
+    const r = makeRetriever();
+    Zotero.Prefs.get = vi.fn((_k, fallback) => fallback); // metadataFallback undefined → default-on
+    r._createParentFallback = vi.fn(async () => ({ ok: true, via: 'identifier' }));
+    const out = await r._tryFallback({ id: 9 }, 9);
+    expect(out).toBe(true);
+    expect(r._createParentFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('c: fallback returns ok:false → returns false', async () => {
+    const r = makeRetriever();
+    Zotero.Prefs.get = vi.fn((_k, fallback) => fallback);
+    r._createParentFallback = vi.fn(async () => ({ ok: false, via: 'error' }));
+    expect(await r._tryFallback({ id: 1 }, 1)).toBe(false);
+  });
+
+  it('d: fallback THROWS → swallowed, returns false (item falls to needs-review)', async () => {
+    const r = makeRetriever();
+    Zotero.Prefs.get = vi.fn((_k, fallback) => fallback);
+    r._createParentFallback = vi.fn(async () => { throw new Error('boom'); });
+    expect(await r._tryFallback({ id: 2 }, 2)).toBe(false);
+    expect(Zotero.debug).toHaveBeenCalled();
+  });
+});

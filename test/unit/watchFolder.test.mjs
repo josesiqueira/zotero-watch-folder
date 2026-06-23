@@ -350,6 +350,101 @@ describe('UT-052: WatchFolderService._backfillHashesForExistingItems (v2 schema)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// UT-055: backfillStandaloneMetadata — re-queues plugin-managed standalone PDF
+// attachments (no parent registry item) for metadata retrieval. Scoped to the
+// tracking store; skips already-parented / already-succeeded / non-PDF records.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('UT-055: WatchFolderService.backfillStandaloneMetadata', () => {
+  let service;
+  let queued;
+
+  function makeAttachment({ deleted = false, parentID = null, contentType = 'application/pdf', isAttachment = true } = {}) {
+    return {
+      id: Math.floor(Math.random() * 1e6),
+      deleted,
+      parentID,
+      attachmentContentType: contentType,
+      isAttachment: () => isAttachment,
+    };
+  }
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const cp = await import('../../content/canonicalPath.mjs');
+    cp.resolveSyncRoot.mockResolvedValue({ collection: { id: 1, key: 'ROOT1' }, libraryID: 1 });
+
+    const mod = await import('../../content/watchFolder.mjs');
+    service = new mod.WatchFolderService();
+    queued = [];
+    service._metadataRetriever = { queueItem: vi.fn((id, cb) => queued.push({ id, cb })) };
+    service._trackingStore = {
+      getAllOfType: vi.fn(() => []),
+      update: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn();
+    globalThis.Zotero.Prefs.get = vi.fn((_k, fallback) => fallback);
+  });
+
+  it('a: no-ops when retriever is not connected', async () => {
+    service._metadataRetriever = null;
+    const r = await service.backfillStandaloneMetadata();
+    expect(r).toEqual({ queued: 0 });
+  });
+
+  it('b: no-ops when autoRetrieveMetadata is disabled', async () => {
+    globalThis.Zotero.Prefs.get = vi.fn((k, fallback) => (k.endsWith('autoRetrieveMetadata') ? false : fallback));
+    service._trackingStore.getAllOfType = vi.fn(() => [{ type: 'file', zoteroAttachmentKey: 'AK1' }]);
+    const r = await service.backfillStandaloneMetadata();
+    expect(r).toEqual({ queued: 0 });
+    expect(service._metadataRetriever.queueItem).not.toHaveBeenCalled();
+  });
+
+  it('c: queues a standalone PDF attachment with metadataRetrieved!==true', async () => {
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(makeAttachment());
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK1', localPath: 'a.pdf', metadataRetrieved: false },
+    ]);
+    const r = await service.backfillStandaloneMetadata();
+    expect(r.queued).toBe(1);
+    expect(service._metadataRetriever.queueItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('d: skips already-succeeded, already-parented, and non-PDF records', async () => {
+    const parented = makeAttachment({ parentID: 42 });
+    const epub = makeAttachment({ contentType: 'application/epub+zip' });
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync
+      .mockResolvedValueOnce(parented)   // AK2 already has a parent
+      .mockResolvedValueOnce(epub);      // AK3 is not a PDF
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK1', localPath: 'a.pdf', metadataRetrieved: true }, // succeeded
+      { type: 'file', zoteroAttachmentKey: 'AK2', localPath: 'b.pdf', metadataRetrieved: false },
+      { type: 'file', zoteroAttachmentKey: 'AK3', localPath: 'c.epub', metadataRetrieved: false },
+    ]);
+    const r = await service.backfillStandaloneMetadata();
+    expect(r.queued).toBe(0);
+    expect(service._metadataRetriever.queueItem).not.toHaveBeenCalled();
+  });
+
+  it('e: completion callback persists metadataRetrieved + new parent key', async () => {
+    const att = makeAttachment();
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync.mockResolvedValue(att);
+    globalThis.Zotero.Items.getAsync = vi.fn(async () => ({ parentItem: { key: 'NEWPRNT' } }));
+    service._trackingStore.getAllOfType = vi.fn(() => [
+      { type: 'file', zoteroAttachmentKey: 'AK1', localPath: 'a.pdf', metadataRetrieved: false },
+    ]);
+
+    await service.backfillStandaloneMetadata();
+    // simulate the retriever invoking the completion callback with success
+    await queued[0].cb(true, att.id);
+
+    expect(service._trackingStore.update).toHaveBeenCalledWith('a.pdf', { metadataRetrieved: true });
+    expect(service._trackingStore.update).toHaveBeenCalledWith('a.pdf', { zoteroItemKey: 'NEWPRNT' });
+    expect(service._trackingStore.save).toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // UT-053: _handleExternalDeletions + _handleFileMoves — distinguishes a
 // file move within the watch folder from a real deletion, and relocates the
 // Zotero item to the new subfolder's collection instead of trashing it.

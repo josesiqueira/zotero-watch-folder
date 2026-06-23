@@ -22,7 +22,7 @@ Zotero plugin: watches a folder, imports PDFs, mirrors a Zotero library to disk,
 - For complex multi-part work, prefer delegating disjoint slices to parallel sub-agents and coordinating; keep live-MCP testing serial (one flaky bridge).
 
 ## TESTING — never assume it works
-- Run `npx vitest run` (single file: `npx vitest run test/unit/<m>.test.mjs`; by name: `-t "<name>"`). Suite must stay green before any commit/checkpoint. **929 tests across 27 files** — update this count when it changes.
+- Run `npx vitest run` (single file: `npx vitest run test/unit/<m>.test.mjs`; by name: `-t "<name>"`). Suite must stay green before any commit/checkpoint. **965 tests across 28 files** — update this count when it changes.
 - New module → `test/unit/<m>.test.mjs`, import SUT from `../../content/<m>.mjs`, `vi.mock` deps per-file, reset in `beforeEach`. `test/setup/geckoMocks.js` stubs `Zotero`/`IOUtils`/`PathUtils`/`Services`/`crypto.subtle`. The `_hashCache.mjs` singleton must be cleared in `beforeEach` if you mock `getFileHash`.
 - Live verification = `.private/mcp-runbooks/` (maintainer-only). Run **SMOKE.md S.1–S.7** before tagging a release. Version-guard first: `zotero_plugin_list` must equal source version, else you're testing stale code.
 
@@ -56,6 +56,7 @@ Zotero plugin: watches a folder, imports PDFs, mirrors a Zotero library to disk,
 - **Per-key executor locks** (`mirrorExecutor._withLock` by `collection:`/`attachment:`) + per-module notifier promise-chains with a 100ms debounce (`__test_setDebounceMs(0)` in fake-timer tests). Don't reintroduce a global lock.
 - **TrackingStore singleton** (`initTrackingStore`) shared by service + resolver; indexes rebuilt per mutation; `save()` debounced 50ms, `flush()`/`saveNow()` on shutdown. Persisted as `…-tracking-v2.json` (v1 refused).
 - **RecognizePDF reparent guard** in `itemMembershipHandler._handleRemove` — don't remove (else fresh imports go suppressed). `SyncRootMissingError`/`LibraryUnavailableError` are load-bearing: callers catch→pause, no silent fallback.
+- **`metadataFallback` page-1 single-candidate gate is a SAFETY invariant — never make it greedy.** `extractIdentifierFromText` only trusts an identifier when page 1 yields EXACTLY ONE distinct value of a kind (arXiv > DOI > ISBN). A document's own DOI sits in the header; cited DOIs live in the reference list on deeper pages, so a multi-DOI page = refuse. Live proof: the "EU Data Act" PDF yields a spurious Oxford-law DOI on page 4 — page-1 extraction returns nothing and it correctly lands on the filename-titled parent. Widening the page window or accepting multiple candidates would attach a *cited reference's* metadata to the wrong file (worse than an orphan).
 - **`baseline.runBaseline` idempotency** keyed on `baselineCompletedForRoot` (`__library__:<id>` in library scope; `baselineKeyFor` is the shared accessor). Known: `metadataRetriever` fire-and-forget queue swallows errors (tracked).
 - **Reentrancy guards** in `WatchFolderService`: `_processingFiles` (per-file) + `_scanInProgress` (per-scan). Don't bypass either. `postImportAction='delete'` records `expectedOnDisk=false` so external-deletion sync won't trash the Zotero item.
 - **Library hash stamps** (`watchfolder-hash:<sha256>` in item Extra) are the cross-install dedup anchor when the tracking store is wiped (`_backfillHashesForExistingItems`).
@@ -65,12 +66,12 @@ Zotero plugin: watches a folder, imports PDFs, mirrors a Zotero library to disk,
 # LAYOUT
 - `bootstrap.js` — addon entry: `_initDefaultPrefs` (canonical defaults; `prefs.js` is doc-parity only), migration, loads the bundle, calls `Zotero.WatchFolder.hooks.*`.
 - `content/*.mjs` — ES source; entry `content/index.mjs` (exports `hooks` + re-exports for the prefs sandbox/MCP). Key modules:
-  - Core: `canonicalPath` (scope resolution, `UNFILED`, `isSpecialCollection`), `trackingStore` (file/collection/tombstone records, singleton), `watchFolder` (poll loop, `_processNewFile`, `_handleZoteroTrash`/`_handleExternalDeletions`/`_handleFileMoves`), `utils`, `fileScanner`, `fileImporter`, `fileRenamer`, `duplicateDetector`.
+  - Core: `canonicalPath` (scope resolution, `UNFILED`, `isSpecialCollection`), `trackingStore` (file/collection/tombstone records, singleton), `watchFolder` (poll loop, `_processNewFile`, `_handleZoteroTrash`/`_handleExternalDeletions`/`_handleFileMoves`, `backfillStandaloneMetadata`), `utils`, `fileScanner`, `fileImporter`, `fileRenamer`, `duplicateDetector`, `metadataRetriever` (queues every import for `Zotero.RecognizeDocument`), `metadataFallback` (on recognizer miss: conservative page-1 DOI/arXiv/ISBN lookup → else filename-titled parent, so no import stays a bare orphan attachment; gated by `metadataFallback` pref, default on).
   - Mirror (Mode 2/3): `syncCoordinator` (start/stop + mode observer + scan bridge), `collectionWatcher`, `folderEventDetector`, `itemMembershipHandler`, `itemAddHandler`, `mirrorExecutor` (ALL fs mutations + per-key locks), `baseline`.
   - Safety/UX: `bulkGuard`, `watchRootGuard`, `suppressionResolver`, `warningSink`, `fileMissing`, `storageStrategy`, `reconcile` (Check & Repair: detect() READ-ONLY + applyRepairs() additive-only, re-validates each finding at apply time), `_hashCache`.
 - `content/preferences.{xhtml,js}` + `content/setupWizard.{xhtml,js}` — copied verbatim, not bundled.
 - `dist/content/scripts/watchFolder.js` — esbuild IIFE bundle. **What Zotero runs.**
-- `prefs.js` / bootstrap `_set` — **33 default keys** under `extensions.zotero.watchFolder.*` (kept in lockstep). `build/*.mjs` — release pipeline. `.private/` — gitignored maintainer docs/runbooks. `tools/hooks/commit-msg` strips AI trailers (`git config core.hooksPath tools/hooks`).
+- `prefs.js` / bootstrap `_set` — **34 default keys** under `extensions.zotero.watchFolder.*` (kept in lockstep). `build/*.mjs` — release pipeline. `.private/` — gitignored maintainer docs/runbooks. `tools/hooks/commit-msg` strips AI trailers (`git config core.hooksPath tools/hooks`).
 
 # COMMANDS
 | Cmd | Does |
