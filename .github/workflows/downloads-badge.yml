@@ -1,0 +1,52 @@
+name: downloads-badge
+
+# Keeps .github/badges/downloads.json (a shields.io "endpoint" badge source)
+# in sync with the repo's lifetime download total. We compute the total with
+# the AUTHENTICATED GITHUB_TOKEN (5000 req/hr), so unlike shields' own
+# github/downloads/.../total badge — which uses shields' shared UNauthenticated
+# 60/hr GitHub quota and intermittently renders "invalid" when throttled — this
+# can never rate-limit. The README badge reads a tiny static JSON, so it is
+# never computed at render time and never goes "invalid".
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # daily, off-peak
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: downloads-badge
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute total downloads and write badge JSON
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          total=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[].assets[].download_count' | awk '{s+=$1} END{print s+0}')
+          echo "Total downloads: ${total}"
+          mkdir -p .github/badges
+          printf '{"schemaVersion":1,"label":"downloads","message":"%s","color":"brightgreen"}\n' \
+            "${total}" > .github/badges/downloads.json
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- .github/badges/downloads.json; then
+            echo "Count unchanged — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/downloads.json
+          git commit -m "chore: refresh downloads badge count"
+          git push

@@ -2,7 +2,7 @@
 
 [![Zotero target version](https://img.shields.io/badge/Zotero-7%2F8%2F9-CC2936?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Latest release](https://img.shields.io/github/v/release/josesiqueira/zotero-watch-folder?style=flat-square&logo=github&label=release)](https://github.com/josesiqueira/zotero-watch-folder/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/josesiqueira/zotero-watch-folder/total?style=flat-square&logo=github&label=downloads)](https://github.com/josesiqueira/zotero-watch-folder/releases)
+[![Downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/josesiqueira/zotero-watch-folder/main/.github/badges/downloads.json&style=flat-square&logo=github)](https://github.com/josesiqueira/zotero-watch-folder/releases)
 [![License: GPL v3](https://img.shields.io/github/license/josesiqueira/zotero-watch-folder?style=flat-square)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/josesiqueira/zotero-watch-folder?style=flat-square&logo=github)](https://github.com/josesiqueira/zotero-watch-folder/issues)
 [![User guide](https://img.shields.io/badge/docs-user%20guide-blue?style=flat-square)](https://josesiqueira.github.io/zotero-watch-folder/)
