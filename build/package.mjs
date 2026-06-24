@@ -24,15 +24,23 @@ const GITHUB_REPO = process.env.GITHUB_REPO || 'zotero-watch-folder';
 const MIN_ZOTERO_VERSION = '6.999';
 
 /**
- * Read the manifest.json and extract version
+ * Read the manifest.json and extract version + Zotero compatibility range.
+ * The served update.json MUST mirror the manifest's strict_max_version: that
+ * field is the lever Zotero's background compatibility check consults to keep
+ * an installed copy enabled. Omitting it means "compatible with everything",
+ * which would let an installed copy keep running on an untested future major
+ * (#5) instead of cleanly disabling. To widen compatibility for the existing
+ * install base WITHOUT shipping a new XPI, bump strict_max_version in
+ * manifest.json (after testing on the new major's beta — betas ignore it),
+ * rebuild, and re-serve update.json; installed copies re-enable on the next
+ * background check.
  */
-async function getVersion() {
+async function getManifest() {
     const manifestPath = path.join(DIST_DIR, 'manifest.json');
 
     try {
         const content = await fs.readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(content);
-        return manifest.version;
+        return JSON.parse(content);
     } catch (err) {
         throw new Error(`Failed to read manifest.json: ${err.message}`);
     }
@@ -80,7 +88,17 @@ async function calculateHash(filePath) {
 /**
  * Generate update.json file
  */
-async function generateUpdateJSON(version, hash) {
+async function generateUpdateJSON(version, hash, compat) {
+    const zotero = {
+        strict_min_version: compat.strict_min_version || MIN_ZOTERO_VERSION
+    };
+    // Mirror the manifest's upper bound so the served compatibility stays the
+    // single authoritative lever (#5). Only emit it if the manifest declares
+    // one — an intentionally unbounded manifest stays unbounded here too.
+    if (compat.strict_max_version) {
+        zotero.strict_max_version = compat.strict_max_version;
+    }
+
     const updateManifest = {
         addons: {
             [ADDON_ID]: {
@@ -90,9 +108,7 @@ async function generateUpdateJSON(version, hash) {
                         update_link: `https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/v${version}/zotero-watch-folder-${version}.xpi`,
                         update_hash: `sha256:${hash}`,
                         applications: {
-                            zotero: {
-                                strict_min_version: MIN_ZOTERO_VERSION
-                            }
+                            zotero: zotero
                         }
                     }
                 ]
@@ -148,10 +164,13 @@ async function package_() {
         process.exit(1);
     }
 
-    // Step 2: Read version from manifest
+    // Step 2: Read version + compatibility range from manifest
     console.log('Reading version from manifest.json...');
-    const version = await getVersion();
+    const manifest = await getManifest();
+    const version = manifest.version;
+    const compat = manifest.applications?.zotero ?? {};
     console.log(`  Version: ${version}`);
+    console.log(`  Zotero: ${compat.strict_min_version || MIN_ZOTERO_VERSION} → ${compat.strict_max_version || '(unbounded)'}`);
     console.log();
 
     // Step 3: Create XPI file
@@ -170,7 +189,7 @@ async function package_() {
 
     // Step 5: Generate update.json
     console.log('Generating update.json...');
-    const updatePath = await generateUpdateJSON(version, hash);
+    const updatePath = await generateUpdateJSON(version, hash, compat);
     console.log(`  ✓ Created: ${path.basename(updatePath)}`);
     console.log();
 
