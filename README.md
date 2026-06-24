@@ -190,6 +190,12 @@ Thanks to everyone who has contributed:
   <img src="https://contrib.rocks/image?repo=josesiqueira/zotero-watch-folder" />
 </a>
 
+## More Zotero plugins
+
+Like this one? There's a whole ecosystem.
+
+> 🧩 **Discover more** — the community-curated **[awesome-zotero](https://github.com/MohamedElashri/awesome-zotero)** list collects plugins, tools, and styles that extend Zotero in every direction. Well worth a browse.
+
 ## License
 
 GNU GPL v3.0 — free and open source. See [`LICENSE`](LICENSE) for the full text.
