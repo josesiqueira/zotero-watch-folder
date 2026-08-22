@@ -27,6 +27,7 @@
  */
 
 import { getPref } from './utils.mjs';
+import { isMultiMappingActive, getActiveMappings, effectiveGlobalMode } from './mappings.mjs';
 import * as collectionWatcher from './collectionWatcher.mjs';
 import * as itemAddHandler from './itemAddHandler.mjs';
 import * as mirrorExecutor from './mirrorExecutor.mjs';
@@ -106,7 +107,7 @@ export class SyncCoordinator {
 
   /** Mode pref changed at runtime — start or stop accordingly. */
   async _onModeChanged() {
-    const mode = getPref('mode') || 'mode1';
+    const mode = effectiveGlobalMode();
     const enabled = !!getPref('enabled');
     if (mode === 'mode1' && this._running) {
       Zotero.debug('[WatchFolder] SyncCoordinator: mode→mode1 at runtime, stopping');
@@ -126,19 +127,27 @@ export class SyncCoordinator {
       Zotero.debug('[WatchFolder] SyncCoordinator.start: not initialized — skipping');
       return;
     }
-    const mode = getPref('mode') || 'mode1';
+    const mode = effectiveGlobalMode();
     if (mode === 'mode1') {
       Zotero.debug('[WatchFolder] SyncCoordinator: Mode 1 — staying idle');
       return;
     }
     if (this._running) return;
     // Phase C — first-run baseline. Idempotent (skips when the sync-root
-    // key matches the persisted `baselineCompletedForRoot` pref).
-    // MUST run before collectionWatcher registers; otherwise the
-    // mkdirs/copies issued here would race with notifier events the
-    // baseline itself indirectly triggers.
+    // key matches the persisted completion pref). MUST run before
+    // collectionWatcher registers; otherwise the mkdirs/copies issued here
+    // would race with notifier events the baseline itself indirectly triggers.
+    // Multi-folder: run once PER watch folder (each has its own sync root +
+    // per-mapping completion via baselineCompletedByMapping).
     try {
-      await baseline.runBaseline({ trackingStore: this._trackingStore });
+      if (isMultiMappingActive()) {
+        for (const ctx of getActiveMappings()) {
+          if (!ctx || !ctx.sourcePath) continue;
+          await baseline.runBaseline({ trackingStore: this._trackingStore, mapping: ctx });
+        }
+      } else {
+        await baseline.runBaseline({ trackingStore: this._trackingStore });
+      }
     } catch (e) {
       Zotero.logError(`[WatchFolder] SyncCoordinator: baseline failed - ${e?.message ?? e}`);
     }
@@ -182,6 +191,8 @@ export class SyncCoordinator {
    * @param {Array<{path: string}>} ctx.scannedFiles
    * @param {Set<string>} ctx.onDiskAbsDirs - Absolute dir paths under watchRoot.
    * @param {string} ctx.watchRoot
+   * @param {string} [ctx.mappingId] - Owning mapping (multi-folder model).
+   * @param {import('./mappings.mjs').MappingContext} [ctx.mapping] - Owning mapping ctx.
    */
   async notifyScanCycle(ctx) {
     if (!this._running) return;
@@ -190,6 +201,8 @@ export class SyncCoordinator {
         trackingStore: this._trackingStore,
         onDiskAbsDirs: ctx?.onDiskAbsDirs,
         watchRoot: ctx?.watchRoot,
+        mappingId: ctx?.mappingId,
+        mapping: ctx?.mapping,
       });
     } catch (e) {
       Zotero.logError(`[WatchFolder] SyncCoordinator.notifyScanCycle: ${e?.message ?? e}`);
