@@ -65,6 +65,7 @@ const WatchFolderSetup = (function () {
   const state = {
     step: 1,
     watchFolder: "",
+    scopeMode: "collection",
     syncRootKey: "",
     syncRootLibraryID: 1,
     syncRootLabel: "",
@@ -104,7 +105,7 @@ const WatchFolderSetup = (function () {
     const enable = $("btn-enable");
     if (n === 1) back.setAttribute("hidden", "hidden");
     else back.removeAttribute("hidden");
-    if (n === 5) {
+    if (n === 3) {
       next.setAttribute("hidden", "hidden");
       enable.removeAttribute("hidden");
     } else {
@@ -112,9 +113,12 @@ const WatchFolderSetup = (function () {
       enable.setAttribute("hidden", "hidden");
     }
 
-    // Per-step entry hooks. Step 2 is now an informational whole-library
-    // explainer (library scope is the only model) — no collection to populate.
-    if (n === 5) renderConfirm();
+    // Per-step entry hooks. Step 2 lets the user choose whole-library scope or a
+    // specific sync-root collection; the collection list is populated lazily the
+    // first time "A specific collection" is selected. Sync mode + PDF storage are
+    // now global settings (all folders), so the wizard is folder → target → confirm.
+    if (n === 2) _syncScopePicker();
+    if (n === 3) renderConfirm();
   }
 
   function validateStep(n) {
@@ -127,17 +131,13 @@ const WatchFolderSetup = (function () {
       return true;
     }
     if (n === 2) {
-      // Whole-library scope — nothing to pick; the panel is informational.
-      return true;
-    }
-    if (n === 3) {
-      const checked = document.querySelector('input[name="mode"]:checked');
-      state.mode = checked ? checked.value : "mode1";
-      return true;
-    }
-    if (n === 4) {
-      const checked = document.querySelector('input[name="storage"]:checked');
-      state.storageStrategy = checked ? checked.value : "stored";
+      const checked = document.querySelector('input[name="scope"]:checked');
+      state.scopeMode = checked && checked.value === "collection" ? "collection" : "library";
+      if (state.scopeMode === "collection" && !state.syncRootKey) {
+        $("coll-error").textContent = "Pick a collection to continue, or choose “Whole library” above.";
+        return false;
+      }
+      $("coll-error").textContent = "";
       return true;
     }
     return true;
@@ -145,7 +145,7 @@ const WatchFolderSetup = (function () {
 
   function next() {
     if (!validateStep(state.step)) return;
-    if (state.step < 5) showStep(state.step + 1);
+    if (state.step < 3) showStep(state.step + 1);
   }
 
   function back() {
@@ -158,17 +158,15 @@ const WatchFolderSetup = (function () {
   }
 
   function enable() {
-    if (!validateStep(3)) return;
-    if (!validateStep(4)) return;
+    if (!validateStep(1)) { showStep(1); return; }
+    if (!validateStep(2)) { showStep(2); return; }
     _onResult({
       canceled: false,
       watchFolder: state.watchFolder,
-      scopeMode: "library",
-      syncRootKey: state.syncRootKey,
+      scopeMode: state.scopeMode,
+      syncRootKey: state.scopeMode === "collection" ? state.syncRootKey : "",
       syncRootLibraryID: state.syncRootLibraryID,
-      syncRootLabel: state.syncRootLabel,
-      mode: state.mode,
-      storageStrategy: state.storageStrategy,
+      syncRootLabel: state.scopeMode === "collection" ? state.syncRootLabel : "Whole library",
     });
     _safeWindow().close();
   }
@@ -197,6 +195,40 @@ const WatchFolderSetup = (function () {
     }
   }
 
+  // ─── Step 2: scope choice (whole library vs. one collection) ──────────
+
+  /**
+   * Wire the scope radios and show/hide the collection picker. Populates the
+   * collection list lazily the first time "A specific collection" is active, so
+   * an all-library setup never pays the enumeration cost. Idempotent — safe to
+   * call on every entry to step 2.
+   */
+  function _syncScopePicker() {
+    const radios = document.querySelectorAll('input[name="scope"]');
+    const picker = $("coll-picker");
+    const apply = () => {
+      const checked = document.querySelector('input[name="scope"]:checked');
+      const isCollection = !!(checked && checked.value === "collection");
+      state.scopeMode = isCollection ? "collection" : "library";
+      if (picker) picker.hidden = !isCollection;
+      if (isCollection) {
+        populateCollections();
+      } else {
+        // Reverting to whole-library clears any stale collection pick so the
+        // confirm/summary and committed prefs stay consistent.
+        state.syncRootKey = "";
+        state.syncRootLabel = "";
+        $("coll-error").textContent = "";
+      }
+    };
+    radios.forEach((r) => {
+      if (r.dataset.wired === "1") return;
+      r.addEventListener("change", apply);
+      r.dataset.wired = "1";
+    });
+    apply();
+  }
+
   // ─── Step 2: collection list ──────────────────────────────────────────
 
   function _displayPath(collection) {
@@ -221,9 +253,9 @@ const WatchFolderSetup = (function () {
     return d;
   }
 
-  function populateCollections() {
+  function populateCollections(force) {
     const list = $("coll-list");
-    if (list.dataset.populated === "1") return;
+    if (!force && list.dataset.populated === "1") return;
 
     const libraryID = (typeof Zotero !== "undefined" && Zotero.Libraries)
       ? Zotero.Libraries.userLibraryID : 1;
@@ -246,12 +278,8 @@ const WatchFolderSetup = (function () {
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
 
-    if (usable.length === 0) {
-      $("coll-error").textContent =
-        "No collections found in your library. Create a collection in Zotero, then re-run setup.";
-      return;
-    }
-
+    // NB: no early "no collections" bail — the user can create one with the
+    // "＋ Create" control below even when the library has none yet.
     list.innerHTML = "";
     for (const u of usable) {
       const row = document.createElement("div");
@@ -278,6 +306,43 @@ const WatchFolderSetup = (function () {
       list.appendChild(row);
     }
     list.dataset.populated = "1";
+
+    // Reflect the currently-selected key (e.g. a just-created collection).
+    if (state.syncRootKey) {
+      const sel = list.querySelector(`.coll-row[data-key="${state.syncRootKey}"]`);
+      if (sel) sel.setAttribute("data-selected", "1");
+    }
+  }
+
+  /**
+   * Create a new collection in the user library from the "＋ Create" input, then
+   * re-render the list and select it. Runs in the wizard's chrome context, so it
+   * uses the live Zotero.Collection API (async saveTx).
+   */
+  async function createNewCollection() {
+    const input = $("new-coll-name");
+    const name = input && input.value ? input.value.trim() : "";
+    if (!name) {
+      $("coll-error").textContent = "Type a name for the new collection first.";
+      return;
+    }
+    try {
+      const libraryID = (typeof Zotero !== "undefined" && Zotero.Libraries)
+        ? Zotero.Libraries.userLibraryID : 1;
+      const coll = new Zotero.Collection();
+      coll.libraryID = libraryID;
+      coll.name = name;
+      await coll.saveTx();
+      // Select the new collection and re-render so it appears in the list.
+      state.syncRootLibraryID = libraryID;
+      state.syncRootKey = coll.key;
+      state.syncRootLabel = _displayPath(coll);
+      if (input) input.value = "";
+      $("coll-error").textContent = "";
+      populateCollections(true);
+    } catch (e) {
+      $("coll-error").textContent = `Could not create collection: ${e && e.message ? e.message : e}`;
+    }
   }
 
   // ─── Step 4: confirm + safety note ────────────────────────────────────
@@ -287,6 +352,22 @@ const WatchFolderSetup = (function () {
     if (mode === "mode2") return "Mode 2 — Mirror without delete";
     if (mode === "mode3") return "Mode 3 — Mirror with safe delete";
     return mode;
+  }
+
+  /**
+   * The CURRENT effective global sync mode, so the confirm step reflects the
+   * user's actual selection instead of a hardcoded "Import only". Sync mode is
+   * global (set once in Watch Folder settings); the folder-list model clamps a
+   * Mode-3 pref to Mode 2 (deletes deferred), so mirror the same clamp here to
+   * avoid promising safe-delete that won't run yet.
+   */
+  function _currentMode() {
+    try {
+      const m = (Zotero && Zotero.Prefs && Zotero.Prefs.get("extensions.zotero.watchFolder.mode", true)) || "mode1";
+      const multi = !!(Zotero && Zotero.Prefs && Zotero.Prefs.get("extensions.zotero.watchFolder.watchMappingsMulti", true) === true);
+      if (multi && m === "mode3") return "mode2";
+      return (m === "mode1" || m === "mode2" || m === "mode3") ? m : "mode1";
+    } catch (_e) { return "mode1"; }
   }
 
   function _modeSafetyText(mode) {
@@ -310,18 +391,23 @@ const WatchFolderSetup = (function () {
   }
 
   function renderConfirm() {
-    const checkedMode = document.querySelector('input[name="mode"]:checked');
-    state.mode = checkedMode ? checkedMode.value : state.mode;
-    const checkedStorage = document.querySelector('input[name="storage"]:checked');
-    state.storageStrategy = checkedStorage ? checkedStorage.value : state.storageStrategy;
     $("sum-folder").textContent = state.watchFolder || "—";
-    $("sum-coll").textContent = "Whole library";
-    $("sum-mode").textContent = _modeLabel(state.mode);
-    const storageEl = $("sum-storage");
-    if (storageEl) storageEl.textContent = _storageLabel(state.storageStrategy);
+    $("sum-coll").textContent = state.scopeMode === "collection"
+      ? (state.syncRootLabel || "(collection)")
+      : "Whole library";
+    // Sync mode + PDF storage are global (set once in Watch Folder settings), so
+    // the confirm step doesn't restate storage per folder — but it DOES reflect
+    // the current effective sync mode so the note matches the user's selection
+    // (e.g. "Mirror without delete" once they've switched off Import only).
+    const mode = _currentMode();
     const note = $("safety-note");
-    note.className = "safety-note " + state.mode;
-    note.textContent = _modeSafetyText(state.mode);
+    if (note) {
+      // CSS keys are m1 (green/safe) / m3 (red/danger); m2 falls through to the
+      // neutral base style. Matches the current effective mode.
+      const cls = mode === "mode1" ? "m1" : mode === "mode3" ? "m3" : "m2";
+      note.className = "safety-note " + cls;
+      note.textContent = `${_modeLabel(mode)}. ${_modeSafetyText(mode)} Sync mode and PDF storage are set once for all folders in Watch Folder settings.`;
+    }
   }
 
   // ─── Init ─────────────────────────────────────────────────────────────
@@ -332,6 +418,12 @@ const WatchFolderSetup = (function () {
     $("btn-next").addEventListener("click", next);
     $("btn-enable").addEventListener("click", enable);
     $("folder-browse").addEventListener("click", browseFolder);
+    const createBtn = $("new-coll-create");
+    if (createBtn) createBtn.addEventListener("click", () => { createNewCollection(); });
+    const nameInput = $("new-coll-name");
+    if (nameInput) nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); createNewCollection(); }
+    });
 
     // Close button on the title bar is a cancel too
     window.addEventListener("unload", () => {

@@ -512,3 +512,66 @@ describe('UT-311: notifier debounce + coalescing (WP-C #4)', () => {
     expect(mirrorExecutor.execute.mock.calls[0][0].type).toBe('createFolder');
   });
 });
+
+// ─── UT-310: multi-mapping routing + cross-mapping isolation ─────────────────
+//
+// With the folder-list model active (watchMappingsMulti), each collection event
+// must be attributed to its OWNING watch folder (nearest-ancestor), the emitted
+// action stamped with that mapping's id, and events on collections no folder
+// owns dropped. Uses the real mappings + mappingRouter (not mocked here).
+
+describe('UT-310: multi-mapping routing', () => {
+  const ROOT_A = { id: 100, key: 'ROOTA', name: 'InboxA', libraryID: 1, parentID: null };
+  const SUB_A = { id: 200, key: 'SUBA', name: 'MethodsA', libraryID: 1, parentID: 100 };
+  const ROOT_B = { id: 101, key: 'ROOTB', name: 'InboxB', libraryID: 1, parentID: null };
+  const SUB_B = { id: 201, key: 'SUBB', name: 'MethodsB', libraryID: 1, parentID: 101 };
+  const ORPHAN = { id: 300, key: 'ORPH', name: 'Orphan', libraryID: 1, parentID: null };
+
+  const MAPPINGS = [
+    { id: 'mapa', sourcePath: '/watch/A', scopeMode: 'collection', syncRootCollectionKey: 'ROOTA', syncRootLibraryID: 1, mode: 'mode2', pdfStorageStrategy: 'stored' },
+    { id: 'mapb', sourcePath: '/watch/B', scopeMode: 'collection', syncRootCollectionKey: 'ROOTB', syncRootLibraryID: 1, mode: 'mode2', pdfStorageStrategy: 'stored' },
+  ];
+
+  function multiPrefs() {
+    prefStubs({ watchMappingsMulti: true, watchMappings: JSON.stringify(MAPPINGS) });
+  }
+
+  it('stamps the owning mappingId on the emitted action (folder A → mapa)', async () => {
+    makeCollectionRegistry([ROOT_A, SUB_A, ROOT_B, SUB_B, ORPHAN]);
+    multiPrefs();
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+
+    await getObs().notify('add', 'collection', [SUB_A.id], {});
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    const action = mirrorExecutor.execute.mock.calls[0][0];
+    expect(action.type).toBe('createFolder');
+    expect(action.payload.collectionKey).toBe('SUBA');
+    expect(action.payload.relativePath).toBe('MethodsA');
+    expect(action.payload.mappingId).toBe('mapa');
+  });
+
+  it('routes a folder-B collection to mapb (isolation — different owner)', async () => {
+    makeCollectionRegistry([ROOT_A, SUB_A, ROOT_B, SUB_B, ORPHAN]);
+    multiPrefs();
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+
+    await getObs().notify('add', 'collection', [SUB_B.id], {});
+
+    expect(mirrorExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mirrorExecutor.execute.mock.calls[0][0].payload.mappingId).toBe('mapb');
+  });
+
+  it('drops events on a collection no watch folder owns', async () => {
+    makeCollectionRegistry([ROOT_A, SUB_A, ROOT_B, SUB_B, ORPHAN]);
+    multiPrefs();
+    const getObs = captureObserverID();
+    start(makeCoordinator(makeStore()));
+
+    await getObs().notify('add', 'collection', [ORPHAN.id], {});
+
+    expect(mirrorExecutor.execute).not.toHaveBeenCalled();
+  });
+});
