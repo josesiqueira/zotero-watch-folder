@@ -40,6 +40,8 @@ import * as mirrorExecutor from './mirrorExecutor.mjs';
 import { handleCollectionItemEvent } from './itemMembershipHandler.mjs';
 import * as baseline from './baseline.mjs';
 import { getPref } from './utils.mjs';
+import { isMultiMappingActive, getMappingById } from './mappings.mjs';
+import { mappingForCollection } from './mappingRouter.mjs';
 
 /**
  * @typedef {Object} MirrorAction
@@ -270,7 +272,26 @@ async function _processBatch(batch) {
   }
 }
 
+/**
+ * Owning-mapping context for a collection event.
+ *
+ * Multi-mapping (real installs): return the mapping that owns this collection
+ * via the nearest-ancestor rule, or `null` when no watch folder covers it.
+ * Legacy single-root (multi off — exercised only by the pre-folder-list tests):
+ * return `null`, which routes every ctx-consumer through the global scalar
+ * prefs, exactly as before. The caller distinguishes "legacy null" from
+ * "multi no-owner" via `isMultiMappingActive()`.
+ *
+ * @param {object} collection
+ * @returns {import('./mappings.mjs').MappingContext|null}
+ */
+function _ownerCtx(collection) {
+  if (!isMultiMappingActive()) return null;
+  return mappingForCollection(collection);
+}
+
 async function _dispatchCollection(event, ids, extraData) {
+  const multi = isMultiMappingActive();
   for (const id of ids) {
     try {
       if (event === 'delete' || event === 'trash') {
@@ -281,17 +302,22 @@ async function _dispatchCollection(event, ids, extraData) {
       if (!collection) continue;
       if (isSpecialCollection(collection)) continue;
 
+      // Multi-mapping: attribute the event to its owning watch folder; skip if
+      // none watches it. Legacy single-root uses global scope resolution (ctx null).
+      const ctx = _ownerCtx(collection);
+      if (multi && !ctx) continue;
+
       // Disk-domain variant: sanitizes each segment (FS-1) so the emitted
       // createFolder/moveFolder paths — and the localPath stored from them —
       // match the sanitized folders baseline creates and round-trip on
       // Windows-reserved/illegal collection names. Passes '' / null through.
-      const relPath = await collectionKeyToDiskRelativePath(collection.key);
+      const relPath = await collectionKeyToDiskRelativePath(collection.key, ctx);
       if (relPath === null) continue; // not under sync root
 
       if (event === 'add') {
-        await _handleAdd(collection, relPath);
+        await _handleAdd(collection, relPath, ctx);
       } else if (event === 'modify') {
-        await _handleModify(collection, relPath);
+        await _handleModify(collection, relPath, ctx);
       }
     } catch (e) {
       Zotero.logError(`[WatchFolder] collectionWatcher dispatch ${event}/${id}: ${e?.message ?? e}`);
@@ -299,7 +325,7 @@ async function _dispatchCollection(event, ids, extraData) {
   }
 }
 
-async function _handleAdd(collection, relPath) {
+async function _handleAdd(collection, relPath, ctx) {
   // Empty relPath means the sync root itself was "added" — that would only
   // fire if the user just created the sync-root collection during this
   // session (i.e., the prefs picker just made it). Nothing to mkdir for the
@@ -310,7 +336,7 @@ async function _handleAdd(collection, relPath) {
   // adopt-into-scope baseline so existing attachments get copied to disk
   // — not just an empty mkdir (review finding A4).
   if (_collectionHasContent(collection)) {
-    await _adoptIntoScope(collection);
+    await _adoptIntoScope(collection, ctx);
     return;
   }
   await _emit({
@@ -320,6 +346,7 @@ async function _handleAdd(collection, relPath) {
       parentCollectionKey: _parentKeyOf(collection),
       relativePath: relPath,
       name: collection.name,
+      mappingId: ctx ? ctx.id : undefined,
     },
   });
 }
@@ -337,7 +364,7 @@ function _collectionHasContent(collection) {
   } catch (_e) { return false; }
 }
 
-async function _handleModify(collection, currentRelPath) {
+async function _handleModify(collection, currentRelPath, ctx) {
   // A modify event covers any of: rename, reparent, description change,
   // sort-key change, etc. We only care if the rendered relative path
   // changed. If it did, emit a single moveFolder action; the executor
@@ -351,7 +378,7 @@ async function _handleModify(collection, currentRelPath) {
     // mkdir the folders + copy any existing attachment files so the
     // local view matches Zotero (review finding A4).
     if (currentRelPath === '') return;
-    await _adoptIntoScope(collection);
+    await _adoptIntoScope(collection, ctx);
     return;
   }
   if (record.localPath === currentRelPath) return; // no-op modify
@@ -364,6 +391,7 @@ async function _handleModify(collection, currentRelPath) {
       newRelativePath: currentRelPath,
       newName: collection.name,
       newParentCollectionKey: _parentKeyOf(collection),
+      mappingId: ctx ? ctx.id : undefined,
     },
   });
 }
@@ -375,6 +403,14 @@ async function _handleDelete(id, extraData) {
   if (!key || !_store) return;
   const record = _store.getCollectionRecord(key);
   if (!record) return; // never tracked → not under sync root → ignore
+  // Multi-mapping: the tracking record carries the owning mapping id (the
+  // collection is gone, so we can't walk ancestors). Resolve it; skip if the
+  // owner no longer exists. Legacy single-root: ctx null → global fallback.
+  let ctx = null;
+  if (isMultiMappingActive()) {
+    ctx = record.mappingId ? getMappingById(record.mappingId) : null;
+    if (!ctx) return;
+  }
   // Zotero-side deletion → trash the LOCAL folder (zoteroCollectionDeleted).
   // Distinct from localFolderDeleted (disk-side), which propagates to Zotero.
   await _emit({
@@ -382,6 +418,7 @@ async function _handleDelete(id, extraData) {
     payload: {
       collectionKey: key,
       oldRelativePath: record.localPath,
+      mappingId: ctx ? ctx.id : undefined,
     },
   });
 }
@@ -393,16 +430,16 @@ async function _handleDelete(id, extraData) {
  * `baseline.adoptCollectionSubtree` so behavior matches the install-
  * time B.2 + B.6 path.
  */
-async function _adoptIntoScope(collection) {
+async function _adoptIntoScope(collection, ctx) {
   if (!_store) return;
   let syncRoot;
-  try { syncRoot = await resolveSyncRoot(); }
+  try { syncRoot = await resolveSyncRoot(ctx); }
   catch (e) {
     Zotero.logError(`[WatchFolder] collectionWatcher adopt: ${e?.message ?? e}`);
     return;
   }
   if (!syncRoot) return;
-  const watchRoot = getPref('sourcePath');
+  const watchRoot = (ctx && ctx.sourcePath) || getPref('sourcePath');
   if (!watchRoot) return;
   try {
     const result = await baseline.adoptCollectionSubtree({
@@ -410,6 +447,7 @@ async function _adoptIntoScope(collection) {
       syncRoot,
       watchRoot,
       store: _store,
+      ctx: ctx || undefined,
     });
     Zotero.debug(`[WatchFolder] collectionWatcher: adopted ${collection.key} into scope (copies=${result.copies} mkdirs=${result.mkdirs} errors=${result.errors})`);
   } catch (e) {
