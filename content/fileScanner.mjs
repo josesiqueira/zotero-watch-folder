@@ -254,6 +254,142 @@ export async function scanFolderRecursive(folderPath, maxDepth = 10, _rootPath =
 }
 
 /**
+ * Cached, incremental tree walk (the "Option 1" scan optimization).
+ *
+ * Produces the SAME complete view as {@link scanFolderRecursive} — every
+ * allowed file under `rootPath`, with symlinks and reserved dirs skipped —
+ * PLUS the set of every subdirectory (absolute paths, matching
+ * `watchFolder._listSubdirectories` semantics), in ONE walk. The win: it
+ * skips the expensive `getChildren()` + per-file `stat()` for any directory
+ * whose mtime is unchanged since the previous walk.
+ *
+ * Why mtime is the right signal: a directory's mtime bumps on any DIRECT
+ * child add / remove / rename, so every STRUCTURAL change (a new file, a
+ * deleted file, a rename) forces that directory to be re-enumerated — which
+ * is exactly what import detection AND external-deletion detection rely on.
+ * The returned `files` are therefore always the COMPLETE current on-disk set
+ * (fresh entries for changed dirs + cached entries for unchanged ones), so
+ * deletion detection stays correct. Pure in-place CONTENT edits do NOT bump a
+ * dir's mtime and are intentionally not re-observed here: path-based tracking
+ * skips already-imported files, and the delete-safety gates re-hash the file
+ * DIRECTLY (they never trust scan metadata), so a stale cached size/mtime for
+ * an edited-in-place file is harmless.
+ *
+ * The walk still descends into EVERY directory (one `stat()` per dir to read
+ * its mtime), so a change nested below an unchanged parent is still detected —
+ * only the per-file work of unchanged dirs is elided.
+ *
+ * Fail-safe under unreliable filesystems: if a cloud client ever fails to bump
+ * a dir mtime on a change, a stale cache entry can only cause an UNDER-report
+ * (a new file seen late / a deletion not seen) — never a spurious deletion.
+ * Callers MUST still run a periodic FULL SWEEP (clear the cache map, then call
+ * again) as the backstop that bounds that latency.
+ *
+ * The classification of each child (symlink skip, reserved-dir skip, allowed
+ * file type, result shape) MUST stay in lock-step with {@link scanFolderRecursive}.
+ *
+ * @param {string} rootPath - Top-level watch root to walk.
+ * @param {Map<string, {mtime: number, files: Array, subdirs: string[]}>|null} [cache]
+ *   Per-watch-root cache keyed by absolute directory path. Pass `null` to force
+ *   a full, uncached walk (identical output to `scanFolderRecursive` + dirs).
+ *   Clearing the map before a call forces a full sweep.
+ * @param {number} [maxDepth=10] - Max recursion depth (matches scanFolderRecursive).
+ * @returns {Promise<{files: Array<{path: string, mtime: number, size: number, isSymlink: boolean, relativePath: string}>, dirs: string[]}>}
+ */
+export async function scanTree(rootPath, cache = null, maxDepth = 10) {
+    const files = [];
+    const dirs = [];
+    await _walkTreeCached(rootPath, rootPath, maxDepth, cache, files, dirs);
+    return { files, dirs };
+}
+
+/**
+ * Recursive worker for {@link scanTree}. Accumulates into `filesOut`/`dirsOut`.
+ * @private
+ */
+async function _walkTreeCached(dirPath, rootPath, maxDepth, cache, filesOut, dirsOut) {
+    if (!dirPath || maxDepth < 0) return;
+
+    let dirInfo;
+    try {
+        const exists = await IOUtils.exists(dirPath);
+        if (!exists) {
+            // Vanished dir: forget any stale snapshot so recovery is a clean walk.
+            if (cache) cache.delete(dirPath);
+            return;
+        }
+        dirInfo = await IOUtils.stat(dirPath);
+        if (dirInfo.type !== 'directory') {
+            if (cache) cache.delete(dirPath);
+            return;
+        }
+    } catch (e) {
+        Zotero.debug(`[Watch Folder] scanTree: stat failed for ${dirPath}: ${e && e.message ? e.message : e}`);
+        return;
+    }
+
+    const cached = cache ? cache.get(dirPath) : null;
+    let entryFiles;
+    let entrySubdirs;
+
+    if (cached && cached.mtime === dirInfo.lastModified) {
+        // Unchanged directory — reuse the last enumeration verbatim. Its direct
+        // children (names) cannot have changed since the mtime is identical, so
+        // there is nothing new to stat here.
+        entryFiles = cached.files;
+        entrySubdirs = cached.subdirs;
+    } else {
+        // New or structurally-changed directory — re-enumerate its children.
+        // NOTE: keep this classification in sync with scanFolderRecursive.
+        entryFiles = [];
+        entrySubdirs = [];
+        let children;
+        try {
+            children = await IOUtils.getChildren(dirPath);
+        } catch (e) {
+            Zotero.debug(`[Watch Folder] scanTree: getChildren failed for ${dirPath}: ${e && e.message ? e.message : e}`);
+            children = [];
+        }
+        for (const childPath of children) {
+            try {
+                // Never follow symlinks (see scanFolderRecursive: a symlink could
+                // redirect the walk outside the watch root).
+                if (_isSymlink(childPath)) {
+                    continue;
+                }
+                const info = await IOUtils.stat(childPath);
+                if (info.type === 'directory') {
+                    const dirName = PathUtils.filename(childPath);
+                    if (SKIP_DIRNAMES.has(dirName)) {
+                        continue;
+                    }
+                    entrySubdirs.push(childPath);
+                } else if (isAllowedFileType(childPath)) {
+                    entryFiles.push({
+                        path: childPath,
+                        mtime: info.lastModified,
+                        size: info.size,
+                        isSymlink: false,
+                        relativePath: _relPath(childPath, rootPath) ?? '',
+                    });
+                }
+            } catch (fileError) {
+                Zotero.debug(`[Watch Folder] scanTree: Error reading ${childPath}: ${fileError && fileError.message ? fileError.message : fileError}`);
+            }
+        }
+        if (cache) {
+            cache.set(dirPath, { mtime: dirInfo.lastModified, files: entryFiles, subdirs: entrySubdirs });
+        }
+    }
+
+    for (const f of entryFiles) filesOut.push(f);
+    for (const sub of entrySubdirs) {
+        dirsOut.push(sub);
+        await _walkTreeCached(sub, rootPath, maxDepth - 1, cache, filesOut, dirsOut);
+    }
+}
+
+/**
  * Check if a file is stable (not being written to)
  * Checks size twice with 1 second delay
  * @param {string} filePath - File to check
