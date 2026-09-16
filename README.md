@@ -9,13 +9,13 @@
 
 <div align=center><img src="./docs/res/teaser.png" width="820px" alt="Zotero Watch Folder — drop a PDF in a folder, it lands in Zotero"></img></div>
 
-**A watch folder for Zotero 7, 8, and 9.** Drop a PDF into a folder on your computer, and it shows up in Zotero a few seconds later, with its metadata filled in and a tidy filename. No dragging, no clicking, no manual import.
+**A watch folder for Zotero 7 to 10.** Drop a PDF into a folder on your computer, and it shows up in Zotero a few seconds later, with its metadata filled in and a tidy filename. No dragging, no clicking, no manual import.
 
 Point the plugin at a folder, pick the Zotero collection it belongs to, and you're done. If you like, it can also keep your folders and your Zotero collections mirrored — so the way you organise things on disk and the way you organise them in Zotero stay in step.
 
 **[Open the user guide →](https://josesiqueira.github.io/zotero-watch-folder/)** — a friendly walkthrough, a full settings reference, and answers to common questions. The same guide ships inside the plugin and opens from the settings pane.
 
-Works with **Zotero 7, 8, and 9**. Live-verified on the latest Zotero 9.
+Works with **Zotero 7 to 10**. Live-verified on Zotero 9 and 10.
 
 ## Outline
 

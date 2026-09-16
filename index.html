@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="google-site-verification" content="XP_ZFaIuLnJqQitqvEoixcqMnlcwW0aneb-vtvPbM4g" />
 <title>Zotero Watch Folder: auto-import PDFs on Zotero 7, 8 &amp; 9</title>
-<meta name="description" content="The Zotero 7/8/9 watch-folder plugin (a.k.a. watchfolder): watch a folder, auto-import new PDFs into the right collection, fetch metadata, rename files, mirror your collection tree to disk, and safely two-way-sync deletes with a recoverable trash.">
+<meta name="description" content="The Zotero 7 to 10 watch-folder plugin (a.k.a. watchfolder): watch a folder, auto-import new PDFs into the right collection, fetch metadata, rename files, mirror your collection tree to disk, and safely two-way-sync deletes with a recoverable trash.">
 <link rel="canonical" href="https://josesiqueira.github.io/zotero-watch-folder/">
 
 <!-- Open Graph / Twitter cards — rich link previews on Reddit, the Zotero
@@ -13,7 +13,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Zotero Watch Folder">
 <meta property="og:title" content="Zotero Watch Folder — drop a PDF, it lands in Zotero">
-<meta property="og:description" content="The Zotero 7/8/9 watch-folder plugin: drop a PDF in a folder and it auto-imports into Zotero with metadata, dedup, smart rules, and optional two-way collection sync with safe delete.">
+<meta property="og:description" content="The Zotero 7 to 10 watch-folder plugin: drop a PDF in a folder and it auto-imports into Zotero with metadata, dedup, smart rules, and optional two-way collection sync with safe delete.">
 <meta property="og:url" content="https://josesiqueira.github.io/zotero-watch-folder/">
 <meta property="og:image" content="https://josesiqueira.github.io/zotero-watch-folder/docs/res/social-card.png">
 <meta property="og:image:width" content="1280">
@@ -21,7 +21,7 @@
 <meta property="og:image:alt" content="Zotero Watch Folder settings open over a Zotero library">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Zotero Watch Folder — drop a PDF, it lands in Zotero">
-<meta name="twitter:description" content="The Zotero 7/8/9 watch-folder plugin: drop a PDF in a folder and it auto-imports into Zotero with metadata, dedup, and optional two-way collection sync.">
+<meta name="twitter:description" content="The Zotero 7 to 10 watch-folder plugin: drop a PDF in a folder and it auto-imports into Zotero with metadata, dedup, and optional two-way collection sync.">
 <meta name="twitter:image" content="https://josesiqueira.github.io/zotero-watch-folder/docs/res/social-card.png">
 
 <style>
@@ -410,9 +410,9 @@ footer .fine {
   "name": "Zotero Watch Folder",
   "alternateName": "Zotero watch folder plugin",
   "applicationCategory": "Utilities",
-  "operatingSystem": "Zotero 7, 8, and 9 (Windows, macOS, Linux)",
+  "operatingSystem": "Zotero 7 to 10 (Windows, macOS, Linux)",
   "softwareVersion": "2.8.5",
-  "description": "A watch folder for Zotero 7, 8, and 9: drop a PDF into a folder and it auto-imports into your Zotero library with metadata retrieval, content-hash dedup, smart rules, template renaming, and optional two-way collection-to-disk mirroring with guarded, recoverable deletes.",
+  "description": "A watch folder for Zotero 7 to 10: drop a PDF into a folder and it auto-imports into your Zotero library with metadata retrieval, content-hash dedup, smart rules, template renaming, and optional two-way collection-to-disk mirroring with guarded, recoverable deletes.",
   "url": "https://josesiqueira.github.io/zotero-watch-folder/",
   "downloadUrl": "https://github.com/josesiqueira/zotero-watch-folder/releases/latest",
   "sameAs": "https://github.com/josesiqueira/zotero-watch-folder",
@@ -460,7 +460,7 @@ footer .fine {
       <h1>Your <em>Zotero watch folder.</em></h1>
       <p class="lede">
         <b>Drop a PDF, it lands where it belongs.</b> A watch folder for
-        <b>Zotero 7, 8, and 9</b> that imports new files into the right
+        <b>Zotero 7 to 10</b> that imports new files into the right
         collection, <b>fetches metadata</b>, <b>renames</b> them from a
         template, and keeps your collection tree <b>mirrored to disk</b>,
         both ways, with a recoverable trash and conflict gate so nothing
@@ -946,7 +946,7 @@ footer .fine {
     <div class="faq">
       <details>
         <summary>Is this a ZotFile or Mendeley watch-folder alternative?</summary>
-        <p>Effectively, yes. ZotFile's folder-monitoring was always limited and ZotFile is not maintained for Zotero 7+; Mendeley's old "watch folder" has no Zotero equivalent built in. Zotero Watch Folder fills that gap on Zotero 7, 8, and 9: point it at a folder and new PDFs import automatically, with metadata, dedup, renaming, and an optional collection-to-disk mirror. It is an active, open-source plugin rather than a stalled fork.</p>
+        <p>Effectively, yes. ZotFile's folder-monitoring was always limited and ZotFile is not maintained for Zotero 7+; Mendeley's old "watch folder" has no Zotero equivalent built in. Zotero Watch Folder fills that gap on Zotero 7 to 10: point it at a folder and new PDFs import automatically, with metadata, dedup, renaming, and an optional collection-to-disk mirror. It is an active, open-source plugin rather than a stalled fork.</p>
       </details>
       <details>
         <summary>Can Zotero auto-import PDFs from a folder automatically?</summary>
@@ -974,7 +974,7 @@ footer .fine {
       </details>
       <details>
         <summary>Can I run it on Zotero 7, 8, or 9?</summary>
-        <p>Yes to all three. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 9.*</code>, so it installs on Zotero 7, Zotero 8, and Zotero 9. Primary development target is Zotero 8, and it is live-verified on 9.0.4.</p>
+        <p>Yes to all three. The manifest declares <code>strict_min_version: 6.999</code> and <code>strict_max_version: 10.*</code>, so it installs on Zotero 7 through Zotero 10. Primary development target is Zotero 8, and it is live-verified on 9.0.4.</p>
       </details>
       <details>
         <summary>Where do my PDFs actually live — Zotero or my folder?</summary>

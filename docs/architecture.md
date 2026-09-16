@@ -421,7 +421,8 @@ The plugin is a **bootstrapped Zotero add-on** — a `.xpi` (zip) holding `manif
 |---|---|---|
 | 7 | Firefox 115 | Compatible |
 | 8 | Firefox 140 | Primary development target |
-| 9 | Firefox 140+ | Compatible per manifest (`strict_max_version: 9.*`); live-verified on 9.0.4 |
+| 9 | Firefox 140+ | Compatible per manifest (`strict_max_version: 10.*`); live-verified on 9.0.4 |
+| 10 | Firefox 140 | Compatible per manifest (`strict_max_version: 10.*`); Zotero 10 shares the Firefox 140 base with 9 |
 
 ### Platform rules (Firefox-140 era)
 
