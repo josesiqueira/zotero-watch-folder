@@ -1093,6 +1093,32 @@ describe('UT-419: _deleteFolder Mode 3 routes through plugin trash', () => {
     expect(IOUtils.move).not.toHaveBeenCalled();
     expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
   });
+
+  it('multi active CLAMPS a mode3 pref to warn-only (no delete in the folder-list model)', async () => {
+    // Safety-critical: the executor reads the CLAMPED effectiveGlobalMode, not
+    // the raw pref. With multi active a stale/explicit mode3 must NOT delete —
+    // it degrades to Mode-2 warn-only until Stage B lands the delete guards.
+    getPref.mockImplementation((key) => {
+      if (key === 'sourcePath') return '/watch';
+      if (key === 'mode') return 'mode3';
+      if (key === 'watchMappingsMulti') return true;
+      return undefined;
+    });
+    const store = await makeStore();
+    store.add(createCollectionRecord({
+      localPath: 'Methods', zoteroCollectionKey: 'SUB1', state: STATE.CLEAN,
+    }));
+    init({ trackingStore: store });
+
+    const result = await execute({
+      type: 'deleteFolder',
+      payload: { collectionKey: 'SUB1', oldRelativePath: 'Methods' },
+    });
+
+    expect(result.reason).toBe('warn-only-mode2'); // clamped, not deleted
+    expect(IOUtils.move).not.toHaveBeenCalled();
+    expect(store.getCollectionRecord('SUB1').state).toBe(STATE.OUT_OF_SCOPE_SUPPRESSED);
+  });
 });
 
 // ─── UT-420 (Track C — bulk-delete protection) ──────────────────────────────
