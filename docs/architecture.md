@@ -17,7 +17,7 @@ A visual map of Zotero Watch Folder: the layers, the two independent dials (sync
 7. [Module map](#7-module-map)
 8. [Safety gates & invariants](#8-safety-gates--invariants)
 9. [The tracking store](#9-the-tracking-store)
-10. [Platform reference (Zotero 7/8/9)](#10-platform-reference-zotero-789)
+10. [Platform reference](#10-platform-reference)
 
 ---
 
@@ -413,7 +413,7 @@ flowchart LR
 
 ---
 
-## 10. Platform reference (Zotero 7/8/9)
+## 10. Platform reference
 
 The plugin is a **bootstrapped Zotero add-on** — a `.xpi` (zip) holding `manifest.json`, `bootstrap.js`, `prefs.js`, `content/`, and `locale/<lang>/*.ftl`. `bootstrap.js` registers chrome, seeds default prefs in code (the root `prefs.js` is *not* auto-loaded), loads the esbuild bundle, and calls `Zotero.WatchFolder.hooks.*` on lifecycle events.
 
