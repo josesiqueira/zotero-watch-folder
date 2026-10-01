@@ -1,6 +1,5 @@
 # Zotero Watch Folder
 
-[![Zotero 7+](https://img.shields.io/badge/Zotero-7%2B-CC2936?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Latest release](https://img.shields.io/github/v/release/josesiqueira/zotero-watch-folder?style=flat-square&logo=github&label=release)](https://github.com/josesiqueira/zotero-watch-folder/releases/latest)
 [![Downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/josesiqueira/zotero-watch-folder/main/.github/badges/downloads.json&style=flat-square&logo=github)](https://github.com/josesiqueira/zotero-watch-folder/releases)
 [![License: GPL v3](https://img.shields.io/github/license/josesiqueira/zotero-watch-folder?style=flat-square)](LICENSE)
@@ -14,8 +13,6 @@
 Point the plugin at a folder, pick the Zotero collection it belongs to, and you're done. If you like, it can also keep your folders and your Zotero collections mirrored — so the way you organise things on disk and the way you organise them in Zotero stay in step.
 
 **[Open the user guide →](https://josesiqueira.github.io/zotero-watch-folder/)** — a friendly walkthrough, a full settings reference, and answers to common questions. The same guide ships inside the plugin and opens from the settings pane.
-
-Works with **Zotero 7 and later**. The exact range each release supports is declared in `manifest.json` (`strict_max_version`); when a new Zotero major ships, the ceiling is raised through `update.json`, so installed copies stay enabled without a reinstall.
 
 ## Outline
 
