@@ -1,6 +1,6 @@
 {
   "name": "zotero-watch-folder",
-  "version": "2.8.5",
+  "version": "2.8.6",
   "description": "Zotero plugin for automatic PDF import from watched folders",
   "author": "Jose Siqueira",
   "license": "GPL-3.0-only",
