@@ -35,6 +35,13 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   // The pref-pane / wizard surfaces the opt-in switch to whole-library mode.
   _migrateScopeModeForExistingInstall();
 
+  // v2.9 migration: fold the existing single-folder config into a one-element
+  // `watchMappings` array (id "legacy"). MUST run AFTER the scopeMode migration
+  // above so the pinned scope is copied, not the raw default. Fail-closed: any
+  // error leaves watchMappings empty so the runtime keeps using the legacy
+  // scalars (never a half-built multi-mapping state on a delete-capable plugin).
+  _migrateToWatchMappings();
+
   // Load the esbuild bundle into the Zotero global scope.
   // rootURI already ends with "/", so do NOT add another slash.
   const ctx = { rootURI };
@@ -161,6 +168,17 @@ function _initDefaultPrefs() {
   // Performance
   _set("adaptivePolling",        true);
   _set("maxConcurrentMetadata",  2);
+
+  // v2.9 multi-mapping — watch MULTIPLE folders, each mapped to its own target
+  // (a collection or a whole/group library) with its own mode + storage. All
+  // five keys are gated by `watchMappingsMulti`: while it is false the runtime
+  // synthesizes a SINGLE mapping from the legacy scalars above, so behavior is
+  // byte-identical to the single-root plugin. See content/mappings.mjs.
+  _set("watchMappings",                 "[]");   // JSON: [{id, sourcePath, scopeMode, syncRootCollectionKey, syncRootLibraryID, mode, pdfStorageStrategy}]
+  _set("watchMappingsMulti",            false);  // feature gate; false = legacy single-root path is authoritative
+  _set("baselineCompletedByMapping",    "{}");   // JSON: { [id]: baselineKey }        — per-mapping replacement for baselineCompletedForRoot
+  _set("watchRootFingerprintByMapping", "{}");   // JSON: { [id]: {count, namesHash} } — per-mapping replacement for watchRootTopLevelFingerprint
+  _set("mode3AckByMapping",             "{}");   // JSON: { [id]: true }               — per-mapping replacement for mode3LibraryDeleteAcknowledged
 }
 
 // ---------------------------------------------------------------------------
@@ -212,5 +230,90 @@ function _migrateScopeModeForExistingInstall() {
     // strictly safer than an accidental whole-library escalation.
     try { user = user || Services.prefs.getBranch(PREFIX); user.setCharPref("scopeMode", "collection"); } catch (_e) { /* */ }
     try { Zotero.logError(`[WatchFolder] v2.7 scopeMode migration error — pinned to 'collection' (fail-safe): ${e}`); } catch (_e) { /* */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v2.9 multi-mapping migration. Folds an existing single-folder install into a
+// one-element `watchMappings` array (id "legacy"), and seeds the per-mapping
+// state maps from the legacy scalars so an upgraded Mode-3 install does NOT
+// re-baseline or re-arm the whole-library-delete prompt. Idempotent (returns
+// once `watchMappings` has a user value) and FAIL-CLOSED (any error leaves
+// `watchMappings` empty → the runtime falls back to the legacy scalars via the
+// synthesized single mapping, i.e. today's exact behavior, never an escalated
+// one). The "legacy" id matches trackingStore's factory default so existing
+// …-tracking-v2.json records resolve to this mapping with no file rewrite.
+//
+// MUST run AFTER _migrateScopeModeForExistingInstall so the copied scopeMode is
+// the pinned value, not the raw new default.
+// ---------------------------------------------------------------------------
+function _migrateToWatchMappings() {
+  const PREFIX = "extensions.zotero.watchFolder.";
+  try {
+    const user = Services.prefs.getBranch(PREFIX);
+    // Already in the unified folder-list model → never resurrect the legacy
+    // single-root scalars. TWO independent signals, because they fail in
+    // different ways:
+    //   1. watchMappings has a user value (a configured, non-empty list).
+    //   2. watchMappingsMulti (the gate) is ON.
+    // Signal 2 is the durable one: when the user removes EVERY folder, the list
+    // is written as "[]" — which EQUALS the "[]" default, so Mozilla drops the
+    // user value from prefs.js on shutdown and signal 1 is false on the next
+    // launch. That used to re-fold the stale scalars into a phantom mapping
+    // (e.g. "no collection set / target missing"). The gate is a boolean whose
+    // user value `true` != the `false` default, so it persists across restart
+    // and correctly means "folder-list model active; empty list = watch nothing".
+    let gateOn = false;
+    try { gateOn = user.getBoolPref("watchMappingsMulti", false); } catch (_e) { gateOn = false; }
+    if (gateOn || user.prefHasUserValue("watchMappings")) {
+      try { user.setBoolPref("watchMappingsMulti", true); } catch (_e) { /* */ }
+      return;
+    }
+
+    // A configured install is signalled by a non-empty watch folder. A fresh
+    // install has none → leave watchMappings at its "[]" default (the setup
+    // wizard will append the first mapping).
+    const sourcePath = user.getCharPref("sourcePath", "") || "";
+    if (!sourcePath) return;
+
+    const mapping = {
+      id: "legacy",
+      sourcePath,
+      scopeMode: user.getCharPref("scopeMode", "library"),
+      syncRootCollectionKey: user.getCharPref("syncRootCollectionKey", "") || "",
+      syncRootLibraryID: user.getIntPref("syncRootLibraryID", 1),
+      mode: user.getCharPref("mode", "mode1"),
+      pdfStorageStrategy: user.getCharPref("pdfStorageStrategy", "stored"),
+    };
+    user.setCharPref("watchMappings", JSON.stringify([mapping]));
+
+    // Seed per-mapping state maps from the old scalars (blast-radius preserving).
+    const baselineDone = user.getCharPref("baselineCompletedForRoot", "") || "";
+    user.setCharPref("baselineCompletedByMapping",
+      JSON.stringify(baselineDone ? { legacy: baselineDone } : {}));
+
+    let fp = {};
+    try {
+      const raw = user.getCharPref("watchRootTopLevelFingerprint", "") || "";
+      if (raw) { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") fp = { legacy: parsed }; }
+    } catch (_e) { fp = {}; }
+    user.setCharPref("watchRootFingerprintByMapping", JSON.stringify(fp));
+
+    let ack = false;
+    try { ack = user.getBoolPref("mode3LibraryDeleteAcknowledged", false); } catch (_e) { ack = false; }
+    user.setCharPref("mode3AckByMapping", JSON.stringify(ack ? { legacy: true } : {}));
+
+    // v2.10: one unified folder-list model — a configured single-root install
+    // becomes watchMappings[legacy] with the gate ON, so "1 folder" is just the
+    // list with N=1 (import-only, like every folder). This is the safe direction
+    // (import-only never deletes); Mode 2/3 are placeholders until per-mapping
+    // mirror/delete lands.
+    user.setBoolPref("watchMappingsMulti", true);
+    try { Zotero.debug(`[WatchFolder] v2.10 migration: folded single-folder config into watchMappings[legacy] + enabled the unified folder-list model (scope=${mapping.scopeMode}).`); } catch (_e) { /* */ }
+  } catch (e) {
+    // FAIL-CLOSED: leave watchMappings empty. getActiveMappings() then
+    // synthesizes a single mapping from the legacy scalars, so the plugin keeps
+    // doing exactly what it did before — never a partially-migrated state.
+    try { Zotero.logError(`[WatchFolder] v2.9 watchMappings migration error — left unmigrated (fail-safe): ${e}`); } catch (_e) { /* */ }
   }
 }

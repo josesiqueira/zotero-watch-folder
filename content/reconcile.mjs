@@ -29,6 +29,7 @@ import {
 } from './canonicalPath.mjs';
 import { getTrackingStore, createCollectionRecord, STATE } from './trackingStore.mjs';
 import { isWatchRootAvailable, classifyMissingFile, MISSING_CLASSIFICATION } from './fileMissing.mjs';
+import { getActiveMappings, getMappingById, isMultiMappingActive, LEGACY_MAPPING_ID } from './mappings.mjs';
 
 /**
  * Collection-record states that are "dead" — not actively syncing. A dead
@@ -61,6 +62,8 @@ const FINDING = Object.freeze({
   STALE_COLLECTION: 'stale-collection-record',
   ORPHAN_TRACKING: 'orphan-tracking',
   UNTRACKED_FOLDER: 'untracked-folder',
+  SYNC_ROOT_TRASHED: 'sync-root-trashed',
+  STALE_TRACKING: 'stale-tracking',
 });
 
 // ─── Annotation / note counting (fail-OPEN to "has value" so high-value items
@@ -149,8 +152,30 @@ export async function detect() {
   const store = getTrackingStore();
   if (!store) return { ok: false, reason: 'no-store', findings: [] };
 
-  const syncRoot = await resolveSyncRoot().catch(() => null);
-  if (!syncRoot) return { ok: false, reason: 'no-sync-root', findings: [] };
+  // Multi-mapping: the single legacy sync root no longer describes the config
+  // (and may itself be trashed). Reconcile per active mapping + a stale-record
+  // sweep, independent of the legacy scalars. Gate is off in every existing
+  // single-root test, so the legacy path below is unchanged for them.
+  if (isMultiMappingActive()) {
+    return await _detectMulti(store);
+  }
+
+  // A trashed / missing target collection makes resolveSyncRoot THROW (vs. a
+  // null return for an unconfigured root). Surface it as an actionable finding
+  // instead of the old silent `no-sync-root` bail.
+  let syncRoot = null;
+  let syncRootErr = null;
+  try { syncRoot = await resolveSyncRoot(); } catch (e) { syncRootErr = e; }
+  if (!syncRoot) {
+    if (syncRootErr) {
+      const f = _syncRootTrashedFinding({
+        id: 'f0', watchRoot: getPref('sourcePath') || '',
+        mappingId: LEGACY_MAPPING_ID, message: syncRootErr.message,
+      });
+      return { ok: true, findings: [f], highValueCount: 0 };
+    }
+    return { ok: false, reason: 'no-sync-root', findings: [] };
+  }
 
   const watchRoot = getPref('sourcePath');
   if (!watchRoot) return { ok: false, reason: 'no-watch-root', findings: [] };
@@ -310,6 +335,113 @@ export async function detect() {
 function _finding(f) { return f; }
 
 /**
+ * Build a report-only finding for a mapping whose target collection is in the
+ * Trash or missing (import pauses fail-closed on it). No auto-repair — the fix
+ * is in Zotero (restore) or Watch Folder settings (pick a new target); the only
+ * action is a no-op acknowledge.
+ */
+function _syncRootTrashedFinding({ id, watchRoot, mappingId, message }) {
+  return _finding({
+    id,
+    type: FINDING.SYNC_ROOT_TRASHED,
+    severity: 'high',
+    title: 'Watch folder paused — its Zotero target is unavailable',
+    detail: `Imports from "${watchRoot}" are paused because the target collection is in Zotero’s Trash or `
+      + `missing${message ? ` (${message})` : ''}. Restore it from Zotero’s Bin, or pick a new target for this `
+      + `folder in Watch Folder settings.`,
+    path: '',
+    attachmentKey: null,
+    counts: { annotations: 0, notes: 0, unknown: false },
+    highValue: false,
+    actions: [
+      { id: 'skip', label: 'Leave as-is (fix in Zotero or settings)', recommended: true, destructive: false },
+    ],
+    defaultActionId: 'skip',
+    _payload: { mappingId, watchRoot },
+  });
+}
+
+/**
+ * Multi-mapping detection. Two passes, both READ-ONLY:
+ *  (A) each active mapping whose target can't be resolved → SYNC_ROOT_TRASHED
+ *      (report-only visibility of a paused folder);
+ *  (B) any file record whose Zotero item is CONFIRMED trashed (found +
+ *      `deleted===true`) → STALE_TRACKING. A stale record sits in the global
+ *      content-hash index and silently blocks the file from re-importing, so
+ *      dropping it (the repair) lets the file import again into its live target.
+ *
+ * Only "found + deleted" is flagged — a "not found" lookup (e.g. a group-library
+ * key checked against the wrong library) is left alone to avoid false-positive
+ * drops. The per-mapping shadow/orphan/stale-collection drift walk is NOT run in
+ * multi mode yet (documented follow-up); import-only multi doesn't create it.
+ */
+async function _detectMulti(store) {
+  const findings = [];
+  let seq = 0;
+  const userLib = Zotero?.Libraries?.userLibraryID;
+
+  for (const ctx of getActiveMappings()) {
+    if (!ctx || !ctx.sourcePath) continue;
+    try {
+      const sr = await resolveSyncRoot(ctx);
+      if (!sr) continue; // unconfigured target for this mapping → nothing to check
+    } catch (e) {
+      findings.push(_syncRootTrashedFinding({
+        id: `f${seq++}`, watchRoot: ctx.sourcePath, mappingId: ctx.id, message: e?.message,
+      }));
+    }
+  }
+
+  for (const r of (store.getAllOfType('file') || [])) {
+    const attKey = r.zoteroAttachmentKey;
+    if (!attKey) continue;
+    // Respect explicit user intent: a detached/suppressed/conflict-blocked record
+    // is already excluded from the hash index (so it isn't blocking re-import),
+    // and flagging it for drop → re-import would reverse that choice.
+    if (NON_SYNCING_FILE_STATES.has(r.state)) continue;
+    const mid = r.mappingId || LEGACY_MAPPING_ID;
+    const m = getMappingById(mid);
+    const libraryID = (m && m.syncRootLibraryID) || userLib;
+    let att = null;
+    try { att = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, attKey); } catch (_e) { att = null; }
+    if (!att || att.deleted !== true) continue; // only CONFIRMED trashed
+
+    const counts = countAnnotationsNotes(att);
+    const highValue = counts.unknown || (counts.annotations + counts.notes) > 0;
+    findings.push(_finding({
+      id: `f${seq++}`,
+      type: FINDING.STALE_TRACKING,
+      severity: highValue ? 'high' : 'medium',
+      title: 'Tracking entry points to a trashed Zotero item',
+      detail: `“${r.localPath}” is recorded as already imported, but that Zotero item is in the Trash — so the `
+        + `file won’t re-import. `
+        + (highValue
+          ? 'This trashed item has annotations/notes; restore it in Zotero rather than clearing, unless you’re sure.'
+          : 'Clear the stale entry so the file imports again into its current target.'),
+      path: r.localPath,
+      attachmentKey: attKey,
+      counts,
+      highValue,
+      actions: [
+        { id: 'drop', label: 'Clear the stale entry (file re-imports next scan)', recommended: !highValue, destructive: false },
+        { id: 'skip', label: 'Leave as-is', recommended: highValue, destructive: false },
+      ],
+      defaultActionId: highValue ? 'skip' : 'drop',
+      _payload: { mappingId: mid, localPath: r.localPath, attKey, libraryID },
+    }));
+  }
+
+  const sevRank = { high: 0, medium: 1, low: 2 };
+  findings.sort((a, b) => {
+    if (a.highValue !== b.highValue) return a.highValue ? -1 : 1;
+    const s = (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9);
+    if (s !== 0) return s;
+    return a.id.localeCompare(b.id);
+  });
+  return { ok: true, findings, highValueCount: findings.filter((f) => f.highValue).length };
+}
+
+/**
  * Apply the selected repair actions. `decisions` maps finding.id → actionId.
  * Only non-skip actions run. Returns a per-action summary.
  *
@@ -320,6 +452,13 @@ function _finding(f) { return f; }
 export async function applyRepairs(findings, decisions) {
   const store = getTrackingStore();
   if (!store) return { ok: false, reason: 'no-store', applied: 0, skipped: 0, failed: 0, results: [] };
+
+  // Multi-mapping repairs (SYNC_ROOT_TRASHED / STALE_TRACKING) don't depend on
+  // the single legacy watch root, so they route around the legacy guard below.
+  if (isMultiMappingActive()) {
+    return await _applyRepairsMulti(store, findings, decisions);
+  }
+
   const syncRoot = await resolveSyncRoot().catch(() => null);
   const libraryID = syncRoot?.libraryID ?? Zotero?.Libraries?.userLibraryID;
   const watchRoot = getPref('sourcePath');
@@ -349,8 +488,54 @@ export async function applyRepairs(findings, decisions) {
   return { ok: true, applied, skipped, failed, results };
 }
 
+/**
+ * Multi-mapping apply path. Handles the two multi findings; both are
+ * additive-safe (never delete a Zotero item or a disk file).
+ *  - SYNC_ROOT_TRASHED: report-only → any action is a no-op acknowledge.
+ *  - STALE_TRACKING: `drop` removes ONLY the stale tracking record, after
+ *    re-validating that the Zotero item is STILL trashed/missing (never drop a
+ *    record whose item came back to life during the review window).
+ */
+async function _applyRepairsMulti(store, findings, decisions) {
+  const userLib = Zotero?.Libraries?.userLibraryID;
+  let applied = 0, skipped = 0, failed = 0;
+  const results = [];
+  for (const f of (findings || [])) {
+    const action = (decisions && decisions[f.id]) || f.defaultActionId;
+    if (!action || action === 'skip' || f.type === FINDING.SYNC_ROOT_TRASHED) {
+      skipped++; results.push({ id: f.id, action: 'skip', ok: true }); continue;
+    }
+    try {
+      if (f.type === FINDING.STALE_TRACKING && action === 'drop') {
+        const { localPath, attKey, mappingId, libraryID } = f._payload || {};
+        let att = null;
+        try { att = await Zotero.Items.getByLibraryAndKeyAsync(libraryID ?? userLib, attKey); } catch (_e) { att = null; }
+        // Re-validate: only drop while the item is STILL trashed/missing.
+        if (att && att.deleted !== true) {
+          failed++; results.push({ id: f.id, action, ok: false, reason: 'state-changed: item is live again' });
+          continue;
+        }
+        store.remove(localPath, mappingId);
+        applied++; results.push({ id: f.id, action, ok: true });
+      } else {
+        failed++; results.push({ id: f.id, action, ok: false, reason: 'unsupported-in-multi' });
+      }
+    } catch (e) {
+      failed++;
+      results.push({ id: f.id, action, ok: false, reason: String(e?.message ?? e) });
+      try { Zotero.logError(`[WatchFolder] reconcile apply (multi) ${f.id}/${action}: ${e?.message ?? e}`); } catch (_e) { /* */ }
+    }
+  }
+  try { await store.save(); } catch (_e) { /* logged */ }
+  return { ok: true, applied, skipped, failed, results };
+}
+
 async function _applyOne(f, action, { store, libraryID, watchRoot }) {
   switch (f.type) {
+    case FINDING.SYNC_ROOT_TRASHED:
+      // Report-only in the legacy path too (its sole action is 'skip', so this
+      // is a defensive no-op the loop won't normally reach).
+      return { ok: true };
     case FINDING.SHADOW_ORPHANED: {
       if (action !== 'rehome') return { ok: false, reason: 'unknown-action' };
       const { attKey, survivingLocalPath, allSurvivingLocalPaths, folderRel, canonicalLocalPath } = f._payload;

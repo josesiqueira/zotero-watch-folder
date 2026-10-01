@@ -367,6 +367,20 @@ describe('UT-205: chooseCanonicalCollection', () => {
     const c = await chooseCanonicalCollection(item, root);
     expect(c.key).toBe('METHODS'); // virt is filtered out
   });
+
+  it('collection-mode candidacy is scoped by ctx, not the global sync root (regression: ctx threading through line-609)', async () => {
+    // Global sync root = ROOT1 (beforeEach). A per-mapping ctx whose sync root is
+    // the NESTED METHODS collection must judge candidacy against METHODS — an
+    // item's canonical must be chosen from the OWNING folder's scope, never the
+    // global one. Item is in DEEP (under METHODS) and IMPORTANT (under ROOT1 but
+    // NOT under METHODS). Pre-fix, IMPORTANT leaked in via the global scope and
+    // won rule-4 shortest-path; with ctx threaded, only DEEP qualifies.
+    const ctxB = { scopeMode: 'collection', syncRootCollectionKey: 'METHODS', syncRootLibraryID: 1 };
+    const methods = collections.find((c) => c.key === 'METHODS');
+    const item = makeItem([4, 3]); // DEEP + IMPORTANT
+    const c = await chooseCanonicalCollection(item, methods, {}, ctxB);
+    expect(c && c.key).toBe('DEEP');
+  });
 });
 
 // ─── UT-206 — path-traversal defense (security audit 2026-05-27) ──────────

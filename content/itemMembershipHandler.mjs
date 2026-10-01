@@ -40,6 +40,8 @@ import {
 import * as mirrorExecutor from './mirrorExecutor.mjs';
 import * as baseline from './baseline.mjs';
 import { getPref } from './utils.mjs';
+import { isMultiMappingActive } from './mappings.mjs';
+import { mappingForCollection } from './mappingRouter.mjs';
 
 /**
  * Handle a `collection-item` notifier event.
@@ -57,14 +59,21 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
   const store = coordinator?._trackingStore;
   if (!store) return;
 
-  let syncRoot;
-  try {
-    syncRoot = await resolveSyncRoot();
-  } catch (e) {
-    Zotero.logError(`[WatchFolder] itemMembershipHandler resolveSyncRoot: ${e?.message ?? e}`);
-    return;
+  const multi = isMultiMappingActive();
+  // Legacy single-root: resolve the one global sync root up front (byte-identical
+  // to the pre-folder-list behavior). Multi-folder: the owning mapping and its
+  // sync root are resolved PER COLLECTION below, since a single batch can span
+  // collections owned by different watch folders.
+  let globalSyncRoot = null;
+  if (!multi) {
+    try {
+      globalSyncRoot = await resolveSyncRoot();
+    } catch (e) {
+      Zotero.logError(`[WatchFolder] itemMembershipHandler resolveSyncRoot: ${e?.message ?? e}`);
+      return;
+    }
+    if (!globalSyncRoot) return;
   }
-  if (!syncRoot) return;
 
   // WP-C #4: group composite ids by collection so per-collection
   // resolution (collection lookup + collectionKeyToRelativePath +
@@ -89,11 +98,27 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
     } catch (_e) { continue; }
     if (!collection) continue;
 
+    // Owning mapping + its sync root for THIS collection. Multi-folder: skip
+    // collections no watch folder owns. Legacy: ctx null → global resolution.
+    let ctx = null;
+    let syncRoot = globalSyncRoot;
+    if (multi) {
+      ctx = mappingForCollection(collection);
+      if (!ctx) continue;
+      try {
+        syncRoot = await resolveSyncRoot(ctx);
+      } catch (e) {
+        Zotero.logError(`[WatchFolder] itemMembershipHandler resolveSyncRoot(${ctx.id}): ${e?.message ?? e}`);
+        continue;
+      }
+      if (!syncRoot) continue;
+    }
+
     // Sync-root scope gate — events on collections outside the configured
     // sync root are dropped. Resolved ONCE for the group.
     let collectionRelPath = null;
     try {
-      collectionRelPath = await collectionKeyToRelativePath(collection.key);
+      collectionRelPath = await collectionKeyToRelativePath(collection.key, ctx);
     } catch (e) {
       Zotero.logError(`[WatchFolder] itemMembershipHandler collectionKeyToRelativePath: ${e?.message ?? e}`);
       continue;
@@ -111,9 +136,9 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
         for (const attachmentKey of attachmentKeys) {
           const record = store.getByAttachmentKey(attachmentKey);
           if (event === 'add') {
-            await _handleAdd({ record, attachmentKey, collection, item, syncRoot, store });
+            await _handleAdd({ record, attachmentKey, collection, item, syncRoot, store, ctx });
           } else {
-            await _handleRemove({ record, attachmentKey, collection, item, syncRoot, store });
+            await _handleRemove({ record, attachmentKey, collection, item, syncRoot, store, ctx });
           }
         }
       } catch (e) {
@@ -125,7 +150,7 @@ export async function handleCollectionItemEvent(event, compositeIDs, extraData, 
 
 // ─── Event handlers ────────────────────────────────────────────────────────
 
-async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, store }) {
+async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, store, ctx }) {
   if (!record) {
     // Untracked attachment appeared in a sync-root collection.
     //
@@ -137,14 +162,16 @@ async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, s
     // create a FileRecord (spec risk #4). `copyAttachmentToCanonical` is
     // idempotent — it skips notes/links (no attachmentFilename), already-
     // tracked attachments, and files already present at the destination.
-    const baselineRoot = getPref('baselineCompletedForRoot');
-    const expectedKey = baseline.baselineKeyFor(syncRoot);
-    const baselineDone = !!baselineRoot && !!expectedKey && baselineRoot === expectedKey;
+    //
+    // Baseline-completion is per-mapping (isBaselineNeeded consults
+    // baselineCompletedByMapping for a real mapping, or the legacy scalar for
+    // single-root), so this is correct in both models.
+    const baselineDone = !(await baseline.isBaselineNeeded(ctx));
     if (!baselineDone) {
       Zotero.debug(`[WatchFolder] itemMembershipHandler: untracked attachment ${attachmentKey} added to ${collection.key} — deferring to baseline (not yet complete)`);
       return;
     }
-    const watchRoot = getPref('sourcePath');
+    const watchRoot = (ctx && ctx.sourcePath) || getPref('sourcePath');
     if (!watchRoot || !store) return;
     let attachment = null;
     try {
@@ -153,7 +180,7 @@ async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, s
     if (!attachment) return;
     try {
       const result = await baseline.copyAttachmentToCanonical({
-        attachment, item, syncRoot, watchRoot, store,
+        attachment, item, syncRoot, watchRoot, store, ctx: ctx || undefined,
       });
       Zotero.debug(`[WatchFolder] itemMembershipHandler: adopted untracked attachment ${attachmentKey} into sync root → ${result}`);
     } catch (e) {
@@ -164,12 +191,12 @@ async function _handleAdd({ record, attachmentKey, collection, item, syncRoot, s
   // Idempotent union update.
   await mirrorExecutor.execute({
     type: 'addItemMembership',
-    payload: { attachmentKey, collectionKey: collection.key },
+    payload: { attachmentKey, collectionKey: collection.key, mappingId: ctx ? ctx.id : undefined },
   });
-  await _recomputeCanonicalIfChanged({ record, item, syncRoot });
+  await _recomputeCanonicalIfChanged({ record, item, syncRoot, ctx });
 }
 
-async function _handleRemove({ record, attachmentKey, collection, item, syncRoot, store }) {
+async function _handleRemove({ record, attachmentKey, collection, item, syncRoot, store, ctx }) {
   if (!record) return;
   if (!(record.collectionMembershipKeys || []).includes(collection.key)) return;
 
@@ -198,7 +225,7 @@ async function _handleRemove({ record, attachmentKey, collection, item, syncRoot
 
   await mirrorExecutor.execute({
     type: 'removeItemMembership',
-    payload: { attachmentKey, collectionKey: collection.key },
+    payload: { attachmentKey, collectionKey: collection.key, mappingId: ctx ? ctx.id : undefined },
   });
 
   if (!wasCanonical) return;
@@ -213,16 +240,16 @@ async function _handleRemove({ record, attachmentKey, collection, item, syncRoot
   // resolves via the suppression UX). Library scope: no memberships means the
   // item is now Unfiled — still in scope — so fall through and recompute the
   // canonical (→ UNFILED → move the file to the watch-folder root).
-  if (noMemberships && getScopeMode() !== 'library') return;
-  await _recomputeCanonicalIfChanged({ record: updated, item, syncRoot });
+  if (noMemberships && getScopeMode(ctx) !== 'library') return;
+  await _recomputeCanonicalIfChanged({ record: updated, item, syncRoot, ctx });
 }
 
 // ─── Canonical recompute ───────────────────────────────────────────────────
 
-async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
+async function _recomputeCanonicalIfChanged({ record, item, syncRoot, ctx }) {
   const newCanonical = await chooseCanonicalCollection(item, syncRoot.collection, {
     existingTrackingRecord: record,
-  });
+  }, ctx);
   if (!newCanonical) return;
 
   // Library scope: chooseCanonicalCollection may return the UNFILED sentinel
@@ -242,7 +269,7 @@ async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
   // sanitized form baseline/collectionWatcher use, so a reparent into a
   // Windows-reserved/illegal collection name mirrors correctly. ('' / null
   // pass through, preserving the scope/no-op gates below.)
-  const newRelPath = isUnfiled ? '' : await collectionKeyToDiskRelativePath(newCanonicalCollectionKey);
+  const newRelPath = isUnfiled ? '' : await collectionKeyToDiskRelativePath(newCanonicalCollectionKey, ctx);
   if (newRelPath === null) return;
 
   // The filename is preserved across the canonical move — we only change
@@ -259,6 +286,7 @@ async function _recomputeCanonicalIfChanged({ record, item, syncRoot }) {
       oldCanonicalPath: record.canonicalLocalPath,
       newCanonicalPath: newCanonicalLocalPath,
       newCanonicalCollectionKey,
+      mappingId: ctx ? ctx.id : undefined,
     },
   });
 }

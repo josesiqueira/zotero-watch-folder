@@ -21,6 +21,7 @@ import {
   hasFileChanged,
   scanFolder,
   scanFolderRecursive,
+  scanTree,
   __test_setSymlinkDetector,
 } from '../../content/fileScanner.mjs';
 import { isSupportedFileType, filterSupportedFiles } from '../../content/fileImporter.mjs';
@@ -269,5 +270,193 @@ describe('UT-A2: scanner result shape (relativePath + isSymlink)', () => {
     // No entry for the symlink — its isSymlink is implicitly true but never observed.
     expect(files.find(f => f.path === '/watch/link.pdf')).toBeUndefined();
     __test_setSymlinkDetector(null);
+  });
+});
+
+// ─── UT-A3 — scanTree incremental cached walk (Option 1 scan optimization) ───
+//
+// scanTree returns the SAME complete file view as scanFolderRecursive PLUS the
+// subdir set, but skips getChildren()+per-file stat() for directories whose
+// mtime is unchanged. These tests pin: completeness, that unchanged dirs are
+// NOT re-enumerated, that structural changes (add/remove/nested) ARE picked up,
+// and that clearing the cache forces a full sweep.
+
+describe('UT-A3: scanTree incremental cached walk', () => {
+  /**
+   * Install an in-memory filesystem wired to IOUtils.
+   * @param {Map<string,{type:'dir'|'file', mtime:number, size?:number, children?:string[]}>} nodes
+   * @returns {import('vitest').Mock} the getChildren spy (to count enumerations)
+   */
+  function installFs(nodes) {
+    globalThis.IOUtils.exists = vi.fn(async (p) => nodes.has(p));
+    globalThis.IOUtils.stat = vi.fn(async (p) => {
+      const n = nodes.get(p);
+      if (!n) throw Object.assign(new Error('NotFound'), { name: 'NotFoundError' });
+      return n.type === 'dir'
+        ? { type: 'directory', size: 0, lastModified: n.mtime }
+        : { type: 'regular', size: n.size ?? 100, lastModified: n.mtime };
+    });
+    const gc = vi.fn(async (p) => {
+      const n = nodes.get(p);
+      return (n && n.children) ? [...n.children] : [];
+    });
+    globalThis.IOUtils.getChildren = gc;
+    return gc;
+  }
+
+  /** A small nested tree: /watch → a.pdf, sub/ → sub/b.pdf */
+  function baseTree() {
+    return new Map([
+      ['/watch', { type: 'dir', mtime: 1, children: ['/watch/a.pdf', '/watch/sub'] }],
+      ['/watch/a.pdf', { type: 'file', mtime: 1 }],
+      ['/watch/sub', { type: 'dir', mtime: 1, children: ['/watch/sub/b.pdf'] }],
+      ['/watch/sub/b.pdf', { type: 'file', mtime: 1 }],
+    ]);
+  }
+
+  beforeEach(() => {
+    __test_setSymlinkDetector(null);
+    globalThis.Zotero.Prefs.get = vi.fn(() => undefined); // isAllowedFileType → 'pdf'
+    globalThis.Zotero.debug = vi.fn();
+  });
+
+  it('returns the complete file list + subdir set (null cache = full walk)', async () => {
+    installFs(baseTree());
+    const { files, dirs } = await scanTree('/watch', null);
+
+    expect(files.map(f => f.path).sort()).toEqual(['/watch/a.pdf', '/watch/sub/b.pdf']);
+    expect(dirs).toEqual(['/watch/sub']);
+    // relativePath is anchored at the root.
+    expect(files.find(f => f.path === '/watch/sub/b.pdf').relativePath).toBe('sub/b.pdf');
+  });
+
+  it('skips getChildren() for unchanged dirs on the second walk, but returns the same files', async () => {
+    const nodes = baseTree();
+    const gc = installFs(nodes);
+    const cache = new Map();
+
+    const first = await scanTree('/watch', cache);
+    expect(first.files).toHaveLength(2);
+    expect(gc).toHaveBeenCalled(); // full enumeration first time
+
+    gc.mockClear();
+    const second = await scanTree('/watch', cache);
+    // Nothing changed → NO directory re-enumerated…
+    expect(gc).not.toHaveBeenCalled();
+    // …yet the complete file view is still returned from cache.
+    expect(second.files.map(f => f.path).sort()).toEqual(['/watch/a.pdf', '/watch/sub/b.pdf']);
+    expect(second.dirs).toEqual(['/watch/sub']);
+  });
+
+  it('re-enumerates a dir whose mtime bumped and picks up the new file', async () => {
+    const nodes = baseTree();
+    const gc = installFs(nodes);
+    const cache = new Map();
+    await scanTree('/watch', cache);
+
+    // Add a file at the root and bump /watch mtime (a real FS bumps dir mtime
+    // on child add).
+    nodes.set('/watch/c.pdf', { type: 'file', mtime: 2 });
+    nodes.get('/watch').children.push('/watch/c.pdf');
+    nodes.get('/watch').mtime = 2;
+
+    gc.mockClear();
+    const r = await scanTree('/watch', cache);
+    expect(gc).toHaveBeenCalledWith('/watch');      // changed dir re-enumerated
+    expect(gc).not.toHaveBeenCalledWith('/watch/sub'); // unchanged dir reused
+    expect(r.files.map(f => f.path)).toContain('/watch/c.pdf');
+  });
+
+  it('drops a deleted file when its parent dir mtime bumps (deletion detection stays correct)', async () => {
+    const nodes = baseTree();
+    installFs(nodes);
+    const cache = new Map();
+    await scanTree('/watch', cache);
+
+    // Delete /watch/a.pdf and bump the parent mtime.
+    nodes.delete('/watch/a.pdf');
+    nodes.get('/watch').children = ['/watch/sub'];
+    nodes.get('/watch').mtime = 2;
+
+    const r = await scanTree('/watch', cache);
+    expect(r.files.map(f => f.path)).toEqual(['/watch/sub/b.pdf']);
+  });
+
+  it('detects a change nested under an UNCHANGED parent (recursion always descends)', async () => {
+    const nodes = baseTree();
+    const gc = installFs(nodes);
+    const cache = new Map();
+    await scanTree('/watch', cache);
+
+    // Parent /watch unchanged; only the child /watch/sub changes.
+    nodes.set('/watch/sub/d.pdf', { type: 'file', mtime: 2 });
+    nodes.get('/watch/sub').children.push('/watch/sub/d.pdf');
+    nodes.get('/watch/sub').mtime = 2;
+
+    gc.mockClear();
+    const r = await scanTree('/watch', cache);
+    expect(gc).not.toHaveBeenCalledWith('/watch');     // parent was a cache hit
+    expect(gc).toHaveBeenCalledWith('/watch/sub');      // nested change re-enumerated
+    expect(r.files.map(f => f.path)).toContain('/watch/sub/d.pdf');
+  });
+
+  it('clearing the cache forces a full sweep (every dir re-enumerated)', async () => {
+    const nodes = baseTree();
+    const gc = installFs(nodes);
+    const cache = new Map();
+    await scanTree('/watch', cache);
+
+    gc.mockClear();
+    cache.clear(); // simulate the periodic full sweep
+    await scanTree('/watch', cache);
+    expect(gc).toHaveBeenCalledWith('/watch');
+    expect(gc).toHaveBeenCalledWith('/watch/sub');
+  });
+
+  it('null cache never short-circuits (full walk every call)', async () => {
+    const nodes = baseTree();
+    const gc = installFs(nodes);
+    await scanTree('/watch', null);
+    gc.mockClear();
+    await scanTree('/watch', null);
+    expect(gc).toHaveBeenCalledWith('/watch');
+    expect(gc).toHaveBeenCalledWith('/watch/sub');
+  });
+
+  it('skips symlinked dirs and reserved dirs (parity with scanFolderRecursive)', async () => {
+    const nodes = new Map([
+      ['/watch', { type: 'dir', mtime: 1, children: ['/watch/keep.pdf', '/watch/link', '/watch/imported'] }],
+      ['/watch/keep.pdf', { type: 'file', mtime: 1 }],
+      ['/watch/link', { type: 'dir', mtime: 1, children: ['/watch/link/escaped.pdf'] }],
+      ['/watch/link/escaped.pdf', { type: 'file', mtime: 1 }],
+      ['/watch/imported', { type: 'dir', mtime: 1, children: ['/watch/imported/old.pdf'] }],
+      ['/watch/imported/old.pdf', { type: 'file', mtime: 1 }],
+    ]);
+    installFs(nodes);
+    __test_setSymlinkDetector((p) => p === '/watch/link');
+
+    const { files, dirs } = await scanTree('/watch', new Map());
+    const paths = files.map(f => f.path);
+    expect(paths).toEqual(['/watch/keep.pdf']);
+    expect(paths).not.toContain('/watch/link/escaped.pdf');   // symlinked dir skipped
+    expect(paths).not.toContain('/watch/imported/old.pdf');   // reserved dir skipped
+    expect(dirs).toEqual([]);
+    __test_setSymlinkDetector(null);
+  });
+
+  it('returns empty and forgets the cache entry when the root is gone (fail-safe)', async () => {
+    const nodes = baseTree();
+    installFs(nodes);
+    const cache = new Map();
+    await scanTree('/watch', cache);
+    expect(cache.has('/watch')).toBe(true);
+
+    // Root vanishes (e.g. transient unmount).
+    const empty = new Map();
+    installFs(empty);
+    const r = await scanTree('/watch', cache);
+    expect(r.files).toEqual([]);
+    expect(r.dirs).toEqual([]);
+    expect(cache.has('/watch')).toBe(false); // stale snapshot dropped
   });
 });
