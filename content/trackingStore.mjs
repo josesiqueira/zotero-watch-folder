@@ -22,6 +22,28 @@ const TRACKING_FILENAME = 'zotero-watch-folder-tracking-v2.json';
 const SCHEMA_VERSION = 2;
 
 /**
+ * Default `mappingId` for records written before the multi-mapping feature (or
+ * by the synthesized single mapping). MUST equal mappings.mjs::LEGACY_MAPPING_ID
+ * — a plain constant here (not an import) keeps this store a leaf module with no
+ * dependency on the mappings registry.
+ */
+const LEGACY_MAPPING_ID = 'legacy';
+
+/**
+ * Compose the `_files` Map key. A file's identity is (owning mapping, path):
+ * the same relative filename ("Methods/x.pdf") can legitimately exist under two
+ * different watch roots pointed at different targets, so the mapping id must
+ * partition the primary store or the two would collide onto one record. NUL is
+ * used as the delimiter because it can never appear in a path segment.
+ * @param {string} mappingId
+ * @param {string} localPath
+ * @returns {string}
+ */
+function _fileKey(mappingId, localPath) {
+  return `${mappingId || LEGACY_MAPPING_ID}\u0000${localPath}`;
+}
+
+/**
  * States that should remain queryable by content hash for dedup. Any
  * record state OUTSIDE this set (e.g. user-detached, suppressed,
  * conflict-blocked) is intentionally excluded from `_byHash` so a fresh
@@ -113,6 +135,7 @@ export const STATE = Object.freeze({
 export function createFileRecord(data) {
   return {
     type: 'file',
+    mappingId: data.mappingId ?? LEGACY_MAPPING_ID,
     localPath: data.localPath ?? '',
     canonicalLocalPath: data.canonicalLocalPath ?? data.localPath ?? '',
     lastSyncedHash: data.lastSyncedHash ?? null,
@@ -136,6 +159,7 @@ export function createFileRecord(data) {
 export function createCollectionRecord(data) {
   return {
     type: 'collection',
+    mappingId: data.mappingId ?? LEGACY_MAPPING_ID,
     localPath: data.localPath ?? '',
     zoteroCollectionKey: data.zoteroCollectionKey ?? '',
     parentCollectionKey: data.parentCollectionKey ?? null,
@@ -150,6 +174,7 @@ export function createCollectionRecord(data) {
 export function createTombstoneRecord(data) {
   return {
     type: 'tombstone',
+    mappingId: data.mappingId ?? LEGACY_MAPPING_ID,
     objectType: data.objectType ?? 'file',
     localPath: data.localPath ?? '',
     canonicalLocalPath: data.canonicalLocalPath ?? null,
@@ -301,10 +326,12 @@ export class TrackingStore {
       Zotero.debug('[WatchFolder] TrackingStore: file record missing localPath');
       return;
     }
-    if (this._files.has(record.localPath)) {
-      this._files.delete(record.localPath); // move-to-end semantics
+    if (!record.mappingId) record.mappingId = LEGACY_MAPPING_ID;
+    const key = _fileKey(record.mappingId, record.localPath);
+    if (this._files.has(key)) {
+      this._files.delete(key); // move-to-end semantics
     }
-    this._files.set(record.localPath, record);
+    this._files.set(key, record);
     this._evictIfNeeded();
     this._rebuildIndexes();
     this._dirty = true;
@@ -420,11 +447,11 @@ export class TrackingStore {
    *   key missed (e.g. an absolute path passed where a sync-root-relative key
    *   was stored). Callers on data-safety paths should treat false as a bug.
    */
-  update(localPath, updates) {
+  update(localPath, updates, mappingId = LEGACY_MAPPING_ID) {
     this._ensureInitialized();
-    const rec = this._files.get(localPath);
+    const rec = this._files.get(_fileKey(mappingId, localPath));
     if (!rec) {
-      Zotero.debug(`[WatchFolder] TrackingStore.update: no file record at ${localPath}`);
+      Zotero.debug(`[WatchFolder] TrackingStore.update: no file record at ${localPath} (mapping ${mappingId})`);
       return false;
     }
     Object.assign(rec, updates);
@@ -437,9 +464,9 @@ export class TrackingStore {
    * Remove a file record by localPath.
    * @returns {boolean} true if removed.
    */
-  remove(localPath) {
+  remove(localPath, mappingId = LEGACY_MAPPING_ID) {
     this._ensureInitialized();
-    const removed = this._files.delete(localPath);
+    const removed = this._files.delete(_fileKey(mappingId, localPath));
     if (removed) {
       this._rebuildIndexes();
       this._dirty = true;
@@ -464,10 +491,12 @@ export class TrackingStore {
     // Snapshot first: remove() mutates _files and rebuilds the index.
     const matches = [];
     for (const rec of this._files.values()) {
-      if (rec && rec.zoteroAttachmentKey === attachmentKey) matches.push(rec.localPath);
+      if (rec && rec.zoteroAttachmentKey === attachmentKey) {
+        matches.push({ localPath: rec.localPath, mappingId: rec.mappingId });
+      }
     }
-    for (const localPath of matches) {
-      if (this.remove(localPath)) removedAny = true;
+    for (const m of matches) {
+      if (this.remove(m.localPath, m.mappingId)) removedAny = true;
     }
     return removedAny;
   }
@@ -496,9 +525,9 @@ export class TrackingStore {
   // ─── Queries ───────────────────────────────────────────────────────────
 
   /** @returns {FileRecord|null} */
-  getByLocalPath(localPath) {
+  getByLocalPath(localPath, mappingId = LEGACY_MAPPING_ID) {
     this._ensureInitialized();
-    return this._files.get(localPath) ?? null;
+    return this._files.get(_fileKey(mappingId, localPath)) ?? null;
   }
 
   /** @returns {FileRecord|null} */
@@ -575,9 +604,9 @@ export class TrackingStore {
   }
 
   /** Convenience: does a file record exist at this path? */
-  hasPath(localPath) {
+  hasPath(localPath, mappingId = LEGACY_MAPPING_ID) {
     this._ensureInitialized();
-    return this._files.has(localPath);
+    return this._files.has(_fileKey(mappingId, localPath));
   }
 
   /**
@@ -915,16 +944,24 @@ export class TrackingStore {
       // local actor crafted the tracking JSON.
       for (const rec of (data.files ?? [])) {
         if (rec?.localPath && rec.type === 'file') {
-          this._files.set(rec.localPath, sanitizeUntrustedKeys(rec));
+          const clean = sanitizeUntrustedKeys(rec);
+          if (!clean.mappingId) clean.mappingId = LEGACY_MAPPING_ID;
+          this._files.set(_fileKey(clean.mappingId, clean.localPath), clean);
         }
       }
       for (const rec of (data.collections ?? [])) {
         if (rec?.zoteroCollectionKey && rec.type === 'collection') {
-          this._collections.set(rec.zoteroCollectionKey, sanitizeUntrustedKeys(rec));
+          const clean = sanitizeUntrustedKeys(rec);
+          if (!clean.mappingId) clean.mappingId = LEGACY_MAPPING_ID;
+          this._collections.set(rec.zoteroCollectionKey, clean);
         }
       }
       for (const rec of (data.tombstones ?? [])) {
-        if (rec?.type === 'tombstone') this._tombstones.push(sanitizeUntrustedKeys(rec));
+        if (rec?.type === 'tombstone') {
+          const clean = sanitizeUntrustedKeys(rec);
+          if (!clean.mappingId) clean.mappingId = LEGACY_MAPPING_ID;
+          this._tombstones.push(clean);
+        }
       }
       this._rebuildIndexes();
       this._dirty = false;
