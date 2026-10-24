@@ -37,6 +37,7 @@ import { createFileRecord, createCollectionRecord, STATE } from './trackingStore
 import { report as reportWarning, WARNING_CATEGORY } from './warningSink.mjs';
 import { collectionKeyToRelativePath, resolveSyncRoot, getScopeMode } from './canonicalPath.mjs';
 import { isBulkDelete, confirmBulkDelete, confirmFirstLibraryDelete } from './bulkGuard.mjs';
+import { getMappingById, effectiveGlobalMode } from './mappings.mjs';
 
 /** @type {import('./trackingStore.mjs').TrackingStore | null} */
 let _store = null;
@@ -289,10 +290,33 @@ export async function canSafelyTrashZoteroAttachment(record, attachmentItem) {
 
 // ─── Path helpers ─────────────────────────────────────────────────────────
 
-function _watchRoot() {
-  const root = getPref('sourcePath');
+function _watchRoot(ctx) {
+  // Multi-mapping: each action carries its owning mapping's watch root via ctx.
+  // Legacy single-root (ctx null / no mapping): fall back to the global pref, so
+  // every existing call path is byte-identical.
+  const root = (ctx && ctx.sourcePath) || getPref('sourcePath');
   if (!root) throw new Error('mirrorExecutor: sourcePath pref not set');
   return root;
+}
+
+/**
+ * Resolve the owning mapping context for an action payload. Returns the mapping
+ * for `payload.mappingId`, or `null` for legacy single-root actions (which then
+ * fall back to the global scalar prefs everywhere ctx is consumed). Never
+ * throws — an unknown id degrades to the legacy fallback.
+ *
+ * @param {{mappingId?: string}} [payload]
+ * @returns {import('./mappings.mjs').MappingContext|null}
+ * @private
+ */
+function _ctxFor(payload) {
+  const id = payload && payload.mappingId;
+  if (!id) return null;
+  try {
+    return getMappingById(id) || null;
+  } catch (_e) {
+    return null;
+  }
 }
 
 /**
@@ -308,9 +332,13 @@ function _watchRoot() {
  * double-join — which would produce paths like
  * `/watch//tmp/watch/file.pdf` and surface as bogus missing-file errors
  * (seen live during CONF.1).
+ *
+ * @param {string} relOrAbs
+ * @param {import('./mappings.mjs').MappingContext|null} [ctx] - Owning mapping;
+ *   resolves the correct watch root in the multi-mapping model.
  */
-function _absPath(relOrAbs) {
-  const root = _watchRoot();
+function _absPath(relOrAbs, ctx) {
+  const root = _watchRoot(ctx);
   if (!relOrAbs || relOrAbs === '') return root;
   // Already absolute? POSIX uses leading '/', Windows uses 'C:\…' or
   // 'C:/…'. Return as-is rather than joining with the watch root.
@@ -340,9 +368,10 @@ async function _createFolder(payload) {
   if (!collectionKey || typeof relativePath !== 'string' || relativePath === '') {
     return { ok: false, reason: 'invalid-payload' };
   }
+  const ctx = _ctxFor(payload);
   return _withLock(`collection:${collectionKey}`, async () => {
     let abs;
-    try { abs = _absPath(relativePath); }
+    try { abs = _absPath(relativePath, ctx); }
     catch (e) { return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) }; }
     try {
       await IOUtils.makeDirectory(abs, { ignoreExisting: true, createAncestors: true });
@@ -393,10 +422,11 @@ async function _moveFolder(payload) {
     return { ok: false, reason: 'invalid-payload' };
   }
   return _withLock(`collection:${collectionKey}`, async () => {
+    const ctx = _ctxFor(payload);
     let oldAbs, newAbs;
     try {
-      oldAbs = _absPath(oldRelativePath);
-      newAbs = _absPath(newRelativePath);
+      oldAbs = _absPath(oldRelativePath, ctx);
+      newAbs = _absPath(newRelativePath, ctx);
     } catch (e) {
       return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) };
     }
@@ -548,7 +578,8 @@ async function _zoteroCollectionDeleted(payload) {
   const { collectionKey, oldRelativePath } = payload;
   if (!collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`collection:${collectionKey}`, async () => {
-    const mode = getPref('mode') || 'mode1';
+    const ctx = _ctxFor(payload);
+    const mode = effectiveGlobalMode();
 
     // Mode 1 doesn't run the coordinator, so this path isn't reached
     // there. Mode 2 keeps warn-only semantics — local folder untouched,
@@ -580,7 +611,7 @@ async function _zoteroCollectionDeleted(payload) {
     // First-arm whole-library-delete gate: the first Mode-3 deletion under
     // library scope must be explicitly acknowledged (whole-library blast
     // radius). Refuses if declined or no UI — fail-safe.
-    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode(ctx) }))) {
       Zotero.debug(`[WatchFolder] mirrorExecutor: zoteroCollectionDeleted ${oldRelativePath || collectionKey} blocked — library-scale deletion not acknowledged`);
       return { ok: false, reason: 'library-delete-not-acknowledged' };
     }
@@ -611,7 +642,7 @@ async function _zoteroCollectionDeleted(payload) {
 
     const TRASH_DIRNAME = '.zotero-watch-trash';
     let srcAbs;
-    try { srcAbs = _absPath(oldRelativePath); }
+    try { srcAbs = _absPath(oldRelativePath, ctx); }
     catch (e) { return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) }; }
 
     // Source already gone? Just drop tracking + return success — the
@@ -676,7 +707,7 @@ async function _zoteroCollectionDeleted(payload) {
       const blocked = [];
       for (const child of children) {
         let childAbs;
-        try { childAbs = _absPath(child.localPath); } catch (_e) { continue; }
+        try { childAbs = _absPath(child.localPath, ctx); } catch (_e) { continue; }
         const gate = await canSafelyMove(child, childAbs);
         if (gate.ok) continue;
         if (gate.reason === 'missing-file') continue;
@@ -704,12 +735,12 @@ async function _zoteroCollectionDeleted(payload) {
     // millisecond timestamp on the folder name.
     let dstRel = `${TRASH_DIRNAME}/${oldRelativePath}`;
     let dstAbs;
-    try { dstAbs = _absPath(dstRel); }
+    try { dstAbs = _absPath(dstRel, ctx); }
     catch (e) { return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) }; }
     if (await IOUtils.exists(dstAbs).catch(() => false)) {
       const stamp = Date.now();
       dstRel = `${TRASH_DIRNAME}/${oldRelativePath}.${stamp}`;
-      dstAbs = _absPath(dstRel);
+      dstAbs = _absPath(dstRel, ctx);
     }
 
     // Pre-create parent so a cross-parent move works.
@@ -801,7 +832,8 @@ async function _localFolderDeleted(payload) {
   const { collectionKey, oldRelativePath } = payload;
   if (!collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`collection:${collectionKey}`, async () => {
-    const mode = getPref('mode') || 'mode1';
+    const ctx = _ctxFor(payload);
+    const mode = effectiveGlobalMode();
 
     if (mode !== 'mode3') {
       if (_store) {
@@ -826,13 +858,13 @@ async function _localFolderDeleted(payload) {
     }
 
     // First-arm whole-library-delete gate (see _zoteroCollectionDeleted).
-    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+    if (!(await confirmFirstLibraryDelete({ scopeMode: getScopeMode(ctx) }))) {
       Zotero.debug(`[WatchFolder] mirrorExecutor: localFolderDeleted ${oldRelativePath || collectionKey} blocked — library-scale deletion not acknowledged`);
       return { ok: false, reason: 'library-delete-not-acknowledged' };
     }
 
     // Mode 3 — propagate the deletion to Zotero.
-    const syncRoot = await resolveSyncRoot().catch(() => null);
+    const syncRoot = await resolveSyncRoot(ctx).catch(() => null);
     const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
 
     // Gather tracked child file records (under the folder path).
@@ -967,6 +999,7 @@ async function _moveItem(payload) {
   }
   return _withLock(`attachment:${attachmentKey}`, async () => {
     if (oldCanonicalPath === newCanonicalPath) return { ok: true, reason: 'no-op' };
+    const ctx = _ctxFor(payload);
 
     // Re-read the live record AFTER acquiring the lock. A prior action in the
     // same scan-cycle batch (e.g. a moveFolder that rewrote child paths) may
@@ -987,8 +1020,8 @@ async function _moveItem(payload) {
 
     let oldAbs, newAbs;
     try {
-      oldAbs = _absPath(liveSourcePath);
-      newAbs = _absPath(newCanonicalPath);
+      oldAbs = _absPath(liveSourcePath, ctx);
+      newAbs = _absPath(newCanonicalPath, ctx);
     } catch (e) {
       return { ok: false, reason: 'no-watch-root', error: String(e?.message ?? e) };
     }
@@ -1087,6 +1120,7 @@ async function _addItemMembership(payload) {
   if (!attachmentKey || !collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`attachment:${attachmentKey}`, async () => {
     if (!_store) return { ok: false, reason: 'no-store' };
+    const ctx = _ctxFor(payload);
     const rec = _store.getByAttachmentKey(attachmentKey);
     if (!rec) {
       // The collectionWatcher saw a tracked item that we don't have a
@@ -1117,7 +1151,7 @@ async function _addItemMembership(payload) {
     // stay detached — only the auto-suppressed state auto-clears.
     if (rec.state === STATE.OUT_OF_SCOPE_SUPPRESSED) {
       try {
-        const rel = await collectionKeyToRelativePath(collectionKey);
+        const rel = await collectionKeyToRelativePath(collectionKey, ctx);
         if (rel !== null) {
           updates.state = STATE.CLEAN;
           if (!rec.canonicalCollectionKey) updates.canonicalCollectionKey = collectionKey;
@@ -1136,6 +1170,7 @@ async function _removeItemMembership(payload) {
   if (!attachmentKey || !collectionKey) return { ok: false, reason: 'invalid-payload' };
   return _withLock(`attachment:${attachmentKey}`, async () => {
     if (!_store) return { ok: false, reason: 'no-store' };
+    const ctx = _ctxFor(payload);
     const rec = _store.getByAttachmentKey(attachmentKey);
     if (!rec) return { ok: false, reason: 'unknown-attachment' };
     const next = (rec.collectionMembershipKeys || []).filter((k) => k !== collectionKey);
@@ -1152,7 +1187,7 @@ async function _removeItemMembership(payload) {
     let syncRootMembershipsRemaining = 0;
     for (const k of next) {
       try {
-        const rel = await collectionKeyToRelativePath(k);
+        const rel = await collectionKeyToRelativePath(k, ctx);
         if (rel !== null) syncRootMembershipsRemaining++;
       } catch (_e) { /* sync-root unresolvable — skip count */ }
     }
@@ -1161,7 +1196,7 @@ async function _removeItemMembership(payload) {
     // Unfiled. Keep it syncing (state unchanged), clear the canonical key
     // (null = Unfiled/root); itemMembershipHandler recomputes the canonical and
     // moves the file to the watch-folder root. No suppression, no warning.
-    const libraryScope = getScopeMode() === 'library';
+    const libraryScope = getScopeMode(ctx) === 'library';
     if (syncRootMembershipsRemaining === 0 && !libraryScope) {
       updates.state = STATE.OUT_OF_SCOPE_SUPPRESSED;
       if (rec.canonicalCollectionKey) {
