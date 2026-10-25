@@ -209,7 +209,7 @@
 
   <div class="wizard-header">
     <h1>Watch Folder Setup</h1>
-    <div class="step-indicator">Step <span id="step-num">1</span> of 5</div>
+    <div class="step-indicator">Step <span id="step-num">1</span> of 3</div>
   </div>
 
   <!-- ============ Step 1: pick watch folder ============ -->
@@ -227,95 +227,52 @@
     <div class="error" id="folder-error"></div>
   </div>
 
-  <!-- ============ Step 2: pick sync root collection ============ -->
+  <!-- ============ Step 2: how the folder maps (whole library OR one collection) ============ -->
   <div class="step" id="step-collection" data-step="2">
     <h2>2. How the watch folder maps to Zotero</h2>
     <p class="lede">
-      Watch Folder mirrors your <strong>whole library</strong>. You don't pick a
-      single collection — the layout maps automatically:
+      Choose what this folder maps to. You can add more folders later — each with
+      its own target — from Edit → Settings → Watch Folder.
     </p>
-    <ul>
-      <li>A PDF dropped at the <strong>top level</strong> of the watch folder becomes an <strong>Unfiled</strong> item.</li>
-      <li>Each <strong>top-level folder</strong> maps to a top-level collection; nested folders map to nested collections (created as needed).</li>
-      <li>Zotero's Trash and special views (Duplicates, Unfiled, saved searches) are never mirrored.</li>
-    </ul>
+    <fieldset class="modes">
+      <legend>Target</legend>
+
+      <label class="mode-option">
+        <input type="radio" name="scope" value="collection" checked="checked"/>
+        <span class="mode-title">A specific collection</span>
+        <span class="mode-desc">Everything imported from this folder lands under one collection you pick. Subfolders on disk become subcollections under it.</span>
+      </label>
+
+      <label class="mode-option">
+        <input type="radio" name="scope" value="library"/>
+        <span class="mode-title">Whole library</span>
+        <span class="mode-desc">The folder mirrors your entire library: a PDF at the <b>top level</b> becomes an <b>Unfiled</b> item, each top-level folder maps to a top-level collection (nested folders → nested collections, created as needed), and Zotero's Trash and special views (Duplicates, Unfiled, saved searches) are never mirrored.</span>
+      </label>
+    </fieldset>
+
+    <div id="coll-picker" hidden="hidden">
+      <p class="lede" style="margin-top:12px">Pick the collection to import into:</p>
+      <div class="coll-list" id="coll-list"></div>
+      <div id="new-coll-row" style="display:flex; gap:8px; margin-top:10px; align-items:center;">
+        <input id="new-coll-name" type="text" placeholder="New collection name…" style="flex:1;"/>
+        <button id="new-coll-create" type="button">＋ Create</button>
+      </div>
+    </div>
     <div class="error" id="coll-error"></div>
   </div>
 
-  <!-- ============ Step 3: pick mode ============ -->
-  <div class="step" id="step-mode" data-step="3">
-    <h2>3. Pick a sync mode</h2>
-    <p class="lede">
-      How aggressively should Zotero and your folder stay in sync?
-      You can change this later from the preferences pane.
-    </p>
-    <fieldset class="modes">
-      <legend>Sync mode</legend>
-
-      <label class="mode-option">
-        <input type="radio" name="mode" value="mode1" checked="checked"/>
-        <span class="mode-title">Mode 1 — Import only</span>
-        <span class="mode-desc">Files dropped into your folder are imported into Zotero. Renames and deletes don't propagate in either direction. <b>Safest mode</b> — recommended for trying out the plugin.</span>
-      </label>
-
-      <label class="mode-option">
-        <input type="radio" name="mode" value="mode2"/>
-        <span class="mode-title">Mode 2 — Mirror without delete</span>
-        <span class="mode-desc">Two-way sync of collections and items: rename a collection in Zotero, the folder renames on disk; move an item between collections, the file moves on disk. Destructive operations (deletes) are <b>warn-only</b>.</span>
-      </label>
-
-      <label class="mode-option">
-        <input type="radio" name="mode" value="mode3"/>
-        <span class="mode-title">Mode 3 — Mirror with safe delete</span>
-        <span class="mode-desc">Full two-way sync including deletes. Files trashed by either side go to a recoverable <code>.zotero-watch-trash/</code> directory under your watch root. Any operation affecting &gt;10 files or &gt;20% of your tree prompts for confirmation.</span>
-      </label>
-    </fieldset>
-  </div>
-
-  <!-- ============ Step 4: PDF storage strategy ============ -->
-  <div class="step" id="step-storage" data-step="4">
-    <h2>4. Where should PDFs live?</h2>
-    <p class="lede">
-      Zotero syncs your metadata, notes, and highlights. PDF <em>files</em> are
-      separate — this picks where they're stored. You can change it later.
-    </p>
-    <fieldset class="modes">
-      <legend>PDF storage strategy</legend>
-
-      <label class="mode-option">
-        <input type="radio" name="storage" value="stored" checked="checked"/>
-        <span class="mode-title">Store PDFs in Zotero</span>
-        <span class="mode-desc">Best Zotero experience. Zotero manages PDFs and can sync them using Zotero Storage or WebDAV. Uses Zotero file storage if file sync is enabled.</span>
-      </label>
-
-      <label class="mode-option">
-        <input type="radio" name="storage" value="linked_watch_folder"/>
-        <span class="mode-title">Link PDFs from watch folder</span>
-        <span class="mode-desc">Saves Zotero Storage space. PDFs stay in your watch folder; use a folder-sync tool (pCloud, Dropbox, OneDrive, Syncthing…) to back them up. <b>May not open in Zotero mobile apps.</b></span>
-      </label>
-
-      <label class="mode-option">
-        <input type="radio" name="storage" value="stored_plus_mirror"/>
-        <span class="mode-title">Store in Zotero and mirror to watch folder</span>
-        <span class="mode-desc">Keeps Zotero's normal stored copy plus a copy in the watch folder. Redundant backup/export; does not save Zotero Storage space.</span>
-      </label>
-    </fieldset>
-  </div>
-
-  <!-- ============ Step 5: confirm ============ -->
-  <div class="step" id="step-confirm" data-step="5">
-    <h2>5. Confirm</h2>
+  <!-- ============ Step 3: confirm ============ -->
+  <div class="step" id="step-confirm" data-step="3">
+    <h2>3. Confirm</h2>
     <p class="lede">
       Review your choices. After "Enable", the plugin will start watching
       on the next scan cycle (default every 5 seconds).
     </p>
     <dl class="summary">
       <dt>Watch folder</dt><dd id="sum-folder">—</dd>
-      <dt>Scope</dt><dd id="sum-coll">—</dd>
-      <dt>Mode</dt><dd id="sum-mode">—</dd>
-      <dt>PDFs</dt><dd id="sum-storage">—</dd>
+      <dt>Target</dt><dd id="sum-coll">—</dd>
     </dl>
-    <p class="safety-note" id="safety-note">—</p>
+    <p class="safety-note mode1" id="safety-note">Import only — files dropped in this folder are imported into Zotero. Nothing on disk is moved or deleted. Sync mode and PDF storage are set once for all folders in Watch Folder settings.</p>
   </div>
 
   <div class="wizard-footer">

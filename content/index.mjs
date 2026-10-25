@@ -15,10 +15,14 @@ import * as storageStrategy from './storageStrategy.mjs';
 import * as reconcile from './reconcile.mjs';
 import * as hashCache from './_hashCache.mjs';
 import { isWatchRootUnsafe } from './utils.mjs';
+import * as mappings from './mappings.mjs';
+import {
+  getActiveMappings, readMappings, writeMappings, validateMapping, mintMappingId, LEGACY_MAPPING_ID,
+} from './mappings.mjs';
 
 // Re-export so the prefs script (which can't `import` modules from the
-// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy,reconcile}.
-export { warningSink, suppressionResolver, baseline, storageStrategy, reconcile };
+// sandbox) can reach these via Zotero.WatchFolder.{warningSink,suppressionResolver,baseline,storageStrategy,reconcile,mappings}.
+export { warningSink, suppressionResolver, baseline, storageStrategy, reconcile, mappings };
 
 // Diagnostic surface — read-only stats from the WP-A1 hash cache plus
 // a clear hook for fresh measurements. Used to verify steady-state
@@ -117,10 +121,12 @@ async function onEnabledChanged() {
 export async function runSetupWizard(window) {
     if (!Services || !Services.prompt) return false;
 
-    // v2.4: prefer the single-pane XHTML wizard. Falls back to the modal
-    // sequence below if the chrome window can't open for any reason (chrome
-    // not registered, embedding context, etc.). Both paths converge on the
-    // same `_commitWizardResult` to write prefs + start services.
+    // Single unified "add a watch folder" flow — used for first-run, the prefs
+    // "＋ Add watch folder" button, and re-run. Prefer the single-pane XHTML
+    // wizard (folder → target → confirm); fall back to the modal sequence if the
+    // chrome window can't open. Both converge on `_commitWizardResult`, which
+    // APPENDS a validated mapping to `watchMappings` (sync mode + PDF storage are
+    // global settings now, so the flow never asks per folder).
     const xhtmlResult = await _runSetupWizardXHTML(window).catch((e) => {
         try { Zotero.logError(`[WatchFolder] XHTML wizard failed, falling back to modal sequence: ${e?.message ?? e}`); } catch (_) {}
         return null; // null → fall through to the modal sequence
@@ -133,70 +139,52 @@ export async function runSetupWizard(window) {
             scopeMode: xhtmlResult.scopeMode,
             syncRootKey: xhtmlResult.syncRootKey,
             syncRootLibraryID: xhtmlResult.syncRootLibraryID,
-            modeKey: xhtmlResult.mode,
-            modeLabel: _modeLabelFor(xhtmlResult.mode),
             syncRootLabel: xhtmlResult.syncRootLabel,
-            storageStrategy: xhtmlResult.storageStrategy,
         });
         return committed;
     }
 
-    // ─── Modal-sequence fallback (pre-v2.4 path) ─────────────────
-    // ─── Step 1: welcome ─────────────────────────────────────────
-    const welcomeFlags =
-          Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
-        | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
-        | Services.prompt.BUTTON_POS_0_DEFAULT;
-    const welcome = Services.prompt.confirmEx(
-        window,
-        "Watch Folder — Setup",
-        "Set up Watch Folder in 5 steps?\n\n"
-          + "1. Pick a local folder the plugin should watch\n"
-          + "2. Pick the Zotero collection imports should land in\n"
-          + "3. Pick a sync mode\n"
-          + "4. Pick where PDFs should live\n"
-          + "5. Confirm and enable\n\n"
-          + "You can re-run the wizard later from Edit → Settings → Watch Folder.",
-        welcomeFlags,
-        "Continue",
-        null, null,
-        null,
-        {},
-    );
-    if (welcome !== 0) return false;
-
-    // ─── Step 2: watch folder ────────────────────────────────────
+    // ─── Modal-sequence fallback (chrome window couldn't open) ───────────
+    // Step 1: watch folder.
     const watchFolder = await _wizardPickWatchFolder(window);
     if (!watchFolder) return false;
 
-    // ─── Step 3: sync root collection ────────────────────────────
-    const syncRootChoice = await _wizardPickSyncRoot(window);
-    if (!syncRootChoice) return false;
+    // Step 2: target — whole library OR a specific collection.
+    const targetOut = {};
+    const targetOk = Services.prompt.select(
+        window, 'Watch Folder — Target',
+        `Where should files dropped in "${watchFolder}" go?`,
+        ['The whole library (Unfiled + every collection)', 'A specific collection (subfolders become subcollections)'],
+        targetOut,
+    );
+    if (!targetOk) return false;
+    let scopeMode = 'library';
+    let syncRootKey = '';
+    let syncRootLibraryID = Zotero.Libraries.userLibraryID;
+    let syncRootLabel = 'Whole library';
+    if (targetOut.value === 1) {
+        const root = await _wizardPickSyncRoot(window);
+        if (!root) return false;
+        scopeMode = 'collection';
+        syncRootKey = root.key;
+        syncRootLibraryID = root.libraryID;
+        syncRootLabel = root.label;
+    }
 
-    // ─── Step 4: sync mode ───────────────────────────────────────
-    const modeChoice = _wizardPickMode(window);
-    if (!modeChoice) return false;
-
-    // ─── Step 5: PDF storage strategy ────────────────────────────
-    const storageChoice = _wizardPickStorageStrategy(window);
-    if (!storageChoice) return false;
-
-    // ─── Step 6: confirm ─────────────────────────────────────────
+    // Step 3: confirm.
     const confirmFlags =
           Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
         | Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL
         | Services.prompt.BUTTON_POS_0_DEFAULT;
-    const safetyNote = _modeSafetyNote(modeChoice.key);
     const confirm = Services.prompt.confirmEx(
         window,
         "Watch Folder — Confirm",
-        `Ready to enable:\n\n`
-          + `Watch folder: ${watchFolder}\n`
-          + `Zotero sync root: ${syncRootChoice.label}\n`
-          + `Mode: ${modeChoice.label}\n`
-          + `PDFs: ${storageChoice.label}\n\n`
-          + `${safetyNote}\n\n`
-          + `Imports will start on the next scan cycle (default every 5s). You can change any of these in Edit → Settings → Watch Folder.`,
+        `Add this watch folder?\n\n`
+          + `Folder: ${watchFolder}\n`
+          + `Target: ${syncRootLabel}\n\n`
+          + `Import only — new files are imported into Zotero; nothing on disk is moved or deleted. `
+          + `Sync mode and PDF storage are set once for all folders in Watch Folder settings. `
+          + `Imports start on the next scan cycle (default every 5s).`,
         confirmFlags,
         "Enable",
         null, null,
@@ -206,15 +194,7 @@ export async function runSetupWizard(window) {
     if (confirm !== 0) return false;
 
     const committed = await _commitWizardResult({
-        window,
-        watchFolder,
-        scopeMode: "library",
-        syncRootKey: syncRootChoice.key,
-        syncRootLibraryID: syncRootChoice.libraryID,
-        modeKey: modeChoice.key,
-        modeLabel: modeChoice.label,
-        syncRootLabel: syncRootChoice.label,
-        storageStrategy: storageChoice.key,
+        window, watchFolder, scopeMode, syncRootKey, syncRootLibraryID, syncRootLabel,
     });
     return committed;
 }
@@ -251,11 +231,10 @@ async function _runSetupWizardXHTML(parentWindow) {
                     opened: true,
                     canceled: false,
                     watchFolder: payload.watchFolder,
+                    scopeMode: payload.scopeMode,
                     syncRootKey: payload.syncRootKey,
                     syncRootLibraryID: payload.syncRootLibraryID,
                     syncRootLabel: payload.syncRootLabel,
-                    mode: payload.mode,
-                    storageStrategy: payload.storageStrategy,
                 });
             },
         };
@@ -301,40 +280,69 @@ async function _runSetupWizardXHTML(parentWindow) {
  * @returns {Promise<boolean>} true if committed, false if blocked.
  * @private
  */
-async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootLibraryID, modeKey, modeLabel, syncRootLabel, storageStrategy, scopeMode }) {
+async function _commitWizardResult({ window, watchFolder, syncRootKey, syncRootLibraryID, syncRootLabel, scopeMode }) {
+    // Validate the candidate against existing mappings + the Zotero data dir
+    // (overlap / unsafe-root). validateMapping subsumes the old isWatchRootUnsafe
+    // check. On a reason, alert + abort WITHOUT writing any pref.
     const dataDir = Zotero?.DataDirectory?.dir;
-    const unsafeReason = isWatchRootUnsafe(watchFolder, dataDir);
-    if (unsafeReason) {
-        try { Zotero.logError(`[WatchFolder] Setup blocked: unsafe watch root "${watchFolder}" overlaps Zotero data dir "${dataDir}" — ${unsafeReason}`); } catch (_) {}
-        try {
-            if (Services && Services.prompt) {
-                Services.prompt.alert(window || null, "Watch Folder — Unsafe folder", unsafeReason);
-            }
-        } catch (_) {}
+    const reason = validateMapping({ sourcePath: watchFolder }, readMappings(), dataDir);
+    if (reason) {
+        try { Zotero.logError(`[WatchFolder] Add folder blocked: ${reason}`); } catch (_) {}
+        try { if (Services && Services.prompt) Services.prompt.alert(window || null, "Watch Folder — Cannot add folder", reason); } catch (_) {}
         return false;
     }
-    // v2.7: new setups are whole-library by default. scopeMode 'library' ignores
-    // syncRootCollectionKey, but we still persist any picked key (harmless, and
-    // it lets a user fall back to collection scope via about:config without
-    // re-picking). The collection picker is informational in library mode.
+
     const effectiveScope = scopeMode === 'collection' ? 'collection' : 'library';
-    setPref("sourcePath", watchFolder);
-    setPref("scopeMode", effectiveScope);
-    setPref("syncRootCollectionKey", syncRootKey || "");
-    if (typeof syncRootLibraryID === 'number') setPref("syncRootLibraryID", syncRootLibraryID);
-    setPref("mode", modeKey);
-    if (storageStrategy === 'stored' || storageStrategy === 'linked_watch_folder' || storageStrategy === 'stored_plus_mirror') {
-        setPref("pdfStorageStrategy", storageStrategy);
+    const mapping = {
+        id: mintMappingId(),
+        sourcePath: watchFolder,
+        scopeMode: effectiveScope,
+        syncRootCollectionKey: effectiveScope === 'collection' ? (syncRootKey || '') : '',
+        syncRootLibraryID: (typeof syncRootLibraryID === 'number') ? syncRootLibraryID : Zotero.Libraries.userLibraryID,
+        // Sync mode + PDF storage are GLOBAL (import-only enforced today); these
+        // per-mapping fields are kept only for schema shape and are ignored.
+        mode: 'mode1',
+        pdfStorageStrategy: getPref('pdfStorageStrategy') || 'stored',
+    };
+
+    const next = readMappings();
+    // Folding: on the first mapping of a legacy single-root install, keep the
+    // existing scalar-configured folder watched alongside the new one.
+    if (next.length === 0) {
+        const legacySource = getPref('sourcePath');
+        if (legacySource && legacySource !== watchFolder) {
+            next.push({
+                id: LEGACY_MAPPING_ID,
+                sourcePath: legacySource,
+                scopeMode: getPref('scopeMode') === 'library' ? 'library' : 'collection',
+                syncRootCollectionKey: getPref('syncRootCollectionKey') || '',
+                syncRootLibraryID: getPref('syncRootLibraryID') || 1,
+                mode: 'mode1',
+                pdfStorageStrategy: getPref('pdfStorageStrategy') || 'stored',
+            });
+        }
     }
-    setPref("setupCompleted", true);
-    setPref("enabled", true);
+    next.push(mapping);
+    writeMappings(next);
+    setPref('watchMappingsMulti', true);   // one unified folder-list model
+    setPref('setupCompleted', true);
+    setPref('enabled', true);
+
     try {
-        if (watchFolderService) await watchFolderService.startWatching();
+        // Re-evaluate the sync pipeline for the updated folder set, mirroring
+        // the onStartup order (coordinator first so its per-mapping baseline
+        // runs before the first scan). coordinator.start() self-gates on the
+        // effective mode — idle in Mode 1, active in Mode 2/3 — so adding a
+        // folder while in Mode 2 correctly (re)activates mirroring instead of
+        // leaving the coordinator stopped.
+        if (syncCoordinator) await syncCoordinator.stop();
+        if (watchFolderService) watchFolderService.stopWatching();
         if (syncCoordinator) await syncCoordinator.start();
+        if (watchFolderService) await watchFolderService.startWatching();
     } catch (e) {
-        Zotero.logError(`[WatchFolder] runSetupWizard: failed to start services - ${e.message}`);
+        Zotero.logError(`[WatchFolder] add folder: failed to (re)start services - ${e?.message ?? e}`);
     }
-    Zotero.debug(`[WatchFolder] Setup wizard complete (watch=${watchFolder} scope=${effectiveScope} root=${syncRootKey || '(library)'} label=${syncRootLabel} mode=${modeKey}/${modeLabel})`);
+    Zotero.debug(`[WatchFolder] Added watch folder ${mapping.id} (watch=${watchFolder} scope=${effectiveScope} target=${syncRootLabel || (effectiveScope === 'library' ? '(whole library)' : syncRootKey)})`);
     return true;
 }
 
@@ -377,7 +385,7 @@ async function _wizardPickSyncRoot(window) {
         return null;
     }
     const usable = collections
-        .filter((c) => !c.isVirtual)
+        .filter((c) => !c.isVirtual && !c.deleted)
         .map((c) => ({ key: c.key, label: _displayPath(c), libraryID }))
         .sort((a, b) => a.label.localeCompare(b.label));
     if (usable.length === 0) {
@@ -510,6 +518,165 @@ async function maybeShowFirstRunNudge(window) {
     } catch (e) {
         Zotero.logError(`[WatchFolder] first-run wizard error - ${e.message}`);
     }
+}
+
+/**
+ * Add a watch folder → target mapping. Kept as a named export for back-compat,
+ * but the flow is now unified: it delegates to {@link runSetupWizard}, the single
+ * folder → target → confirm flow used by first-run, the prefs "＋ Add watch
+ * folder" button, and re-run. Sync mode + PDF storage are global (import-only
+ * enforced today), so this never asks per folder.
+ *
+ * @param {Window} window
+ * @returns {Promise<boolean>} true if a mapping was added.
+ */
+export async function runAddMappingWizard(window) {
+  return runSetupWizard(window);
+}
+
+/**
+ * Interactive remove: pick a configured mapping and delete it (with its
+ * tracking records). Files already imported into Zotero are kept. When the last
+ * mapping is removed, multi-mapping is turned back off (the plugin reverts to
+ * the single-folder scalar config).
+ * @param {Window} window
+ * @returns {Promise<boolean>}
+ */
+export async function removeMappingInteractive(window) {
+  if (!Services || !Services.prompt) return false;
+  const list = readMappings();
+  if (list.length === 0) {
+    try { Services.prompt.alert(window, 'Watch Folder', 'No watch folders are configured.'); } catch (_) {}
+    return false;
+  }
+  const labels = list.map((m) => `${m.sourcePath}  →  ${m.scopeMode === 'library' ? '(whole library)' : (m.syncRootCollectionKey || '(collection)')}`);
+  const out = {};
+  const ok = Services.prompt.select(window, 'Watch Folder — Remove a folder',
+    'Pick a watch folder to stop watching. Files already imported into Zotero are kept; only the watch mapping and its local tracking records are removed.',
+    labels, out);
+  if (!ok) return false;
+  const victim = list[out.value];
+  if (!victim) return false;
+  return _removeMappingById(victim.id);
+}
+
+/**
+ * Remove one mapping by id, with a confirm. Used by the per-row "Remove" button
+ * in the prefs "Watch folders" list. Files already imported into Zotero are kept.
+ * @param {Window} window
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
+export async function removeMappingById(window, id) {
+  if (!Services || !Services.prompt || !id) return false;
+  const victim = readMappings().find((m) => m.id === id);
+  if (!victim) {
+    try { Services.prompt.alert(window, 'Watch Folder', 'That watch folder is no longer configured.'); } catch (_) {}
+    return false;
+  }
+  const target = victim.scopeMode === 'library' ? '(whole library)' : (victim.syncRootCollectionKey || '(collection)');
+  const ok = Services.prompt.confirm(window, 'Remove watch folder?',
+    `Stop watching:\n${victim.sourcePath}\n→ ${target}\n\n`
+    + 'Files already imported into Zotero are kept — only this watch folder and its local tracking records are removed.');
+  if (!ok) return false;
+  return _removeMappingById(id);
+}
+
+/**
+ * Shared removal: purge the mapping's tracking records, drop it from
+ * `watchMappings`, and restart the scan loop. Stays in the unified folder-list
+ * model at zero folders (never flips the gate off — that would resurrect the
+ * legacy single-root scalars).
+ * @private
+ */
+async function _removeMappingById(id) {
+  const list = readMappings();
+  const victim = list.find((m) => m.id === id);
+  if (!victim) return false;
+  try {
+    const store = getTrackingStore();
+    if (store && typeof store.getAllOfType === 'function') {
+      for (const r of store.getAllOfType('file')) {
+        if ((r.mappingId || LEGACY_MAPPING_ID) === victim.id) store.remove(r.localPath, r.mappingId);
+      }
+      for (const c of store.getAllOfType('collection')) {
+        if ((c.mappingId || LEGACY_MAPPING_ID) === victim.id) store.removeCollectionRecord(c.zoteroCollectionKey);
+      }
+      if (typeof store.save === 'function') await store.save();
+    }
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] removeMapping: purge failed - ${e?.message ?? e}`);
+  }
+
+  const remaining = list.filter((m) => m.id !== victim.id);
+  writeMappings(remaining);
+  if (remaining.length === 0) setPref('setupCompleted', false);
+  try {
+    // Re-evaluate both halves for the reduced folder set (coordinator first,
+    // mirroring onStartup). coordinator.start() self-gates on the mode, so this
+    // keeps Mode 2/3 mirroring active for the remaining folders.
+    if (syncCoordinator) await syncCoordinator.stop();
+    if (watchFolderService) watchFolderService.stopWatching();
+    if (syncCoordinator) await syncCoordinator.start();
+    if (watchFolderService) await watchFolderService.startWatching();
+  } catch (e) {
+    Zotero.logError(`[WatchFolder] removeMapping: restart failed - ${e?.message ?? e}`);
+  }
+  Zotero.debug(`[WatchFolder] Removed mapping ${victim.id}; ${remaining.length} remaining`);
+  return true;
+}
+
+/**
+ * Short human-readable summary of the active mappings, for the prefs pane.
+ * @returns {string}
+ */
+export function describeMappings() {
+  const ms = getActiveMappings().filter((m) => m && m.sourcePath);
+  if (ms.length === 0) return 'No watch folders yet — click “＋ Add watch folder…”.';
+  return `${ms.length} folder${ms.length === 1 ? '' : 's'}:\n` + ms.map((m) =>
+    `• ${m.sourcePath} → ${m.scopeMode === 'library' ? '(whole library)' : (m.syncRootCollectionKey || '(collection)')}`,
+  ).join('\n');
+}
+
+/**
+ * Health of each active mapping's Zotero target — so the prefs pane can show a
+ * "Paused" state instead of a misleading "Watching" when a target collection is
+ * gone or in the Trash (import fail-closed-pauses on such a target, see
+ * canonicalPath.resolveSyncRoot). Synchronous: reads live Zotero + prefs, no
+ * disk/await. Works for single-root (one synthesized mapping) and multi.
+ *
+ * @returns {Array<{id:string, sourcePath:string, scopeMode:string, targetLabel:string, ok:boolean, reason:(null|'trashed'|'missing'|'library-unavailable')}>}
+ */
+export function getMappingHealth() {
+  const out = [];
+  const userLib = (Zotero.Libraries && Zotero.Libraries.userLibraryID) || 1;
+  for (const m of getActiveMappings()) {
+    if (!m || !m.sourcePath) continue;
+    let ok = true;
+    let reason = null;
+    let targetLabel = '(whole library)';
+    const libraryID = m.syncRootLibraryID || userLib;
+    try {
+      if (m.scopeMode === 'library') {
+        const lib = (Zotero.Libraries && typeof Zotero.Libraries.get === 'function')
+          ? Zotero.Libraries.get(libraryID) : true;
+        if (!lib) { ok = false; reason = 'library-unavailable'; }
+      } else {
+        const key = m.syncRootCollectionKey;
+        const col = key ? Zotero.Collections.getByLibraryAndKey(libraryID, key) : null;
+        if (!col) { ok = false; reason = 'missing'; targetLabel = '(no collection set)'; }
+        else if (col.deleted) { ok = false; reason = 'trashed'; targetLabel = col.name; }
+        else { targetLabel = col.name; }
+      }
+    } catch (_e) {
+      // A thrown lookup means we can't confirm the target is healthy — treat as
+      // blocked (conservative), matching the fail-closed import pause.
+      ok = false;
+      reason = reason || 'missing';
+    }
+    out.push({ id: m.id, sourcePath: m.sourcePath, scopeMode: m.scopeMode, targetLabel, ok, reason });
+  }
+  return out;
 }
 
 export const hooks = {

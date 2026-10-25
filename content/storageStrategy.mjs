@@ -46,7 +46,11 @@ export const STRATEGY = Object.freeze({
  * (soft migration — the only way importMode is `linked` is an explicit
  * choice, since its default is `stored`).
  */
-export function getStorageStrategy() {
+export function getStorageStrategy(explicit) {
+  // Per-mapping override: when a mapping supplies its own storage strategy,
+  // honor it directly (multi-mapping). Falls back to the global pref otherwise.
+  if (explicit === STRATEGY.LINKED_WATCH_FOLDER || explicit === STRATEGY.STORED_PLUS_MIRROR) return explicit;
+  if (explicit === STRATEGY.STORED) return STRATEGY.STORED;
   const s = getPref('pdfStorageStrategy');
   if (s === STRATEGY.LINKED_WATCH_FOLDER || s === STRATEGY.STORED_PLUS_MIRROR) return s;
   if ((!s || s === STRATEGY.STORED) && getPref('importMode') === 'linked') {
