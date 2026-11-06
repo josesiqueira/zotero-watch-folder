@@ -120,38 +120,90 @@
         const total = sink ? sink.getTotalCount() : 0;
         countEl.value = String(total);
         row.hidden = total === 0;
+        // Inline list: auto-show + populate when there are warnings; clear+hide at 0.
+        const listEl = document.getElementById('watch-folder-warnings-list');
+        if (listEl) {
+            if (total === 0) {
+                try { while (listEl.firstChild) listEl.removeChild(listEl.firstChild); }
+                catch (_e) { listEl.textContent = ''; }
+                listEl.hidden = true;
+            } else {
+                renderWarningsList();
+                listEl.hidden = false;
+            }
+        }
         refreshAttentionStrip();
     }
 
     /**
-     * Open an alert with the recent warning entries (newest first).
-     * Caps display at the most recent 30 to keep the alert legible.
+     * Render the recent warning entries (newest first) as an inline list in the
+     * Maintenance tab. Mirrors the compact row style used by the folder list.
+     */
+    function renderWarningsList() {
+        const list = document.getElementById('watch-folder-warnings-list');
+        if (!list) return;
+        try { while (list.firstChild) list.removeChild(list.firstChild); }
+        catch (_e) { list.textContent = ''; }
+
+        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
+        const recent = sink ? sink.getRecent(50) : [];
+        if (!recent.length) {
+            const empty = document.createElement('div');
+            empty.className = 'wf-warn-empty';
+            empty.textContent = 'No warnings recorded.';
+            list.appendChild(empty);
+            return;
+        }
+
+        for (const w of recent.slice().reverse()) { // newest first
+            const item = document.createElement('div');
+            item.className = 'wf-warn-item';
+
+            const line = document.createElement('div');
+            const cat = document.createElement('span');
+            cat.className = 'wf-warn-cat';
+            cat.textContent = w.category || 'warning';
+            line.appendChild(cat);
+            const msg = document.createElement('span');
+            msg.className = 'wf-warn-msg';
+            msg.textContent = w.message || w.reason || '(no detail)';
+            line.appendChild(msg);
+            item.appendChild(line);
+
+            const where = w.path
+                || (w.collectionKey ? ('collection ' + w.collectionKey) : '')
+                || (w.attachmentKey ? ('item ' + w.attachmentKey) : '');
+            if (where) {
+                const loc = document.createElement('div');
+                loc.className = 'wf-warn-loc';
+                loc.textContent = where;
+                item.appendChild(loc);
+            }
+
+            const ts = document.createElement('div');
+            ts.className = 'wf-warn-ts';
+            try { ts.textContent = new Date(w.timestamp).toLocaleString(); }
+            catch (_e) { ts.textContent = ''; }
+            item.appendChild(ts);
+
+            list.appendChild(item);
+        }
+    }
+
+    /**
+     * Toggle the inline warnings list collapsed/expanded (re-rendering on
+     * expand so it's current). The list auto-shows via refreshWarningsDisplay
+     * when warnings exist; this just lets the user collapse a long list.
      */
     function viewWarnings() {
-        const sink = Zotero.WatchFolder && Zotero.WatchFolder.warningSink;
-        if (!sink) {
-            Services.prompt.alert(window, 'Watch Folder', 'Warning sink not available — plugin not fully loaded?');
-            return;
+        const list = document.getElementById('watch-folder-warnings-list');
+        if (!list) return;
+        if (list.hidden) {
+            renderWarningsList();
+            list.hidden = false;
+        } else {
+            list.hidden = true;
         }
-        const recent = sink.getRecent(30);
-        if (recent.length === 0) {
-            Services.prompt.alert(window, 'Watch Folder', 'No sync warnings recorded.');
-            return;
-        }
-        const lines = recent.slice().reverse().map((w) => {
-            const ts = new Date(w.timestamp).toLocaleString();
-            const where = w.path ? ` (${w.path})` : (w.collectionKey ? ` (col ${w.collectionKey})` : '');
-            return `[${w.category}] ${ts}${where}\n  ${w.message || w.reason || ''}`;
-        });
-        const counts = sink.getCountsByCategory();
-        const summary = [...counts.entries()]
-            .map(([cat, n]) => `${cat}: ${n}`)
-            .join(' · ');
-        Services.prompt.alert(
-            window,
-            'Watch Folder — Sync warnings',
-            `Total ${sink.getTotalCount()}  (${summary})\n\n${lines.join('\n\n')}`,
-        );
     }
 
     function clearWarnings() {
@@ -1033,6 +1085,10 @@
         }
         const panels = document.getElementsByClassName('wf-tabpanel');
         for (const p of panels) p.hidden = p.getAttribute('data-tab') !== name;
+        // Populate the maintenance warnings list when the tab is opened.
+        if (name === 'maintenance') {
+            try { refreshWarningsDisplay(); } catch (_e) { /* best effort */ }
+        }
     }
 
     /**
@@ -1056,6 +1112,33 @@
     };
 
     /**
+     * Active mappings whose Zotero target is blocked (collection trashed/missing,
+     * or library unavailable) — from the bundle's getMappingHealth(). These cause
+     * imports to fail-closed-pause, so the UI must surface them rather than show a
+     * misleading "Watching". Best-effort: returns [] if the bundle isn't reachable.
+     * @returns {Array<{id,sourcePath,targetLabel,ok,reason}>}
+     */
+    function blockedMappings() {
+        try {
+            const fn = Zotero.WatchFolder && Zotero.WatchFolder.getMappingHealth;
+            if (typeof fn !== 'function') return [];
+            return (fn() || []).filter((h) => h && h.ok === false);
+        } catch (_e) {
+            return [];
+        }
+    }
+
+    /** One-line summary of a blocked-target condition for the status/attention UI. */
+    function blockedSummaryText(blocked) {
+        const n = blocked.length;
+        const noun = n === 1 ? 'folder' : 'folders';
+        const cause = blocked.some((b) => b.reason === 'trashed')
+            ? 'target collection is in the Trash'
+            : 'target collection is missing';
+        return `⏸ ${n} ${noun} paused — ${cause}`;
+    }
+
+    /**
      * Refresh the persistent status header: the state pill (Not set up /
      * Paused / Watching), the "<folder> → <target>" summary, the
      * "<mode> · <storage>" detail line, and the attention strip. All reads
@@ -1075,13 +1158,52 @@
         const mode = getPref('mode') || 'mode1';
         const strategy = getStorageStrategyPref();
 
+        // Multi-mapping: when several folders are configured the single-root
+        // sourcePath/scope/mode prefs no longer describe what's being watched, so
+        // read the live mapping set instead (the scan loop watches ALL of them).
+        let multiActive = false;
+        let mappingList = [];
+        try {
+            const m = Zotero.WatchFolder && Zotero.WatchFolder.mappings;
+            if (m && typeof m.isMultiMappingActive === 'function' && m.isMultiMappingActive()) {
+                multiActive = true;
+                mappingList = (typeof m.getActiveMappings === 'function') ? m.getActiveMappings() : [];
+            }
+        } catch (_e) { /* fall back to single-root rendering */ }
+
         // State pill — Not set up → Paused → Watching.
         let state, label;
-        if (!setupCompleted || !sourcePath) { state = 'is-unset'; label = 'Not set up'; }
+        const configured = multiActive ? mappingList.length > 0 : (setupCompleted && !!sourcePath);
+        if (!configured) { state = 'is-unset'; label = 'Not set up'; }
         else if (!enabled) { state = 'is-paused'; label = 'Paused'; }
         else { state = 'is-watching'; label = 'Watching'; }
+
+        // Blocked target (collection trashed/missing) → show Paused instead of a
+        // misleading "Watching", even while enabled. The scan silently pauses on
+        // such a target, so this is the only place the user would learn why.
+        const blocked = configured && enabled ? blockedMappings() : [];
+        if (blocked.length > 0) { state = 'is-paused'; label = 'Paused'; }
         pill.className = 'wf-pill ' + state;
         pill.textContent = label;
+
+        if (multiActive) {
+            // Summary + detail describe the whole set; the per-folder targets live
+            // in the "Multiple watch folders" card below.
+            if (blocked.length > 0) {
+                summary.textContent = blockedSummaryText(blocked);
+                detail.textContent = 'Restore the collection in Zotero’s Trash, or remove that folder and re-add it with a live target.';
+            } else {
+                const n = mappingList.length;
+                // Sync mode is global; the folder-list model clamps Mode 3 → Mode 2
+                // (deletes deferred), so show the EFFECTIVE mode, not a hardcoded label.
+                const effMode = mode === 'mode1' ? 'mode1' : 'mode2';
+                const modeText = effMode === 'mode1' ? 'Import only' : 'Mirror without delete';
+                summary.textContent = `${n} folder${n === 1 ? '' : 's'} → per-folder targets`;
+                detail.textContent = `${modeText} · applies to all folders`;
+            }
+            refreshAttentionStrip();
+            return;
+        }
 
         // Summary — <folder> → <target>.
         const folderName = sourcePath ? _basename(sourcePath) : 'no folder yet';
@@ -1097,10 +1219,14 @@
                 } catch (_e) { /* leave default */ }
             }
         }
-        summary.textContent = `${folderName} → ${target}`;
-
-        // Detail — <mode> · <storage>.
-        detail.textContent = `${STATUS_MODE_LABELS[mode] || mode} · ${STATUS_STORAGE_LABELS[strategy] || strategy}`;
+        if (blocked.length > 0) {
+            summary.textContent = blockedSummaryText(blocked);
+            detail.textContent = 'Restore the collection in Zotero’s Trash, or re-run the setup wizard to pick a live target.';
+        } else {
+            summary.textContent = `${folderName} → ${target}`;
+            // Detail — <mode> · <storage>.
+            detail.textContent = `${STATUS_MODE_LABELS[mode] || mode} · ${STATUS_STORAGE_LABELS[strategy] || strategy}`;
+        }
 
         refreshAttentionStrip();
     }
@@ -1134,10 +1260,12 @@
         }
 
         const parts = [];
+        const blocked = blockedMappings();
+        if (blocked.length) parts.push(`${blocked.length} paused (target in Trash)`);
         if (warnings) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
         if (suppressed) parts.push(`${suppressed} suppressed`);
         if (conflicted) parts.push(`${conflicted} conflict-blocked`);
-        const total = warnings + suppressed + conflicted;
+        const total = blocked.length + warnings + suppressed + conflicted;
         if (strip) strip.hidden = total === 0;
         if (text) text.textContent = total === 0 ? '' : `⚠ ${parts.join(' · ')} — review in Maintenance →`;
 
@@ -1262,9 +1390,10 @@
                 `Could not enumerate collections: ${e.message}`);
             return;
         }
-        // Build sorted, path-labeled options. Skip virtual collections.
+        // Build sorted, path-labeled options. Skip virtual + trashed collections
+        // (a trashed sync root pauses all imports — never let one be re-picked).
         const usable = collections
-            .filter(c => !c.isVirtual)
+            .filter(c => !c.isVirtual && !c.deleted)
             .map(c => ({ key: c.key, label: collectionDisplayPath(c) }))
             .sort((a, b) => a.label.localeCompare(b.label));
         if (usable.length === 0) {
@@ -1558,16 +1687,9 @@
                 enableCheckbox.addEventListener('command', handleEnableCommand);
             }
 
-            // Populate the read-only path display (the pref binding handles saving,
-            // but the <input readonly> won't show the saved value without this).
-            const pathInput = document.getElementById('watch-folder-source-path');
-            if (pathInput) {
-                const currentPath = getPref('sourcePath');
-                if (currentPath) pathInput.value = currentPath;
-            }
-
-            // Sync-root + mode displays — v2.
-            refreshSyncRootDisplay();
+            // Mode radio + the rest of the panels. (Source-path / sync-root rows
+            // were removed in v2.10 — the "Watch folders" list is the source of
+            // truth; the folder-list summary is refreshed below.)
             refreshModeRadio();
             refreshStorageStrategyUI();
             refreshDeletionUI();
@@ -1582,6 +1704,7 @@
 
             // Status header (pill + summary + attention strip) + default tab.
             refreshStatusHeader();
+            refreshMappingsDisplay();
             selectTab('general');
 
             Zotero.debug('[Watch Folder] Preferences panel initialized successfully');
@@ -1615,6 +1738,147 @@
         refreshStatusHeader();
     }
 
+    /** Refresh the multi-mapping summary line (import-only folder list). */
+    /** Refresh the watch-folder list — one uniform row per folder (name → target,
+     *  path, and a Watching/Paused chip from getMappingHealth). */
+    function refreshMappingsDisplay() {
+        const list = document.getElementById('watch-folder-mappings-list');
+        if (!list) return;
+        // Clear existing rows.
+        try { while (list.firstChild) list.removeChild(list.firstChild); }
+        catch (_e) { list.textContent = ''; }
+
+        let health = [];
+        try {
+            const fn = Zotero.WatchFolder && Zotero.WatchFolder.getMappingHealth;
+            if (typeof fn === 'function') health = fn() || [];
+        } catch (_e) { health = []; }
+
+        if (!health.length) {
+            const empty = document.createElement('div');
+            empty.className = 'wf-flist-empty';
+            empty.textContent = 'No watch folders yet — click “＋ Add watch folder…” below.';
+            list.appendChild(empty);
+            return;
+        }
+
+        for (const h of health) {
+            const item = document.createElement('div');
+            item.className = 'wf-fitem';
+
+            const head = document.createElement('div');
+            head.className = 'wf-fitem-head';
+
+            // Left = the watched FOLDER; right = its Zotero TARGET. Small captions
+            // make the direction unambiguous (both may share a name, e.g. test1→test1).
+            const isLib = h.scopeMode === 'library';
+
+            const fCap = document.createElement('span');
+            fCap.className = 'wf-fcap';
+            fCap.textContent = 'Folder';
+            head.appendChild(fCap);
+
+            const name = document.createElement('span');
+            name.className = 'wf-fitem-name';
+            name.textContent = _basename(h.sourcePath) || h.sourcePath || '(folder)';
+            head.appendChild(name);
+
+            const arrow = document.createElement('span');
+            arrow.className = 'wf-fitem-arrow';
+            arrow.textContent = '→';
+            head.appendChild(arrow);
+
+            const tCap = document.createElement('span');
+            tCap.className = 'wf-fcap';
+            tCap.textContent = isLib ? 'Library' : 'Collection';
+            head.appendChild(tCap);
+
+            const target = document.createElement('span');
+            target.className = 'wf-fitem-target';
+            target.textContent = h.targetLabel || (isLib ? '(whole library)' : '(collection)');
+            head.appendChild(target);
+
+            // Only surface a chip when something is WRONG (paused). "Watching" is
+            // already shown once in the header — no need to repeat it per row.
+            if (!h.ok) {
+                const chip = document.createElement('span');
+                chip.className = 'wf-fchip warn';
+                chip.textContent = h.reason === 'trashed' ? '⏸ target in Trash'
+                    : h.reason === 'missing' ? '⏸ target missing'
+                    : '⏸ paused';
+                head.appendChild(chip);
+            }
+
+            // Per-row Remove button (small, right-aligned).
+            const rm = document.createElement('button');
+            rm.className = 'wf-fremove';
+            rm.setAttribute('type', 'button');
+            rm.textContent = 'Remove';
+            rm.setAttribute('title', 'Stop watching this folder');
+            rm.addEventListener('click', () => { removeWatchFolderById(h.id); });
+            head.appendChild(rm);
+
+            item.appendChild(head);
+
+            const path = document.createElement('div');
+            path.className = 'wf-fitem-path';
+            path.textContent = h.sourcePath || '';
+            item.appendChild(path);
+
+            list.appendChild(item);
+        }
+    }
+
+    /** Add another watch folder → target mapping (switches to import-only multi). */
+    async function addWatchFolder() {
+        const fn = Zotero.WatchFolder && Zotero.WatchFolder.runAddMappingWizard;
+        if (typeof fn !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            await fn(window);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        refreshSyncRootDisplay();
+        refreshModeRadio();
+        refreshStatusHeader();
+        refreshMappingsDisplay();
+    }
+
+    /** Remove a configured watch folder mapping (keeps already-imported items). */
+    async function removeWatchFolder() {
+        const fn = Zotero.WatchFolder && Zotero.WatchFolder.removeMappingInteractive;
+        if (typeof fn !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            await fn(window);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        refreshStatusHeader();
+        refreshMappingsDisplay();
+    }
+
+    /** Remove ONE mapping by id (the per-row "Remove" button in the folder list). */
+    async function removeWatchFolderById(id) {
+        const fn = Zotero.WatchFolder && Zotero.WatchFolder.removeMappingById;
+        if (typeof fn !== 'function') {
+            Services.prompt.alert(window, 'Watch Folder', 'Not available — plugin not fully loaded?');
+            return;
+        }
+        try {
+            await fn(window, id);
+        } catch (e) {
+            Services.prompt.alert(window, 'Watch Folder', `Error: ${e.message}`);
+        }
+        refreshStatusHeader();
+        refreshMappingsDisplay();
+    }
+
     // Expose to window so oncommand attributes in the XHTML can reach these.
     window.WatchFolderPrefs = {
         browseForFolder,
@@ -1645,6 +1909,10 @@
         openCheckAndRepair,
         stopTrackingMissing,
         stopTrackingAllMissing,
+        // Multi-mapping (import-only): add / remove additional watch folders.
+        addWatchFolder,
+        removeWatchFolder,
+        removeWatchFolderById,
         onLoad: init,
     };
 

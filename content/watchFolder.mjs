@@ -6,7 +6,7 @@
 
 import { getPref, setPref, delay, getFileHash, relativePath } from './utils.mjs';
 import { hashFile as _hashFileCached } from './_hashCache.mjs';
-import { scanFolder, scanFolderRecursive, SKIP_DIRNAMES } from './fileScanner.mjs';
+import { scanFolder, scanFolderRecursive, scanTree, SKIP_DIRNAMES } from './fileScanner.mjs';
 import { importFile, handlePostImportAction } from './fileImporter.mjs';
 import { TrackingStore, initTrackingStore, createFileRecord, createCollectionRecord, createTombstoneRecord, STATE } from './trackingStore.mjs';
 import { renameAttachment } from './fileRenamer.mjs';
@@ -30,6 +30,23 @@ import {
   MISSING_CLASSIFICATION,
   STATE_FOR_CLASSIFICATION,
 } from './fileMissing.mjs';
+import {
+  getActiveMappings,
+  getMappingById,
+  synthesizeLegacyMapping,
+  isMultiMappingActive,
+  effectiveGlobalMode,
+  LEGACY_MAPPING_ID,
+} from './mappings.mjs';
+
+/**
+ * How often (in scan cycles) `_scanMapping` discards its per-mapping directory
+ * cache and does a full uncached walk. The mtime short-circuit in `scanTree`
+ * elides per-file work for unchanged directories; this periodic full sweep is
+ * the backstop for filesystems that report unreliable directory mtimes (some
+ * cloud clients), bounding the worst-case latency for a missed change.
+ */
+const FULL_SWEEP_EVERY_SCANS = 12;
 
 /**
  * Main service class for watch folder functionality
@@ -75,6 +92,17 @@ export class WatchFolderService {
 
     /** @type {Object|null} Reference to SyncCoordinator for v2.1 scan-cycle bridge */
     this._syncCoordinator = null;
+
+    /**
+     * Per-mapping directory-scan cache for the incremental `scanTree` walk.
+     * Keyed by mapping id → a Map keyed by absolute dir path. Cleared on stop
+     * and periodically swept (see FULL_SWEEP_EVERY_SCANS).
+     * @type {Map<string, Map<string, {mtime: number, files: Array, subdirs: string[]}>>}
+     */
+    this._dirScanCache = new Map();
+
+    /** @type {number} Monotonic scan-cycle counter driving the periodic full sweep. */
+    this._scanCounter = 0;
   }
 
   /**
@@ -95,6 +123,28 @@ export class WatchFolderService {
   setSyncCoordinator(coordinator) {
     this._syncCoordinator = coordinator;
     Zotero.debug('[WatchFolder] SyncCoordinator connected');
+  }
+
+  /**
+   * Effective sync mode for a mapping. Sync mode is GLOBAL in the folder-list
+   * model ("same for all folders"), so the per-mapping `ctx.mode` is ignored
+   * when multi is active. Mode 2 (mirror, no delete) is live; Mode 3 (delete)
+   * is deferred to Stage B, so a Mode-3 pref is CLAMPED to Mode 2 here — a
+   * multi-folder setup can mirror structure but can never trash a file or item
+   * yet. In single-root mode this returns the configured mode unchanged, so
+   * Mode 2/3 behavior is fully preserved for existing single-root installs.
+   * @param {import('./mappings.mjs').MappingContext} [ctx]
+   * @returns {'mode1'|'mode2'|'mode3'}
+   * @private
+   */
+  _effectiveMode(ctx) {
+    if (isMultiMappingActive()) {
+      // Folder-list model: mode is GLOBAL (ctx.mode ignored) and clamped so
+      // Mode 3 deletes stay off until Stage B — single source of truth in
+      // mappings.effectiveGlobalMode.
+      return effectiveGlobalMode();
+    }
+    return (ctx && ctx.mode) || getPref('mode') || 'mode1';
   }
 
   /**
@@ -198,30 +248,37 @@ export class WatchFolderService {
       await this.init();
     }
 
-    const watchPath = getPref('sourcePath');
-    if (!watchPath) {
+    const mappings = getActiveMappings();
+    const configured = mappings.filter(m => m && m.sourcePath);
+    if (configured.length === 0) {
       Zotero.debug('[WatchFolder] No watch path configured');
       return;
     }
 
-    // Verify path exists
-    try {
-      const exists = await IOUtils.exists(watchPath);
-      if (!exists) {
-        Zotero.debug(`[WatchFolder] Watch path does not exist: ${watchPath}`);
+    // Single-root: keep the pre-flight existence check (existing behavior/tests
+    // rely on startWatching being a no-op when the sole path doesn't exist). In
+    // multi mode each mapping's folder is verified per scan cycle instead
+    // (scanFolderRecursive returns [] for a missing/unreachable root).
+    if (!isMultiMappingActive() && configured.length === 1) {
+      const watchPath = configured[0].sourcePath;
+      try {
+        const exists = await IOUtils.exists(watchPath);
+        if (!exists) {
+          Zotero.debug(`[WatchFolder] Watch path does not exist: ${watchPath}`);
+          return;
+        }
+      } catch (e) {
+        Zotero.logError(e);
+        Zotero.debug(`[WatchFolder] Error checking watch path: ${e.message}`);
         return;
       }
-    } catch (e) {
-      Zotero.logError(e);
-      Zotero.debug(`[WatchFolder] Error checking watch path: ${e.message}`);
-      return;
     }
 
     this._isWatching = true;
     this._emptyScans = 0;
     this._currentInterval = (getPref('pollInterval') || 5) * 1000;
 
-    Zotero.debug(`[WatchFolder] Started watching: ${watchPath}`);
+    Zotero.debug(`[WatchFolder] Started watching ${configured.length} mapping(s)`);
 
     // Run initial scan immediately
     await this._scan();
@@ -253,6 +310,9 @@ export class WatchFolderService {
       clearTimeout(this._pollTimer);
       this._pollTimer = null;
     }
+
+    // Drop the incremental scan caches so a re-enable does a clean full walk.
+    this._dirScanCache.clear();
 
     Zotero.debug('[WatchFolder] Stopped watching');
   }
@@ -342,147 +402,48 @@ export class WatchFolderService {
     this._scanInProgress = true;
 
     try {
-      const watchPath = getPref('sourcePath');
-      if (!watchPath) {
-        return;
-      }
+      // Advance the scan-cycle counter (drives the periodic full sweep in
+      // _scanMapping) once per cycle, regardless of how many mappings run.
+      this._scanCounter++;
 
-      // Scan for files recursively
-      const files = await scanFolderRecursive(watchPath);
-
-      // ── Detect folder renames BEFORE per-file logic ──────────────────
-      // If the user renamed a subfolder on disk, rename the corresponding
-      // Zotero subcollection (same key, new name) and update descendant
-      // tracking records so per-file move detection sees a consistent
-      // state on the very same scan.
-      try {
-        await this._detectFolderRenames(files, watchPath);
-      } catch (e) {
-        Zotero.debug(`[WatchFolder] Folder-rename detection failed: ${e.message}`);
-      }
-
-      // ── B.4 / EF.1 — empty-folder pickup ─────────────────────────────
-      // Files imported into a subfolder trigger subcollection creation
-      // as a side effect of canonicalPath.relativePathToCollection. But
-      // a user who creates an empty subfolder (or a subfolder with only
-      // skipped/ignored files) expects an empty Zotero subcollection
-      // too. Walk the disk dirs and create collections for any not yet
-      // tracked.
-      try {
-        await this._ensureCollectionsForExistingFolders(watchPath);
-      } catch (e) {
-        Zotero.debug(`[WatchFolder] Empty-folder pickup failed: ${e.message}`);
-      }
-
-      // ── A2 — folderEventDetector hook ────────────────────────────────
-      // Bridge the scan cycle into the v2.1 sync pipeline. Gated on
-      // coordinator.isRunning() so Mode 1 doesn't pay the recursive
-      // _listSubdirectories cost every poll interval (review fix B7).
-      // Runs AFTER folder-rename and empty-folder pickup so the
-      // disk-side view is settled.
-      if (this._syncCoordinator
-          && typeof this._syncCoordinator.isRunning === 'function'
-          && this._syncCoordinator.isRunning()) {
+      // Multi-mapping: scan each active (folder → target) mapping SERIALLY so
+      // the single tracking store never interleaves writes across mappings. In
+      // single-root mode getActiveMappings() returns one synthesized legacy
+      // mapping, so this is byte-identical to the pre-feature behavior.
+      let totalNew = 0;
+      const activeIds = new Set();
+      for (const ctx of getActiveMappings()) {
+        if (!ctx || !ctx.sourcePath) continue;
+        activeIds.add(ctx.id);
         try {
-          // SYNC-1: never run the folder-deletion pass when the watch root
-          // is unreachable (transient unmount / disconnected drive). On an
-          // unavailable root the on-disk dir set collapses and every tracked
-          // folder would look deleted → mass-trash. Gate behind the same
-          // availability check used by _handleExternalDeletions.
-          const rootAvailable = await isWatchRootAvailable(watchPath);
-          if (!rootAvailable) {
-            Zotero.debug('[WatchFolder] Watch root unavailable — skipping folder-deletion scan');
-          } else {
-            const onDiskAbsDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
-            await this._syncCoordinator.notifyScanCycle({
-              scannedFiles: files,
-              onDiskAbsDirs,
-              watchRoot: watchPath,
-            });
-          }
+          totalNew += await this._scanMapping(ctx);
         } catch (e) {
-          Zotero.debug(`[WatchFolder] SyncCoordinator scan-cycle notify failed: ${e.message}`);
+          Zotero.logError(`[WatchFolder] scan cycle for mapping ${ctx.id} failed: ${e && e.message ? e.message : e}`);
         }
       }
 
-      // Detect externally-deleted files vs file-moves. A "move" is when a
-      // tracked file's path disappears AND an untracked file with the same
-      // content hash appears elsewhere — common case is the user
-      // reorganising the watch folder by dragging a file into a subfolder.
-      // Moves update the tracking record + move the Zotero item to the new
-      // subfolder's collection without ever sending it to the bin.
-      try {
-        const diskPaths = new Set(files.map(f => f.path));
-        await this._handleExternalDeletions(diskPaths, files);
-      } catch (e) {
-        Zotero.debug(`[WatchFolder] External-deletion scan failed: ${e.message}`);
+      // Drop scan caches for mappings that are no longer active (removed folder)
+      // so stale directory snapshots can't linger.
+      for (const id of [...this._dirScanCache.keys()]) {
+        if (!activeIds.has(id)) this._dirScanCache.delete(id);
       }
 
-      // Filter out already tracked and currently processing files
-      const newFiles = [];
-      for (const fileInfo of files) {
-        const filePath = fileInfo.path;
-
-        // Skip if currently being processed
-        if (this._processingFiles.has(filePath)) {
-          continue;
-        }
-
-        // Skip if already tracked. Check BOTH the absolute and the
-        // sync-root-relative form — v2 spec records use relative paths,
-        // but legacy writers in this module sometimes wrote absolute.
-        // Without the relative check, baseline-written records (which
-        // are properly relative) would be missed and the dedup-skip
-        // path would insert a duplicate at the absolute key (#25).
-        if (this._trackingStore) {
-          if (this._trackingStore.hasPath(filePath)) continue;
-          const relForLookup = relativePath(filePath, watchPath);
-          if (relForLookup != null && this._trackingStore.hasPath(relForLookup)) {
-            continue;
-          }
-        }
-
-        // Compute the sync-root-relative directory for this file. The sync
-        // root collection itself maps to "" (the watch-folder root). A file
-        // in a subfolder yields its relative directory, e.g. "Methods/AI".
-        const rel = relativePath(filePath, watchPath); // null if not under watch
-        let relativeDir = '';
-        if (rel != null && rel !== '') {
-          const parts = rel.split('/');
-          parts.pop(); // drop filename
-          relativeDir = parts.join('/');
-        }
-        Zotero.debug(`[WatchFolder] ${filePath} → sync-root dir "${relativeDir}"`);
-        newFiles.push({ path: filePath, relativeDir });
-      }
-
-      if (newFiles.length > 0) {
-        Zotero.debug(`[WatchFolder] Found ${newFiles.length} new file(s)`);
-
-        // Reset adaptive polling when files found
+      // Adaptive polling is per-service — driven by the AGGREGATE new-file
+      // count across all mappings this cycle.
+      if (totalNew > 0) {
         this._emptyScans = 0;
         this._currentInterval = (getPref('pollInterval') || 5) * 1000;
-
-        // Process new files
-        for (const fileObj of newFiles) {
-          await this._processNewFile(fileObj.path, fileObj.relativeDir);
-        }
       } else {
-        // Increment empty scan counter for adaptive polling
         this._emptyScans++;
-
-        // After 10 consecutive empty scans, increase interval (up to 2x)
         if (this._emptyScans >= 10) {
           const baseInterval = (getPref('pollInterval') || 5) * 1000;
           const maxInterval = baseInterval * 2;
-
           if (this._currentInterval < maxInterval) {
             this._currentInterval = Math.min(this._currentInterval * 1.2, maxInterval);
             Zotero.debug(`[WatchFolder] Increased poll interval to ${this._currentInterval}ms`);
           }
         }
       }
-
     } catch (e) {
       Zotero.logError(e);
       Zotero.debug(`[WatchFolder] Scan error: ${e.message}`);
@@ -503,6 +464,130 @@ export class WatchFolderService {
   }
 
   /**
+   * Scan a single (folder → target) mapping. All watch-root / scope reads come
+   * from `ctx`, and every tracking mutation is scoped to `ctx.id`, so mappings
+   * never cross-contaminate. Returns the number of new files processed this
+   * cycle (fed into the caller's aggregate adaptive-polling counter).
+   *
+   * @param {import('./mappings.mjs').MappingContext} ctx
+   * @returns {Promise<number>}
+   * @private
+   */
+  async _scanMapping(ctx) {
+    const watchPath = ctx.sourcePath;
+    if (!watchPath) {
+      return 0;
+    }
+
+    // Incremental scan: reuse this mapping's directory cache so unchanged
+    // folders skip the per-file stat walk. Periodically discard it for a full
+    // sweep (backstop for filesystems with unreliable directory mtimes).
+    let cache = this._dirScanCache.get(ctx.id);
+    if (!cache) {
+      cache = new Map();
+      this._dirScanCache.set(ctx.id, cache);
+    }
+    if (this._scanCounter % FULL_SWEEP_EVERY_SCANS === 0) {
+      cache.clear();
+    }
+
+    // Scan for files recursively (and collect the subdir set in the same walk,
+    // so the folder-rename / empty-folder / deletion passes don't each re-walk).
+    const { files, dirs } = await scanTree(watchPath, cache);
+
+    // ── Detect folder renames BEFORE per-file logic ──────────────────
+    try {
+      await this._detectFolderRenames(files, watchPath, ctx, dirs);
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] Folder-rename detection failed: ${e.message}`);
+    }
+
+    // ── B.4 / EF.1 — empty-folder pickup ─────────────────────────────
+    try {
+      await this._ensureCollectionsForExistingFolders(watchPath, ctx, dirs);
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] Empty-folder pickup failed: ${e.message}`);
+    }
+
+    // ── A2 — folderEventDetector hook ────────────────────────────────
+    if (this._syncCoordinator
+        && typeof this._syncCoordinator.isRunning === 'function'
+        && this._syncCoordinator.isRunning()) {
+      try {
+        // SYNC-1: never run the folder-deletion pass when this mapping's watch
+        // root is unreachable (transient unmount / disconnected drive).
+        const rootAvailable = await isWatchRootAvailable(watchPath);
+        if (!rootAvailable) {
+          Zotero.debug(`[WatchFolder] Watch root unavailable (mapping ${ctx.id}) — skipping folder-deletion scan`);
+        } else {
+          // Reuse the subdir set from this cycle's scanTree walk (dirs), instead
+          // of a second full tree walk via _listSubdirectories.
+          const onDiskAbsDirs = new Set([watchPath, ...dirs]);
+          await this._syncCoordinator.notifyScanCycle({
+            scannedFiles: files,
+            onDiskAbsDirs,
+            watchRoot: watchPath,
+            mappingId: ctx.id,
+            mapping: ctx,
+          });
+        }
+      } catch (e) {
+        Zotero.debug(`[WatchFolder] SyncCoordinator scan-cycle notify failed: ${e.message}`);
+      }
+    }
+
+    // Detect externally-deleted files vs file-moves — scoped to THIS mapping's
+    // records (a per-mapping scan must never treat another mapping's files as
+    // deleted).
+    try {
+      const diskPaths = new Set(files.map(f => f.path));
+      await this._handleExternalDeletions(diskPaths, files, ctx);
+    } catch (e) {
+      Zotero.debug(`[WatchFolder] External-deletion scan failed: ${e.message}`);
+    }
+
+    // Filter out already tracked (within this mapping) and currently processing.
+    const newFiles = [];
+    for (const fileInfo of files) {
+      const filePath = fileInfo.path;
+
+      // Skip if currently being processed (absolute paths are globally unique
+      // across non-overlapping mappings, so the bare path key is unambiguous).
+      if (this._processingFiles.has(filePath)) {
+        continue;
+      }
+
+      // Skip if already tracked in THIS mapping. Check BOTH the absolute and the
+      // relative form (v2 records are relative; legacy writers sometimes absolute).
+      if (this._trackingStore) {
+        if (this._trackingStore.hasPath(filePath, ctx.id)) continue;
+        const relForLookup = relativePath(filePath, watchPath);
+        if (relForLookup != null && this._trackingStore.hasPath(relForLookup, ctx.id)) {
+          continue;
+        }
+      }
+
+      const rel = relativePath(filePath, watchPath); // null if not under watch
+      let relativeDir = '';
+      if (rel != null && rel !== '') {
+        const parts = rel.split('/');
+        parts.pop(); // drop filename
+        relativeDir = parts.join('/');
+      }
+      Zotero.debug(`[WatchFolder] [${ctx.id}] ${filePath} → sync-root dir "${relativeDir}"`);
+      newFiles.push({ path: filePath, relativeDir });
+    }
+
+    if (newFiles.length > 0) {
+      Zotero.debug(`[WatchFolder] mapping ${ctx.id}: found ${newFiles.length} new file(s)`);
+      for (const fileObj of newFiles) {
+        await this._processNewFile(fileObj.path, fileObj.relativeDir, ctx);
+      }
+    }
+    return newFiles.length;
+  }
+
+  /**
    * Process a newly detected file. v2: resolves the target collection via
    * canonicalPath (sync-root-relative), builds a v2 file record, and uses
    * `zoteroAttachmentKey` as the stable identity.
@@ -513,7 +598,9 @@ export class WatchFolderService {
    *   ("" for files at the root), used to resolve the target collection.
    * @returns {Promise<void>}
    */
-  async _processNewFile(filePath, relativeDir = '') {
+  async _processNewFile(filePath, relativeDir = '', ctx) {
+    if (!ctx) ctx = synthesizeLegacyMapping();
+    const mappingId = ctx.id;
     this._processingFiles.add(filePath);
 
     try {
@@ -530,7 +617,7 @@ export class WatchFolderService {
       // Bails early if the sync root isn't configured or doesn't resolve.
       let targetCollection;
       try {
-        targetCollection = await relativePathToCollection(relativeDir, { createIfMissing: true });
+        targetCollection = await relativePathToCollection(relativeDir, { createIfMissing: true }, ctx);
       } catch (e) {
         if (e instanceof SyncRootMissingError) {
           Zotero.logError(`[WatchFolder] Sync root not found — pausing import: ${e.message}`);
@@ -553,8 +640,8 @@ export class WatchFolderService {
       // records, B2 folder-rename detection has nothing to compare
       // against on subsequent scans. (Unfiled has no path → nothing to ensure.)
       if (this._trackingStore && relativeDir !== '' && !isUnfiled) {
-        const watchPath = getPref('sourcePath') || '';
-        await this._ensureCollectionRecordsForPath(relativeDir, targetCollection, watchPath);
+        const watchPath = ctx.sourcePath || '';
+        await this._ensureCollectionRecordsForPath(relativeDir, targetCollection, watchPath, ctx);
       }
 
       // Step 3: Hash + dedup pre-check via tracking store.
@@ -574,7 +661,7 @@ export class WatchFolderService {
         const tombstone = this._trackingStore.findTombstoneByHash(hash);
         if (tombstone && tombstone.zoteroAttachmentKey && tombstone.deletedFrom === 'zotero') {
           try {
-            const syncRoot = await resolveSyncRoot().catch(() => null);
+            const syncRoot = await resolveSyncRoot(ctx).catch(() => null);
             const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
             const attachment = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, tombstone.zoteroAttachmentKey);
             if (attachment) {
@@ -587,9 +674,10 @@ export class WatchFolderService {
                   Zotero.debug(`[WatchFolder] Tombstone re-link: failed to un-trash ${tombstone.zoteroAttachmentKey}: ${e?.message ?? e}`);
                 }
               }
-              const watchPath = getPref('sourcePath') || '';
+              const watchPath = ctx.sourcePath || '';
               const relFile = this._toRelativeForStore(filePath, watchPath);
               this._trackingStore.add(createFileRecord({
+                mappingId,
                 localPath: relFile,
                 canonicalLocalPath: relFile,
                 lastSyncedHash: hash,
@@ -622,9 +710,10 @@ export class WatchFolderService {
                     parentItemID: parent.id,
                   });
                   if (newAttachment && newAttachment.key) {
-                    const watchPath = getPref('sourcePath') || '';
+                    const watchPath = ctx.sourcePath || '';
                     const relFile = this._toRelativeForStore(filePath, watchPath);
                     this._trackingStore.add(createFileRecord({
+                      mappingId,
                       localPath: relFile,
                       canonicalLocalPath: relFile,
                       lastSyncedHash: hash,
@@ -661,7 +750,7 @@ export class WatchFolderService {
         const existingByHash = this._trackingStore.findByHash(hash);
         if (existingByHash) {
           Zotero.debug(`[WatchFolder] File already tracked by hash: ${filePath}`);
-          const watchPath = getPref('sourcePath') || '';
+          const watchPath = ctx.sourcePath || '';
           const relFile = this._toRelativeForStore(filePath, watchPath);
           // If the existing record already represents THIS file (same
           // resolved path), skip the duplicate insert (#25 dedup).
@@ -674,6 +763,7 @@ export class WatchFolderService {
           // SAME attachment but with a different localPath. canonicalLocalPath
           // stays on the original location (canonical-path rule).
           this._trackingStore.add(createFileRecord({
+            mappingId,
             localPath: relFile,
             canonicalLocalPath: existingByHash.canonicalLocalPath,
             lastSyncedHash: hash,
@@ -753,7 +843,7 @@ export class WatchFolderService {
                   }
                 }
                 if (attachment) {
-                  const watchPath = getPref('sourcePath') || '';
+                  const watchPath = ctx.sourcePath || '';
                   const relFile = this._toRelativeForStore(filePath, watchPath);
                   // Don't double-track: if a record for this attachment
                   // at this exact path already exists, skip the insert.
@@ -763,6 +853,7 @@ export class WatchFolderService {
                     return;
                   }
                   this._trackingStore.add(createFileRecord({
+                    mappingId,
                     localPath: relFile,
                     canonicalLocalPath: relFile,
                     lastSyncedHash: hash,
@@ -813,6 +904,9 @@ export class WatchFolderService {
       // the pure `stored` strategy. `stored_plus_mirror` must keep the
       // watch-folder copy as the mirror; `linked_watch_folder` IS the
       // watch-folder file Zotero now links to — never move/delete it.
+      // PDF storage strategy is a single GLOBAL setting for all folders (v2.10),
+      // read from the `pdfStorageStrategy` pref. (Per-mapping storage was removed
+      // when the 1-folder/multi split was unified.)
       const storageStrategy = getStorageStrategy();
       if (storageStrategy === STRATEGY.STORED) {
         try {
@@ -829,9 +923,10 @@ export class WatchFolderService {
       const finalPath = postImportResult.finalPath ?? filePath;
       const wasDeleted = postImportResult.action === 'delete';
       if (this._trackingStore) {
-        const watchPath = getPref('sourcePath') || '';
+        const watchPath = ctx.sourcePath || '';
         const relFinal = this._toRelativeForStore(finalPath, watchPath);
         this._trackingStore.add(createFileRecord({
+          mappingId,
           localPath: relFinal,
           canonicalLocalPath: relFinal,
           lastSyncedHash: hash,
@@ -886,13 +981,13 @@ export class WatchFolderService {
       // Step 6: Queue for metadata retrieval if enabled.
       const autoRetrieveMetadata = getPref('autoRetrieveMetadata');
       if (autoRetrieveMetadata !== false && this._metadataRetriever) {
-        const watchPathForCallback = getPref('sourcePath') || '';
+        const watchPathForCallback = ctx.sourcePath || '';
         const finalRelKey = this._toRelativeForStore(finalPath, watchPathForCallback);
         this._metadataRetriever.queueItem(itemID, async (success, completedItemID) => {
           if (this._trackingStore) {
             // Use the sync-root-relative key matching what _processNewFile
             // just wrote (#25 migration).
-            this._trackingStore.update(finalRelKey, { metadataRetrieved: success });
+            this._trackingStore.update(finalRelKey, { metadataRetrieved: success }, mappingId);
           }
           Zotero.debug(`[WatchFolder] Metadata retrieval ${success ? 'completed' : 'failed'} for item ${completedItemID}`);
 
@@ -910,7 +1005,7 @@ export class WatchFolderService {
                 if (this._trackingStore && attachmentItem.parentItem) {
                   this._trackingStore.update(finalRelKey, {
                     zoteroItemKey: attachmentItem.parentItem.key,
-                  });
+                  }, mappingId);
                 }
                 await stampHashWhenPossible(attachmentItem);
               }
@@ -927,7 +1022,7 @@ export class WatchFolderService {
                 if (renameResult.success && renameResult.oldName !== renameResult.newName) {
                   Zotero.debug(`[WatchFolder] Renamed: "${renameResult.oldName}" → "${renameResult.newName}"`);
                   if (this._trackingStore) {
-                    this._trackingStore.update(finalRelKey, { renamed: true });
+                    this._trackingStore.update(finalRelKey, { renamed: true }, mappingId);
                   }
                 }
               }
@@ -959,7 +1054,8 @@ export class WatchFolderService {
    * @param {string} relativeDir - Forward-slash relative path, e.g. "Methods/AI".
    * @param {object} leafCollection - The Zotero.Collection at the leaf of relativeDir.
    */
-  async _ensureCollectionRecordsForPath(relativeDir, leafCollection, watchPath) {
+  async _ensureCollectionRecordsForPath(relativeDir, leafCollection, watchPath, ctx) {
+    const mappingId = ctx && ctx.id ? ctx.id : undefined;
     const segments = relativeDir.split('/').filter(s => s !== '');
     if (segments.length === 0) return;
 
@@ -992,6 +1088,7 @@ export class WatchFolderService {
         }
       }
       this._trackingStore.add(createCollectionRecord({
+        mappingId,
         localPath: relPath,
         zoteroCollectionKey: collection.key,
         parentCollectionKey: parentKey,
@@ -1041,19 +1138,22 @@ export class WatchFolderService {
    *
    * @private
    * @param {string} watchPath
+   * @param {import('./mappings.mjs').MappingContext} [ctx]
+   * @param {string[]} [precomputedDirs] - Subdir set from the caller's scanTree
+   *   walk; when provided, avoids a redundant _listSubdirectories tree walk.
    */
-  async _ensureCollectionsForExistingFolders(watchPath) {
+  async _ensureCollectionsForExistingFolders(watchPath, ctx, precomputedDirs) {
     if (!this._trackingStore || !watchPath) return;
-    const dirs = await this._listSubdirectories(watchPath);
+    if (!ctx) ctx = synthesizeLegacyMapping();
+    const dirs = precomputedDirs ?? await this._listSubdirectories(watchPath);
     if (dirs.length === 0) return;
 
     // Build the tracked-set in ABSOLUTE form for comparison with the
-    // disk `absDir`. CollectionRecord.localPath is now relative
-    // (post-#25 migration), so resolve each through _resolveTrackedAbs;
-    // legacy absolute records still match because the resolver is
-    // idempotent.
+    // disk `absDir`. Scoped to THIS mapping's collection records so another
+    // mapping's relative paths aren't resolved against the wrong watch root.
     const tracked = new Set(
       this._trackingStore.getAllOfType('collection')
+        .filter(r => (r.mappingId || LEGACY_MAPPING_ID) === ctx.id)
         .map(r => this._resolveTrackedAbs(r.localPath, watchPath)),
     );
 
@@ -1062,9 +1162,9 @@ export class WatchFolderService {
       const relDir = relativePath(absDir, watchPath);
       if (relDir == null || relDir === '') continue;
       try {
-        const col = await relativePathToCollection(relDir, { createIfMissing: true });
+        const col = await relativePathToCollection(relDir, { createIfMissing: true }, ctx);
         if (col) {
-          await this._ensureCollectionRecordsForPath(relDir, col, watchPath);
+          await this._ensureCollectionRecordsForPath(relDir, col, watchPath, ctx);
           // tracked.add(absDir) — refresh local set so subsequent siblings
           // don't double-create. _ensureCollectionRecordsForPath also
           // inserts the record into the store, so getAllOfType would
@@ -1106,10 +1206,16 @@ export class WatchFolderService {
    * @private
    * @param {Array<{path: string}>} scannedFiles
    * @param {string} watchPath
+   * @param {import('./mappings.mjs').MappingContext} [ctx]
+   * @param {string[]} [precomputedDirs] - Subdir set from the caller's scanTree
+   *   walk; when provided, avoids a redundant _listSubdirectories tree walk.
    */
-  async _detectFolderRenames(scannedFiles, watchPath) {
+  async _detectFolderRenames(scannedFiles, watchPath, ctx, precomputedDirs) {
     if (!this._trackingStore || !watchPath) return;
-    const rawRecords = this._trackingStore.getAllOfType('collection');
+    if (!ctx) ctx = synthesizeLegacyMapping();
+    // Scope to THIS mapping's collection records — another mapping's records
+    // resolve against a different watch root and must not participate here.
+    const rawRecords = this._trackingStore.getAllOfType('collection').filter(r => (r.mappingId || LEGACY_MAPPING_ID) === ctx.id);
     if (rawRecords.length === 0) return;
 
     // Normalize collection records to ABSOLUTE-path form for this
@@ -1126,7 +1232,7 @@ export class WatchFolderService {
     // Include ALL existing subdirs (even empty ones) — otherwise a tracked
     // collection record for an empty folder would be flagged as missing
     // every scan and trigger spurious "no tracked file hashes — skip" log.
-    const onDiskDirs = new Set([watchPath, ...(await this._listSubdirectories(watchPath))]);
+    const onDiskDirs = new Set([watchPath, ...(precomputedDirs ?? await this._listSubdirectories(watchPath))]);
     for (const fileInfo of scannedFiles) {
       // WP-A2 (perf): prefer the scanner-provided relativePath when present
       // (avoids recomputing from absPath + watchPath each iteration). Falls
@@ -1208,7 +1314,7 @@ export class WatchFolderService {
     // Computed once up front so the per-orphan 1:1 guard sees an accurate
     // orphan count regardless of loop order.
     const allTrackedFileAbs = this._trackingStore.getAllOfType('file')
-      .filter(f => f.lastSyncedHash)
+      .filter(f => f.lastSyncedHash && (f.mappingId || LEGACY_MAPPING_ID) === ctx.id)
       .map(f => this._resolveTrackedAbs(f.localPath, watchPath));
     const missingHasTrackedFiles = (absPath) => {
       const prefix = absPath + '/';
@@ -1253,7 +1359,7 @@ export class WatchFolderService {
       // Re-fetch tracked files each iteration — earlier rename sweeps may
       // have rewritten paths. Resolve each file's localPath to absolute
       // for comparison (post-#25 records are sync-root-relative).
-      const trackedFilesNow = this._trackingStore.getAllOfType('file');
+      const trackedFilesNow = this._trackingStore.getAllOfType('file').filter(f => (f.mappingId || LEGACY_MAPPING_ID) === ctx.id);
       const trackedShape = new Map(); // hash → tail under oldPath
       for (const f of trackedFilesNow) {
         if (!f.lastSyncedHash) continue;
@@ -1276,7 +1382,7 @@ export class WatchFolderService {
             && orphans[0].zoteroCollectionKey === collRecord.zoteroCollectionKey) {
           const target = newEmpties[0];
           Zotero.debug(`[WatchFolder] Empty-folder rename detected (1:1): ${oldPath} → ${target}`);
-          await this._renameTrackedCollection(collRecord, target);
+          await this._renameTrackedCollection(collRecord, target, ctx);
         } else {
           Zotero.debug(`[WatchFolder] Folder ${oldPath} missing but no tracked file hashes under it — skip (empty-folder match ambiguous: ${orphans.length} orphan(s), ${newEmpties.length} new empty dir(s))`);
         }
@@ -1285,6 +1391,7 @@ export class WatchFolderService {
 
       const trackedDirs = new Set(
         this._trackingStore.getAllOfType('collection')
+          .filter(r => (r.mappingId || LEGACY_MAPPING_ID) === ctx.id)
           .map(r => this._resolveTrackedAbs(r.localPath, watchPath)),
       );
       const candidateDirs = [...onDiskDirs].filter(d =>
@@ -1312,7 +1419,7 @@ export class WatchFolderService {
 
       if (best && bestScore >= 1) {
         Zotero.debug(`[WatchFolder] Folder rename detected: ${oldPath} → ${best} (matched files=${bestScore})`);
-        await this._renameTrackedCollection(collRecord, best);
+        await this._renameTrackedCollection(collRecord, best, ctx);
       }
     }
 
@@ -1326,18 +1433,19 @@ export class WatchFolderService {
    *
    * @private
    */
-  async _renameTrackedCollection(oldRecord, newPath) {
+  async _renameTrackedCollection(oldRecord, newPath, ctx) {
     // oldRecord may carry _absLocalPath (set by _detectFolderRenames'
     // normalization pass) or raw localPath that's relative or absolute.
     // newPath is the new absolute disk path of the renamed dir.
-    const watchPath = getPref('sourcePath') || '';
+    if (!ctx) ctx = synthesizeLegacyMapping();
+    const watchPath = ctx.sourcePath || '';
     const oldAbs = oldRecord._absLocalPath
       ?? this._resolveTrackedAbs(oldRecord.localPath, watchPath);
     const newAbs = newPath;
     const newRel = this._toRelativeForStore(newAbs, watchPath);
     const newName = newPath.split('/').pop();
     try {
-      const syncRoot = await resolveSyncRoot().catch(() => null);
+      const syncRoot = await resolveSyncRoot(ctx).catch(() => null);
       const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
       const collection = await Zotero.Collections.getByLibraryAndKeyAsync(
         libraryID, oldRecord.zoteroCollectionKey);
@@ -1367,7 +1475,7 @@ export class WatchFolderService {
     const oldPrefix = oldAbs + '/';
     const newPrefix = newAbs + '/';
 
-    const files = this._trackingStore.getAllOfType('file').slice();
+    const files = this._trackingStore.getAllOfType('file').slice().filter(f => (f.mappingId || LEGACY_MAPPING_ID) === ctx.id);
     for (const f of files) {
       const fAbs = this._resolveTrackedAbs(f.localPath, watchPath);
       let newLocalAbs = null;
@@ -1376,11 +1484,11 @@ export class WatchFolderService {
       else continue;
       const newLocalRel = this._toRelativeForStore(newLocalAbs, watchPath);
       const updated = { ...f, localPath: newLocalRel, canonicalLocalPath: newLocalRel };
-      this._trackingStore.remove(f.localPath);
+      this._trackingStore.remove(f.localPath, f.mappingId);
       this._trackingStore.add(updated);
     }
 
-    const cols = this._trackingStore.getAllOfType('collection').slice();
+    const cols = this._trackingStore.getAllOfType('collection').slice().filter(c => (c.mappingId || LEGACY_MAPPING_ID) === ctx.id);
     for (const c of cols) {
       if (c.zoteroCollectionKey === oldRecord.zoteroCollectionKey) continue; // already handled
       const cAbs = this._resolveTrackedAbs(c.localPath, watchPath);
@@ -1556,7 +1664,7 @@ export class WatchFolderService {
         case 'trash': {
           // Mode 1 never propagates Zotero deletions back to disk.
           // v2.1 / v2.2 reactivate this path with explicit safety nets.
-          const mode = getPref('mode') || 'mode1';
+          const mode = isMultiMappingActive() ? 'mode1' : (getPref('mode') || 'mode1');
           if (mode === 'mode1') {
             Zotero.debug(`[WatchFolder] Mode 1: ignoring trash event for items ${ids.join(', ')}`);
             break;
@@ -1572,7 +1680,7 @@ export class WatchFolderService {
           // file from plugin trash if available. Zotero's notifier
           // fires 'modify' for trash + untrash both — distinguish via
           // the current `deleted` state and the tombstone presence.
-          const mode = getPref('mode') || 'mode1';
+          const mode = isMultiMappingActive() ? 'mode1' : (getPref('mode') || 'mode1');
           if (mode === 'mode1') break;
           if (!this._trackingStore) break;
           // Cheap pre-filter: only do restore work when we actually
@@ -1619,7 +1727,7 @@ export class WatchFolderService {
    */
   async _handleZoteroTrash(ids) {
     if (!this._trackingStore || !ids || ids.length === 0) return;
-    const syncMode = getPref('mode') || 'mode1';
+    const syncMode = isMultiMappingActive() ? 'mode1' : (getPref('mode') || 'mode1');
     if (syncMode === 'mode1') return; // defense in depth
 
     const watchPath = getPref('sourcePath') || '';
@@ -2259,25 +2367,27 @@ export class WatchFolderService {
    *
    * @param {Set<string>} diskPaths - Paths currently present in the watch folder
    */
-  async _handleExternalDeletions(diskPaths, allFiles = null) {
+  async _handleExternalDeletions(diskPaths, allFiles = null, ctx) {
     if (!this._trackingStore) return;
+    if (!ctx) ctx = synthesizeLegacyMapping();
     // `diskDeleteSync`: 'never' → never propagate (early-out); 'auto' → silently
     // trash; 'ask' (default) → prompt before touching Zotero (resolved below,
     // once we know the affected file list).
     if ((getPref('diskDeleteSync') || 'ask') === 'never') return;
 
-    // Whole-mount sanity check: if the watch root itself is unreachable
+    // Whole-mount sanity check: if THIS mapping's watch root is unreachable
     // (USB unplugged, network share gone, cloud client logged out), every
-    // tracked file would naively look "missing". Pause sync globally
-    // instead of mass-tagging.
-    const watchPath = getPref('sourcePath') || '';
+    // tracked file under it would naively look "missing". Pause just this
+    // mapping's records instead of mass-tagging.
+    const watchPath = ctx.sourcePath || '';
     if (watchPath) {
       const rootAvailable = await isWatchRootAvailable(watchPath);
       if (!rootAvailable) {
-        Zotero.debug('[WatchFolder] Watch root unavailable — pausing external-deletion scan');
+        Zotero.debug(`[WatchFolder] Watch root unavailable (mapping ${ctx.id}) — pausing external-deletion scan`);
         for (const r of this._trackingStore.getAllOfType('file')) {
+          if ((r.mappingId || LEGACY_MAPPING_ID) !== ctx.id) continue;
           if (r.state !== STATE.PAUSED) {
-            this._trackingStore.update(r.localPath, { state: STATE.PAUSED });
+            this._trackingStore.update(r.localPath, { state: STATE.PAUSED }, ctx.id);
           }
         }
         try { await this._trackingStore.save(); } catch (_) {}
@@ -2285,9 +2395,10 @@ export class WatchFolderService {
       }
     }
 
-    // v2 schema: enumerate FILE records only (collection + tombstone
-    // records have their own paths and are handled elsewhere).
-    const records = this._trackingStore.getAllOfType('file');
+    // v2 schema: enumerate FILE records for THIS mapping only (a per-mapping
+    // scan's diskPaths only contains this mapping's files — treating another
+    // mapping's records as "missing" here would be a cross-mapping deletion).
+    const records = this._trackingStore.getAllOfType('file').filter(r => (r.mappingId || LEGACY_MAPPING_ID) === ctx.id);
     const missing = [];
 
     for (const record of records) {
@@ -2372,7 +2483,7 @@ export class WatchFolderService {
 
     if (moves.length > 0) {
       Zotero.debug(`[WatchFolder] Detected ${moves.length} file move(s)`);
-      await this._handleFileMoves(moves);
+      await this._handleFileMoves(moves, ctx);
     }
 
     if (trulyMissing.length === 0) return;
@@ -2391,7 +2502,7 @@ export class WatchFolderService {
           || classification === MISSING_CLASSIFICATION.CLOUD_PLACEHOLDER) {
         const newState = STATE_FOR_CLASSIFICATION[classification];
         if (record.state !== newState) {
-          this._trackingStore.update(record.localPath, { state: newState });
+          this._trackingStore.update(record.localPath, { state: newState }, ctx.id);
         }
         continue;
       }
@@ -2412,10 +2523,10 @@ export class WatchFolderService {
     // a warningSink entry so the user sees the event (bug #33 fix —
     // previously the Mode-3 modal alert fired in Mode 2 too, blocking
     // the bridge and creating modal popups for every deleted file).
-    const mode = getPref('mode') || 'mode1';
+    const mode = this._effectiveMode(ctx);
     if (mode !== 'mode3') {
       for (const record of stillMissing) {
-        this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+        this._trackingStore.update(record.localPath, { state: STATE.MISSING }, ctx.id);
         if (mode === 'mode2') {
           try {
             reportWarning({
@@ -2441,9 +2552,9 @@ export class WatchFolderService {
     // blast-radius acknowledgement before propagating ANY external deletion to
     // Zotero. Fail-closed (no UI → refuse). Below it, the per-batch bulk prompt
     // only fires above the threshold, so this covers single/sub-threshold cases.
-    if (stillMissing.length > 0 && !(await confirmFirstLibraryDelete({ scopeMode: getScopeMode() }))) {
+    if (stillMissing.length > 0 && !(await confirmFirstLibraryDelete({ scopeMode: getScopeMode(ctx) }))) {
       for (const record of stillMissing) {
-        this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+        this._trackingStore.update(record.localPath, { state: STATE.MISSING }, ctx.id);
       }
       try { await this._trackingStore.save(); } catch (_) {}
       Zotero.debug(`[WatchFolder] _handleExternalDeletions: ${stillMissing.length} propagation(s) blocked — library-scale deletion not acknowledged; marked missing instead`);
@@ -2465,7 +2576,7 @@ export class WatchFolderService {
       userConfirmed = true;
       if (choice === 'keep') {
         for (const record of stillMissing) {
-          this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+          this._trackingStore.update(record.localPath, { state: STATE.MISSING }, ctx.id);
         }
         try { await this._trackingStore.save(); } catch (_) {}
         Zotero.debug(`[WatchFolder] _handleExternalDeletions: user chose KEEP for ${stillMissing.length} deleted file(s) — Zotero items untouched, marked missing`);
@@ -2496,7 +2607,7 @@ export class WatchFolderService {
           // tracking flips to MISSING so we don't re-detect, but the
           // Zotero side stays intact and the user can resolve manually.
           for (const record of stillMissing) {
-            this._trackingStore.update(record.localPath, { state: STATE.MISSING });
+            this._trackingStore.update(record.localPath, { state: STATE.MISSING }, ctx.id);
             try {
               reportWarning({
                 category: WARNING_CATEGORY.MISSING_FILE,
@@ -2536,13 +2647,13 @@ export class WatchFolderService {
           const canonExists = await IOUtils.exists(canonAbs).catch(() => false);
           if (canonExists) {
             Zotero.debug(`[WatchFolder] Cascading-trash guard: shadow ${record.localPath} missing but canonical ${canonical.localPath} still on disk — dropping shadow only`);
-            this._trackingStore.remove(record.localPath);
+            this._trackingStore.remove(record.localPath, ctx.id);
             continue;
           }
         }
       }
       try {
-        const syncRoot = await resolveSyncRoot().catch(() => null);
+        const syncRoot = await resolveSyncRoot(ctx).catch(() => null);
         const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
         const item = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, record.zoteroAttachmentKey);
         if (!item) {
@@ -2557,7 +2668,7 @@ export class WatchFolderService {
         // last saw. The record is kept (CONFLICT_BLOCKED) for user resolution.
         const fresh = await canSafelyTrashZoteroAttachment(record, item);
         if (!fresh.ok) {
-          this._trackingStore.update(record.localPath, { state: STATE.CONFLICT_BLOCKED });
+          this._trackingStore.update(record.localPath, { state: STATE.CONFLICT_BLOCKED }, ctx.id);
           try {
             reportWarning({
               category: WARNING_CATEGORY.CONFLICT_BLOCKED,
@@ -2732,9 +2843,10 @@ export class WatchFolderService {
    *
    * @param {{record: TrackingRecord, newPath: string}[]} moves
    */
-  async _handleFileMoves(moves) {
+  async _handleFileMoves(moves, ctx) {
     if (!moves || moves.length === 0) return;
-    const watchPath = getPref('sourcePath') || '';
+    if (!ctx) ctx = synthesizeLegacyMapping();
+    const watchPath = ctx.sourcePath || '';
 
     // Helper: compute the sync-root-relative directory for a file path.
     // Returns "" if the file is at the watch-folder root.
@@ -2753,14 +2865,14 @@ export class WatchFolderService {
       Zotero.debug(`[WatchFolder] Move: relativeDir "${oldRel}" → "${newRel}"`);
 
       try {
-        const syncRoot = await resolveSyncRoot().catch(() => null);
+        const syncRoot = await resolveSyncRoot(ctx).catch(() => null);
         const libraryID = syncRoot?.libraryID ?? Zotero.Libraries.userLibraryID;
         const item = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, record.zoteroAttachmentKey);
 
         if (item && !item.deleted) {
           if (oldRel !== newRel && newRel != null) {
             // Resolve / create the new auto-mapped collection under the sync root.
-            const newCollection = await relativePathToCollection(newRel, { createIfMissing: true });
+            const newCollection = await relativePathToCollection(newRel, { createIfMissing: true }, ctx);
             // Library scope: a move UP TO THE ROOT yields newRel '' →
             // relativePathToCollection returns the truthy UNFILED sentinel (no
             // .id/.key). That means "make the item Unfiled": drop the old
@@ -2771,7 +2883,7 @@ export class WatchFolderService {
               // Remove from the OLD auto-mapped collection if currently a
               // member; preserve manually-added collection memberships.
               const oldCollection = (oldRel != null)
-                ? await relativePathToCollection(oldRel, { createIfMissing: false }).catch(() => null)
+                ? await relativePathToCollection(oldRel, { createIfMissing: false }, ctx).catch(() => null)
                 : null;
               const currentColIDs = item.getCollections ? item.getCollections() : [];
               if (oldCollection && oldCollection !== UNFILED && currentColIDs.includes(oldCollection.id)) {
@@ -2796,7 +2908,7 @@ export class WatchFolderService {
         if (newRel == null) {
           newCanonicalCollectionKey = record.canonicalCollectionKey;
         } else {
-          const resolved = await relativePathToCollection(newRel, { createIfMissing: false }).catch(() => null);
+          const resolved = await relativePathToCollection(newRel, { createIfMissing: false }, ctx).catch(() => null);
           // Library scope: UNFILED (move to root) → canonical key is null
           // (Unfiled), NOT a fallback to the stale old key. null/unresolved with
           // a non-root path → keep the prior key (transient resolve miss).
@@ -2807,7 +2919,7 @@ export class WatchFolderService {
           }
         }
         const newRelLocal = this._toRelativeForStore(newPath, watchPath);
-        this._trackingStore.remove(record.localPath);
+        this._trackingStore.remove(record.localPath, ctx.id);
         this._trackingStore.add(createFileRecord({
           ...record,
           localPath: newRelLocal,

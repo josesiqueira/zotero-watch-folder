@@ -59,6 +59,44 @@ async function _hashViaCache(absPath, statHint) {
 }
 
 const BASELINE_PREF = 'baselineCompletedForRoot';
+const BASELINE_MAP_PREF = 'baselineCompletedByMapping';
+/** Must equal mappings.mjs::LEGACY_MAPPING_ID. */
+const LEGACY_MAPPING_ID = 'legacy';
+
+/**
+ * Read the baseline-done key for a mapping. The legacy/synthesized mapping
+ * (id 'legacy' or no id) uses the flat scalar pref `baselineCompletedForRoot`
+ * — byte-identical to the single-root plugin and still what itemMembershipHandler
+ * reads. Real mapping ids use a per-id slot in the `baselineCompletedByMapping`
+ * JSON so two mappings targeting the SAME collection never share/clobber state.
+ * @param {string|undefined} mappingId
+ * @returns {string}
+ */
+function _getBaselineDone(mappingId) {
+  if (mappingId && mappingId !== LEGACY_MAPPING_ID) {
+    try {
+      const m = JSON.parse(getPref(BASELINE_MAP_PREF) || '{}');
+      return (m && typeof m === 'object' && m[mappingId]) ? m[mappingId] : '';
+    } catch (_e) { return ''; }
+  }
+  return getPref(BASELINE_PREF) || '';
+}
+
+/**
+ * Persist the baseline-done key for a mapping (see {@link _getBaselineDone}).
+ * @param {string|undefined} mappingId
+ * @param {string} key
+ */
+function _setBaselineDone(mappingId, key) {
+  if (mappingId && mappingId !== LEGACY_MAPPING_ID) {
+    let m = {};
+    try { const parsed = JSON.parse(getPref(BASELINE_MAP_PREF) || '{}'); if (parsed && typeof parsed === 'object') m = parsed; } catch (_e) { m = {}; }
+    m[mappingId] = key || '';
+    setPref(BASELINE_MAP_PREF, JSON.stringify(m));
+    return;
+  }
+  setPref(BASELINE_PREF, key || '');
+}
 
 /**
  * The idempotency key the baseline is marked complete against. In collection
@@ -89,18 +127,24 @@ export function baselineKeyFor(syncRoot) {
  * Has the baseline been run for the current sync root?
  * @returns {Promise<boolean>}
  */
-export async function isBaselineNeeded() {
+export async function isBaselineNeeded(ctx) {
   let syncRoot;
-  try { syncRoot = await resolveSyncRoot(); }
+  try { syncRoot = await resolveSyncRoot(ctx); }
   catch (_e) { return false; }
   if (!syncRoot) return false;
-  const completed = getPref(BASELINE_PREF);
+  const completed = _getBaselineDone(ctx && ctx.id);
   return completed !== _baselineKey(syncRoot);
 }
 
-/** Mark the baseline complete for `syncRootKey`. */
-export function markBaselineComplete(syncRootKey) {
-  setPref(BASELINE_PREF, syncRootKey || '');
+/**
+ * Mark the baseline complete for `syncRootKey`. When `mappingId` is a real
+ * (non-legacy) mapping id the completion is stored per-mapping; otherwise it
+ * writes the legacy scalar.
+ * @param {string} syncRootKey
+ * @param {string} [mappingId]
+ */
+export function markBaselineComplete(syncRootKey, mappingId) {
+  _setBaselineDone(mappingId, syncRootKey || '');
 }
 
 /**
@@ -117,18 +161,20 @@ export function markBaselineComplete(syncRootKey) {
  * @returns {Promise<Object>} summary { ok, baselineRan, copies, mkdirs, errors, skipped? }
  */
 export async function runBaseline(opts = {}) {
-  const watchRoot = opts.watchRoot ?? getPref('sourcePath');
+  const ctx = opts.mapping;
+  const mappingId = ctx && ctx.id ? ctx.id : undefined;
+  const watchRoot = opts.watchRoot ?? (ctx && ctx.sourcePath) ?? getPref('sourcePath');
   if (!watchRoot) return { ok: false, baselineRan: false, skipped: 'no-watch-root' };
 
   let syncRoot = opts.syncRoot;
   if (typeof syncRoot === 'undefined') {
-    try { syncRoot = await resolveSyncRoot(); }
+    try { syncRoot = await resolveSyncRoot(ctx); }
     catch (e) { return { ok: false, baselineRan: false, skipped: 'sync-root-error', error: String(e?.message ?? e) }; }
   }
   if (!syncRoot) return { ok: false, baselineRan: false, skipped: 'no-sync-root' };
 
   const baselineKey = _baselineKey(syncRoot);
-  const completed = getPref(BASELINE_PREF);
+  const completed = _getBaselineDone(mappingId);
   if (!opts.force && completed === baselineKey) {
     return { ok: true, baselineRan: false, skipped: 'already-completed' };
   }
@@ -155,7 +201,7 @@ export async function runBaseline(opts = {}) {
 
     // ─── B.6 — empty subcollections → empty disk folders ────────────
     for (const col of collections) {
-      const relPath = await collectionKeyToDiskRelativePath(col.key);
+      const relPath = await collectionKeyToDiskRelativePath(col.key, ctx);
       if (relPath == null || relPath === '') continue;
       const absPath = _toAbs(watchRoot, relPath);
       try {
@@ -164,6 +210,7 @@ export async function runBaseline(opts = {}) {
           if (!dryRun) {
             await IOUtils.makeDirectory(absPath, { ignoreExisting: true, createAncestors: true });
             store.add(createCollectionRecord({
+              mappingId,
               localPath: relPath,
               zoteroCollectionKey: col.key,
               parentCollectionKey: _parentKeyOf(col),
@@ -176,6 +223,7 @@ export async function runBaseline(opts = {}) {
           // adopt the tracking record so later events route correctly.
           if (!dryRun) {
             store.add(createCollectionRecord({
+              mappingId,
               localPath: relPath,
               zoteroCollectionKey: col.key,
               parentCollectionKey: _parentKeyOf(col),
@@ -201,7 +249,7 @@ export async function runBaseline(opts = {}) {
       const { attachment, item } = entry;
       try {
         const result = await _copyAttachmentToCanonical({
-          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex,
+          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex, ctx,
         });
         if (result === 'copied') copies++;
         else if (result === 'adopted-different-path') reconciles++;
@@ -219,7 +267,7 @@ export async function runBaseline(opts = {}) {
 
     if (!dryRun) {
       try { await store.save(); } catch (_e) { /* logged inside save */ }
-      markBaselineComplete(baselineKey);
+      markBaselineComplete(baselineKey, mappingId);
     }
 
     Zotero.debug(`[WatchFolder] baseline: complete (copies=${copies} mkdirs=${mkdirs} reconciles=${reconciles} errors=${errors})`);
@@ -271,10 +319,11 @@ export async function copyAttachmentToCanonical(args) {
  * @param {boolean} [args.dryRun=false]
  * @returns {Promise<{ok: boolean, copies: number, mkdirs: number, errors: number}>}
  */
-export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRoot, store, dryRun = false, diskHashIndex }) {
+export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRoot, store, dryRun = false, diskHashIndex, ctx }) {
   if (!rootCollection || !syncRoot || !watchRoot || !store) {
     return { ok: false, copies: 0, mkdirs: 0, errors: 0, reason: 'invalid-args' };
   }
+  const mappingId = ctx && ctx.id ? ctx.id : undefined;
   let copies = 0, mkdirs = 0, errors = 0, reconciles = 0;
   try {
     const { collections, attachments } = await _enumerateFrom(rootCollection, syncRoot);
@@ -286,7 +335,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
       ? diskHashIndex
       : (dryRun ? null : await _buildDiskHashIndex(watchRoot));
     for (const col of collections) {
-      const relPath = await collectionKeyToDiskRelativePath(col.key);
+      const relPath = await collectionKeyToDiskRelativePath(col.key, ctx);
       if (relPath == null || relPath === '') continue;
       const absPath = _toAbs(watchRoot, relPath);
       try {
@@ -295,6 +344,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
           if (!dryRun) {
             await IOUtils.makeDirectory(absPath, { ignoreExisting: true, createAncestors: true });
             store.add(createCollectionRecord({
+              mappingId,
               localPath: relPath,
               zoteroCollectionKey: col.key,
               parentCollectionKey: _parentKeyOf(col),
@@ -304,6 +354,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
           mkdirs++;
         } else if (!store.getCollectionRecord(col.key) && !dryRun) {
           store.add(createCollectionRecord({
+            mappingId,
             localPath: relPath,
             zoteroCollectionKey: col.key,
             parentCollectionKey: _parentKeyOf(col),
@@ -325,7 +376,7 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
     for (const { attachment, item } of attachments) {
       try {
         const result = await _copyAttachmentToCanonical({
-          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex: index,
+          attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex: index, ctx,
         });
         if (result === 'copied') copies++;
         else if (result === 'adopted-different-path') reconciles++;
@@ -357,18 +408,19 @@ export async function adoptCollectionSubtree({ rootCollection, syncRoot, watchRo
  *   'skipped'                 — destination existed (adopted) or nothing to do
  * Throws on hard IO failures.
  */
-async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex }) {
+async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoot, store, dryRun, diskHashIndex, ctx }) {
+  const mappingId = ctx && ctx.id ? ctx.id : undefined;
   const filename = attachment.attachmentFilename;
   if (!filename) return 'skipped';
 
-  const canonical = await chooseCanonicalCollection(item, syncRoot.collection);
+  const canonical = await chooseCanonicalCollection(item, syncRoot.collection, {}, ctx);
   if (!canonical) return 'skipped';
   // Library scope: an Unfiled item (UNFILED sentinel) mirrors to the watch-
   // folder root (relDir = '', canonicalCollectionKey = null). Otherwise it's
   // a real collection — resolve its disk-relative folder path.
   const isUnfiled = canonical === UNFILED;
   const canonicalCollectionKey = isUnfiled ? null : canonical.key;
-  const relDir = isUnfiled ? '' : await collectionKeyToDiskRelativePath(canonical.key);
+  const relDir = isUnfiled ? '' : await collectionKeyToDiskRelativePath(canonical.key, ctx);
   if (relDir == null) return 'skipped';
   const relPath = relDir === '' ? filename : `${relDir}/${filename}`;
   const absDest = _toAbs(watchRoot, relPath);
@@ -379,7 +431,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   const destExists = await IOUtils.exists(absDest);
   if (destExists) {
     if (!store.getByAttachmentKey(attachment.key) && !dryRun) {
-      await _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store });
+      await _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store, mappingId });
     }
     return 'skipped';
   }
@@ -405,6 +457,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
         try { stat = await IOUtils.stat(matchAbs); } catch (_e) { /* best effort */ }
         const attHash = await _attachmentContentHashCached(attachment);
         store.add(createFileRecord({
+          mappingId,
           localPath: matchRel,
           canonicalLocalPath: matchRel,
           lastSyncedHash: attHash,
@@ -461,6 +514,7 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
     const hash = await _hashViaCache(absDest, stat);
 
     store.add(createFileRecord({
+      mappingId,
       localPath: relPath,
       canonicalLocalPath: relPath,
       lastSyncedHash: hash,
@@ -476,11 +530,12 @@ async function _copyAttachmentToCanonical({ attachment, item, syncRoot, watchRoo
   return 'copied';
 }
 
-async function _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store }) {
+async function _adoptExistingDestFile({ attachment, item, canonicalCollectionKey, relPath, absDest, store, mappingId }) {
   let stat = null;
   try { stat = await IOUtils.stat(absDest); } catch (_e) { /* best effort */ }
   const hash = await _hashViaCache(absDest, stat);
   store.add(createFileRecord({
+    mappingId,
     localPath: relPath,
     canonicalLocalPath: relPath,
     lastSyncedHash: hash,
