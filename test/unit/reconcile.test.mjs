@@ -10,7 +10,7 @@
  *   UT-RC-6 applyRepairs: rehome / drop / cleanup / skip
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../content/utils.mjs', async () => {
   const actual = await vi.importActual('../../content/utils.mjs');
@@ -44,6 +44,8 @@ import * as reconcile from '../../content/reconcile.mjs';
 import { resolveSyncRoot, relativePathToCollection } from '../../content/canonicalPath.mjs';
 import { getTrackingStore } from '../../content/trackingStore.mjs';
 import { isWatchRootAvailable, classifyMissingFile } from '../../content/fileMissing.mjs';
+import { getPref } from '../../content/utils.mjs';
+import { __test_setActiveMappings } from '../../content/mappings.mjs';
 
 // Drive classifyMissingFile: paths in `gonePaths` (absolute) → USER_DELETED.
 function setGone(gonePaths) {
@@ -90,6 +92,14 @@ beforeEach(() => {
   resolveSyncRoot.mockResolvedValue({ collection: null, libraryID: 1, isLibraryRoot: true });
   isWatchRootAvailable.mockResolvedValue(true);
   classifyMissingFile.mockImplementation(async () => MC.STILL_EXISTS); // present unless a test marks gone
+});
+
+afterEach(() => {
+  // Multi tests toggle the gate + inject mappings; restore single-root defaults
+  // so the rest of the suite (all multi-off) is unaffected. clearAllMocks does
+  // NOT reset implementations, so restore getPref explicitly.
+  __test_setActiveMappings(null);
+  getPref.mockImplementation(() => '/watch');
 });
 
 // ─── UT-RC-1 ─────────────────────────────────────────────────────────────────
@@ -348,5 +358,97 @@ describe('UT-RC-7: detect guards', () => {
     globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'K1', deleted: false, getAnnotations: () => [], getNotes: () => [] }));
     const r = await reconcile.detect();
     expect(r.findings.find((x) => x.type === reconcile.FINDING.SHADOW_ORPHANED)).toBeUndefined();
+  });
+});
+
+// ─── UT-RC-8: trashed target (visibility) + stale-tracking (recovery) ───────
+describe('UT-RC-8: trashed sync-root + stale-tracking findings', () => {
+  it('single-root: a trashed/missing target yields SYNC_ROOT_TRASHED (not a silent bail)', async () => {
+    getTrackingStore.mockReturnValue(makeStore());
+    resolveSyncRoot.mockRejectedValue(new Error("Sync-root collection XYZ is in Zotero's trash"));
+    const r = await reconcile.detect();
+    expect(r.ok).toBe(true);
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].type).toBe(reconcile.FINDING.SYNC_ROOT_TRASHED);
+    expect(r.findings[0].defaultActionId).toBe('skip');
+  });
+
+  it('single-root: an UNCONFIGURED target (null, no throw) still returns no-sync-root', async () => {
+    getTrackingStore.mockReturnValue(makeStore());
+    resolveSyncRoot.mockResolvedValue(null);
+    const r = await reconcile.detect();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('no-sync-root');
+  });
+
+  it('multi: a mapping whose target is trashed yields SYNC_ROOT_TRASHED (report-only)', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'collection', syncRootCollectionKey: 'TRASH', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    getTrackingStore.mockReturnValue(makeStore());
+    resolveSyncRoot.mockRejectedValue(new Error('in trash'));
+    const r = await reconcile.detect();
+    expect(r.ok).toBe(true);
+    const f = r.findings.find((x) => x.type === reconcile.FINDING.SYNC_ROOT_TRASHED);
+    expect(f).toBeDefined();
+    expect(f._payload.mappingId).toBe('A');
+    expect(f.defaultActionId).toBe('skip');
+  });
+
+  it('multi: a record whose Zotero item is CONFIRMED trashed → STALE_TRACKING drop', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    const store = makeStore([{ ...fileRec({ localPath: 'x.pdf', key: 'ATT1' }), mappingId: 'A' }]);
+    getTrackingStore.mockReturnValue(store);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'ATT1', deleted: true, getAnnotations: () => [], getNotes: () => [] }));
+    const r = await reconcile.detect();
+    const f = r.findings.find((x) => x.type === reconcile.FINDING.STALE_TRACKING);
+    expect(f).toBeDefined();
+    expect(f.defaultActionId).toBe('drop');
+    expect(f._payload.localPath).toBe('x.pdf');
+    expect(f._payload.mappingId).toBe('A');
+  });
+
+  it('multi: a record whose item is ALIVE is NOT flagged as stale', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    const store = makeStore([{ ...fileRec({ localPath: 'x.pdf', key: 'ATT1' }), mappingId: 'A' }]);
+    getTrackingStore.mockReturnValue(store);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'ATT1', deleted: false, getAnnotations: () => [], getNotes: () => [] }));
+    const r = await reconcile.detect();
+    expect(r.findings.find((x) => x.type === reconcile.FINDING.STALE_TRACKING)).toBeUndefined();
+  });
+
+  it('multi: a USER_DETACHED record is NOT flagged even if its item is trashed (respects intent)', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    const store = makeStore([{ ...fileRec({ localPath: 'x.pdf', key: 'ATT1', state: 'user-detached' }), mappingId: 'A' }]);
+    getTrackingStore.mockReturnValue(store);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'ATT1', deleted: true, getAnnotations: () => [], getNotes: () => [] }));
+    const r = await reconcile.detect();
+    expect(r.findings.find((x) => x.type === reconcile.FINDING.STALE_TRACKING)).toBeUndefined();
+  });
+
+  it('multi: STALE_TRACKING drop removes the record (item STILL trashed at apply)', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    const store = makeStore([{ ...fileRec({ localPath: 'x.pdf', key: 'ATT1' }), mappingId: 'A' }]);
+    getTrackingStore.mockReturnValue(store);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'ATT1', deleted: true }));
+    const findings = [{ id: 'f0', type: reconcile.FINDING.STALE_TRACKING, defaultActionId: 'drop', _payload: { localPath: 'x.pdf', attKey: 'ATT1', mappingId: 'A', libraryID: 1 } }];
+    const res = await reconcile.applyRepairs(findings, { f0: 'drop' });
+    expect(res.applied).toBe(1);
+    expect(store.remove).toHaveBeenCalledWith('x.pdf', 'A');
+  });
+
+  it('multi: STALE_TRACKING drop ABORTS if the item came back to life (TOCTOU)', async () => {
+    getPref.mockImplementation((k) => (k === 'watchMappingsMulti' ? true : '/watch'));
+    __test_setActiveMappings([{ id: 'A', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' }]);
+    const store = makeStore([{ ...fileRec({ localPath: 'x.pdf', key: 'ATT1' }), mappingId: 'A' }]);
+    getTrackingStore.mockReturnValue(store);
+    globalThis.Zotero.Items.getByLibraryAndKeyAsync = vi.fn(async () => ({ key: 'ATT1', deleted: false })); // alive again
+    const findings = [{ id: 'f0', type: reconcile.FINDING.STALE_TRACKING, defaultActionId: 'drop', _payload: { localPath: 'x.pdf', attKey: 'ATT1', mappingId: 'A', libraryID: 1 } }];
+    const res = await reconcile.applyRepairs(findings, { f0: 'drop' });
+    expect(res.failed).toBe(1);
+    expect(store.remove).not.toHaveBeenCalled();
   });
 });

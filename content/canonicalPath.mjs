@@ -75,7 +75,10 @@ export const UNFILED = Object.freeze({ isUnfiled: true });
  *
  * @returns {'library'|'collection'}
  */
-export function getScopeMode() {
+export function getScopeMode(ctx) {
+  if (ctx && (ctx.scopeMode === 'library' || ctx.scopeMode === 'collection')) {
+    return ctx.scopeMode;
+  }
   return getPref('scopeMode') === 'library' ? 'library' : 'collection';
 }
 
@@ -204,7 +207,7 @@ export function invalidateCanonicalPathCache() {
  * @throws {SyncRootMissingError} if a key is configured but the collection
  *   cannot be resolved (deleted, wrong library, etc).
  */
-export async function resolveSyncRoot() {
+export async function resolveSyncRoot(ctx) {
   // ── scopeMode === 'library' — the whole-library anchor (2.7.0) ──
   // Return a library-root descriptor instead of a chosen collection.
   // `collection: null` + `isLibraryRoot: true`; callers branch on the flag
@@ -212,8 +215,8 @@ export async function resolveSyncRoot() {
   // the only input is the library id. A missing library (stale group id)
   // throws LibraryUnavailableError (a SyncRootMissingError subclass) so the
   // existing catch→pause contract still applies.
-  if (getScopeMode() === 'library') {
-    const libraryID = getPref('syncRootLibraryID') || Zotero.Libraries.userLibraryID;
+  if (getScopeMode(ctx) === 'library') {
+    const libraryID = (ctx ? ctx.syncRootLibraryID : getPref('syncRootLibraryID')) || Zotero.Libraries.userLibraryID;
     try {
       const lib = Zotero.Libraries.get ? Zotero.Libraries.get(libraryID) : true;
       if (!lib) {
@@ -227,9 +230,9 @@ export async function resolveSyncRoot() {
   }
 
   // ── scopeMode === 'collection' — legacy single-sync-root (unchanged) ──
-  const key = getPref('syncRootCollectionKey');
+  const key = ctx ? ctx.syncRootCollectionKey : getPref('syncRootCollectionKey');
   if (!key) return null;
-  const libraryID = getPref('syncRootLibraryID') || Zotero.Libraries.userLibraryID;
+  const libraryID = (ctx ? ctx.syncRootLibraryID : getPref('syncRootLibraryID')) || Zotero.Libraries.userLibraryID;
   const collection = await Zotero.Collections.getByLibraryAndKeyAsync(libraryID, key);
   if (!collection) {
     throw new SyncRootMissingError(
@@ -264,8 +267,8 @@ export async function resolveSyncRoot() {
  *   - `"Methods/Subtopic"` for nested collections under the sync root.
  *   - `null` if the collection isn't under the sync root, or sync root unset.
  */
-export async function collectionKeyToRelativePath(collectionKey) {
-  const syncRoot = await resolveSyncRoot();
+export async function collectionKeyToRelativePath(collectionKey, ctx) {
+  const syncRoot = await resolveSyncRoot(ctx);
   if (!syncRoot) return null;
   const libraryID = syncRoot.libraryID;
   const target = await Zotero.Collections.getByLibraryAndKeyAsync(libraryID, collectionKey);
@@ -338,8 +341,8 @@ export async function collectionKeyToRelativePath(collectionKey) {
  * @param {string} collectionKey
  * @returns {Promise<string|null>}
  */
-export async function collectionKeyToDiskRelativePath(collectionKey) {
-  const rel = await collectionKeyToRelativePath(collectionKey);
+export async function collectionKeyToDiskRelativePath(collectionKey, ctx) {
+  const rel = await collectionKeyToRelativePath(collectionKey, ctx);
   if (rel === '' || rel == null) return rel;
   return rel.split('/').map(sanitizeCollectionNameSegment).join('/');
 }
@@ -368,22 +371,26 @@ export async function collectionKeyToDiskRelativePath(collectionKey) {
  *   resolved via `resolveSyncRoot`.
  * @returns {Promise<string|null>}
  */
-export async function collectionKeyToRelativePathCached(collectionKey, libraryID) {
+export async function collectionKeyToRelativePathCached(collectionKey, libraryID, ctx) {
   // If the caller didn't pre-resolve libraryID, fall back to the sync
   // root's library. Doing this lookup once up front means cached hits
   // (the common case) skip an extra resolveSyncRoot call on subsequent
   // requests for the same key.
   let lib = libraryID;
   if (lib == null) {
-    const syncRoot = await resolveSyncRoot();
+    const syncRoot = await resolveSyncRoot(ctx);
     if (!syncRoot) return null;
     lib = syncRoot.libraryID;
   }
-  const cacheKey = `${lib}:${collectionKey}`;
+  // Mapping-aware cache key: two mappings in the SAME library (e.g. one
+  // library-scope, one collection-scope) resolve the same collectionKey to
+  // DIFFERENT relative paths, so the mapping id must partition the cache or a
+  // hit from mapping A would be served to mapping B (scope-boundary bleed).
+  const cacheKey = `${ctx && ctx.id ? ctx.id : '_'}:${lib}:${collectionKey}`;
   if (_relativePathCache.has(cacheKey)) {
     return _relativePathCache.get(cacheKey);
   }
-  const result = await collectionKeyToRelativePath(collectionKey);
+  const result = await collectionKeyToRelativePath(collectionKey, ctx);
   if (result !== null) {
     _relativePathCache.set(cacheKey, result);
   }
@@ -406,8 +413,8 @@ export async function collectionKeyToRelativePathCached(collectionKey, libraryID
  *   is returned for an empty path.
  * @throws {SyncRootMissingError} via `resolveSyncRoot`.
  */
-export async function relativePathToCollection(relativePathStr, { createIfMissing = false } = {}) {
-  const syncRoot = await resolveSyncRoot();
+export async function relativePathToCollection(relativePathStr, { createIfMissing = false } = {}, ctx) {
+  const syncRoot = await resolveSyncRoot(ctx);
   if (!syncRoot) return null;
 
   // ── Library mode: '' → UNFILED; first segment → a TOP-LEVEL collection ──
@@ -563,14 +570,14 @@ export function isSpecialCollection(collection) {
  * @param {{existingTrackingRecord?: object, userPreferredKey?: string}} [opts]
  * @returns {Promise<object|null>} The chosen Zotero.Collection, or null.
  */
-export async function chooseCanonicalCollection(item, syncRootCollection, opts = {}) {
+export async function chooseCanonicalCollection(item, syncRootCollection, opts = {}, ctx) {
   if (!item) return null;
 
   // ── Library mode: syncRootCollection is null (the whole library is the root).
   // An item in no qualifying real collection is Unfiled → return the UNFILED
   // sentinel (distinct from null = "skip"). Otherwise the priority rules below
   // run identically, scoped library-wide via collectionKeyToRelativePath. ──
-  const libraryMode = getScopeMode() === 'library';
+  const libraryMode = getScopeMode(ctx) === 'library';
   if (libraryMode) {
     const ids = (typeof item.getCollections === 'function') ? item.getCollections() : [];
     if (!ids || ids.length === 0) return UNFILED;
@@ -579,7 +586,7 @@ export async function chooseCanonicalCollection(item, syncRootCollection, opts =
       const c = Zotero.Collections.get(id);
       if (!c) continue;
       if (isSpecialCollection(c)) continue;
-      const relPath = await collectionKeyToRelativePath(c.key);
+      const relPath = await collectionKeyToRelativePath(c.key, ctx);
       if (relPath === null) continue; // special/unsafe segment in chain
       cand.push({ collection: c, relPath });
     }
@@ -599,7 +606,7 @@ export async function chooseCanonicalCollection(item, syncRootCollection, opts =
     const c = Zotero.Collections.get(id);
     if (!c) continue;
     if (isSpecialCollection(c)) continue;
-    const relPath = await collectionKeyToRelativePath(c.key);
+    const relPath = await collectionKeyToRelativePath(c.key, ctx);
     if (relPath === null) continue; // not under sync root
     candidates.push({ collection: c, relPath });
   }

@@ -263,3 +263,40 @@ describe('Storage report + Empty Zotero trash + Missing files', () => {
     expect(Services.prompt.alert).toHaveBeenCalled();
   });
 });
+
+// ─── Paused status when a target collection is trashed/missing (v2.9.2) ──────
+describe('status header: paused when a mapping target is blocked', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  function configuredSingleRoot() {
+    return { enabled: true, setupCompleted: true, sourcePath: '/w', scopeMode: 'collection', syncRootCollectionKey: 'K1', mode: 'mode1' };
+  }
+
+  it('shows "Paused" when getMappingHealth reports a trashed target', () => {
+    Zotero.WatchFolder = {
+      getMappingHealth: () => [{ id: 'A', sourcePath: '/w', targetLabel: 'test1', ok: false, reason: 'trashed' }],
+    };
+    const { prefs, document } = loadPrefs(configuredSingleRoot());
+    prefs.onLoad();
+    const pill = document.get('watch-folder-status-pill');
+    expect(pill.textContent).toBe('Paused');
+    expect(pill.className).toContain('is-paused');
+    expect(document.get('watch-folder-status-summary').textContent.toLowerCase()).toContain('paused');
+  });
+
+  it('shows "Watching" when all mapping targets are healthy', () => {
+    Zotero.WatchFolder = {
+      getMappingHealth: () => [{ id: 'A', sourcePath: '/w', targetLabel: 'test1', ok: true, reason: null }],
+    };
+    const { prefs, document } = loadPrefs(configuredSingleRoot());
+    prefs.onLoad();
+    expect(document.get('watch-folder-status-pill').textContent).toBe('Watching');
+  });
+
+  it('does not throw when the bundle API is absent (best-effort)', () => {
+    Zotero.WatchFolder = undefined;
+    const { prefs, document } = loadPrefs(configuredSingleRoot());
+    expect(() => prefs.onLoad()).not.toThrow();
+    expect(document.get('watch-folder-status-pill').textContent).toBe('Watching');
+  });
+});
