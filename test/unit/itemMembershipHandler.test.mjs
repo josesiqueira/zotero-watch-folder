@@ -40,6 +40,9 @@ vi.mock('../../content/utils.mjs', async () => {
 vi.mock('../../content/baseline.mjs', () => ({
   copyAttachmentToCanonical: vi.fn(async () => 'copied'),
   adoptCollectionSubtree: vi.fn(async () => ({ ok: true })),
+  // Baseline-completion is now queried via isBaselineNeeded(ctx) (per-mapping
+  // aware). Default: baseline NOT complete → untracked adds defer.
+  isBaselineNeeded: vi.fn(async () => true),
   // Mirrors the real helper: collection scope → collection key; library → key.
   baselineKeyFor: vi.fn((syncRoot) =>
     syncRoot?.isLibraryRoot ? `__library__:${syncRoot.libraryID}` : (syncRoot?.collection?.key ?? '')),
@@ -100,6 +103,9 @@ beforeEach(() => {
   // names: '', 'Methods', 'OldFolder', 'NewFolder').
   collectionKeyToDiskRelativePath.mockImplementation((k) => collectionKeyToRelativePath(k));
   chooseCanonicalCollection.mockResolvedValue(null);
+  // Default: baseline not complete → untracked adds defer (reset per test since
+  // clearAllMocks keeps implementations).
+  baseline.isBaselineNeeded.mockResolvedValue(true);
 });
 
 // ─── UT-501 ────────────────────────────────────────────────────────────────
@@ -149,7 +155,8 @@ describe('UT-502: add on untracked item → defer (B.2 case)', () => {
 
 describe('UT-513: add on untracked attachment AFTER baseline → adopt', () => {
   it('copies the attachment to its canonical path + creates a record when baseline is complete', async () => {
-    getPref.mockImplementation((k) => ({ baselineCompletedForRoot: 'ROOT1', sourcePath: '/watch' }[k]));
+    getPref.mockImplementation((k) => ({ sourcePath: '/watch' }[k]));
+    baseline.isBaselineNeeded.mockResolvedValue(false); // baseline complete → adopt
     const collection = { id: 200, key: 'SUB1' };
     const att = { key: 'NEWATT', isAttachment: () => true };
     Zotero.Collections.get.mockReturnValue(collection);
@@ -166,8 +173,9 @@ describe('UT-513: add on untracked attachment AFTER baseline → adopt', () => {
     expect(mirrorExecutor.execute).not.toHaveBeenCalled();
   });
 
-  it('still defers when baseline completed for a DIFFERENT root', async () => {
-    getPref.mockImplementation((k) => ({ baselineCompletedForRoot: 'OTHERROOT', sourcePath: '/watch' }[k]));
+  it('still defers when baseline is not complete', async () => {
+    getPref.mockImplementation((k) => ({ sourcePath: '/watch' }[k]));
+    baseline.isBaselineNeeded.mockResolvedValue(true); // not complete → defer
     const collection = { id: 200, key: 'SUB1' };
     const att = { key: 'NEWATT', isAttachment: () => true };
     Zotero.Collections.get.mockReturnValue(collection);
@@ -238,7 +246,14 @@ describe('UT-504: add triggers moveItem when canonical changes', () => {
     // mirrors safely). If this line is reverted to the raw
     // collectionKeyToRelativePath, the disk fn is never called here and this
     // assertion fails — keeping the live-path fix from silently rotting.
-    expect(collectionKeyToDiskRelativePath).toHaveBeenCalledWith('NEWC');
+    expect(collectionKeyToDiskRelativePath).toHaveBeenCalledWith('NEWC', null);
+    // Regression: the canonical CHOICE must also be scoped by the owning-mapping
+    // ctx (4th arg), not just the disk-path resolve. Pre-fix this was a 3-arg
+    // call, so chooseCanonicalCollection judged candidacy against the GLOBAL
+    // scope. Legacy single-root passes ctx=null (multi passes the mapping).
+    expect(chooseCanonicalCollection).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), null,
+    );
   });
 
   it('does NOT emit moveItem when newCanonical equals current', async () => {
