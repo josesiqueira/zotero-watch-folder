@@ -17,7 +17,7 @@
  *   UT-095: RST.5 re-attach under living parent
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../content/utils.mjs', () => ({
   getPref: vi.fn(),
@@ -80,6 +80,7 @@ vi.mock('../../content/fileMissing.mjs', () => {
 vi.mock('../../content/fileScanner.mjs', () => ({
   scanFolder: vi.fn(),
   scanFolderRecursive: vi.fn(),
+  scanTree: vi.fn(async () => ({ files: [], dirs: [] })),
   SKIP_DIRNAMES: Object.freeze(new Set(['imported', '.zotero-watch-trash'])),
 }));
 
@@ -197,7 +198,7 @@ describe('WatchFolderService — Mode 1 deletion gates', () => {
 
     await service._handleExternalDeletions(new Set(), []);
 
-    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/gone.pdf', { state: 'missing' });
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/gone.pdf', { state: 'missing' }, 'legacy');
     // Mode 1 must NOT trash the Zotero attachment.
     expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
     expect(service._trackingStore.removeByAttachmentKey).not.toHaveBeenCalled();
@@ -527,7 +528,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
 
     expect(movedItem.deleted).toBe(false);
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
-    expect(service._trackingStore.remove).toHaveBeenCalledWith('/watch/paper.pdf');
+    expect(service._trackingStore.remove).toHaveBeenCalledWith('/watch/paper.pdf', 'legacy');
     expect(service._trackingStore.add).toHaveBeenCalledWith(
       // Post-#25 migration: localPath is now sync-root-relative.
       expect.objectContaining({ localPath: 'sub/paper.pdf', zoteroAttachmentKey: 'AK42' })
@@ -546,7 +547,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     );
 
     // Should have asked canonicalPath to resolve "sub" under the sync root.
-    expect(relativePathToCollectionMock).toHaveBeenCalledWith('sub', { createIfMissing: true });
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('sub', { createIfMissing: true }, expect.anything());
     expect(movedItem.removeFromCollection).toHaveBeenCalledWith(5);
     expect(movedItem.addToCollection).toHaveBeenCalled();
     expect(movedItem.saveTx).toHaveBeenCalled();
@@ -586,7 +587,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     expect(movedItem.deleted).toBe(false);
     expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
     expect(globalThis.Services.prompt.alert).not.toHaveBeenCalled();
-    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' }, 'legacy');
     expect(service._trackingStore.add).not.toHaveBeenCalled();
   });
 
@@ -629,7 +630,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     // Can't detect a move without a hash → fall through to the deletion
     // branch, which in Mode 1 just flips state=missing.
     expect(movedItem.deleted).toBe(false);
-    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' }, 'legacy');
   });
 
   it('called without allFiles parameter: deletion-only path (Mode 1 marks missing)', async () => {
@@ -640,7 +641,7 @@ describe('UT-053: WatchFolderService move detection (drag-into-subfolder) — v2
     await service._handleExternalDeletions(new Set());
 
     expect(movedItem.deleted).toBe(false);
-    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' });
+    expect(service._trackingStore.update).toHaveBeenCalledWith('/watch/paper.pdf', { state: 'missing' }, 'legacy');
   });
 });
 
@@ -1180,7 +1181,7 @@ describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
 
     await service._ensureCollectionsForExistingFolders('/watch');
 
-    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true });
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true }, expect.anything());
     const record = service._trackingStore.getCollectionRecord('COL_METHODS');
     expect(record).not.toBe(null);
     // Post-#25: localPath is sync-root-relative.
@@ -1236,8 +1237,8 @@ describe('UT-055: WatchFolderService empty-folder pickup (B.4)', () => {
 
     await service._ensureCollectionsForExistingFolders('/watch');
 
-    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true });
-    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods/AI', { createIfMissing: true });
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods', { createIfMissing: true }, expect.anything());
+    expect(relativePathToCollectionMock).toHaveBeenCalledWith('Methods/AI', { createIfMissing: true }, expect.anything());
   });
 
   it('bails silently when sync root is missing', async () => {
@@ -1339,7 +1340,7 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
 
     // Shadow tracking was dropped via .remove(localPath), NOT via
     // .removeByAttachmentKey (which would have collapsed both).
-    expect(store.remove).toHaveBeenCalledWith('A2.pdf');
+    expect(store.remove).toHaveBeenCalledWith('A2.pdf', 'legacy');
     expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
     // Zotero attachment must NOT have been trashed.
     expect(globalThis.Zotero.Items.getByLibraryAndKeyAsync).not.toHaveBeenCalled();
@@ -1396,7 +1397,7 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
 
     // Attachment NOT trashed; record kept and flipped to conflict-blocked.
     expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
-    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' });
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'conflict-blocked' }, 'legacy');
   });
 
   // ── v2.8.2: diskDeleteSync='ask' disposition (prompt before touching Zotero) ──
@@ -1422,7 +1423,7 @@ describe('UT-090: cascading-trash protection — _handleExternalDeletions', () =
     // 'keep' returns before the trash loop — the Zotero item is never trashed
     // (no record removal) and the file record is flipped to MISSING.
     expect(store.removeByAttachmentKey).not.toHaveBeenCalled();
-    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'missing' });
+    expect(store.update).toHaveBeenCalledWith('A.pdf', { state: 'missing' }, 'legacy');
   });
 
   it('diskDeleteSync=ask + Move to Trash → item to Bin (deleted=true, not erased)', async () => {
@@ -3183,7 +3184,9 @@ describe('UT-608: _scan skips the folder-deletion notify when watch root is unav
     fileMissing = await import('../../content/fileMissing.mjs');
     fileMissing.isWatchRootAvailable.mockResolvedValue(true);
     fileScanner = await import('../../content/fileScanner.mjs');
-    fileScanner.scanFolderRecursive.mockResolvedValue([]); // empty scan → no per-file work
+    // scanTree now supplies BOTH the file list and the subdir set for the cycle;
+    // the coordinator's onDiskAbsDirs is built from `dirs`.
+    fileScanner.scanTree.mockResolvedValue({ files: [], dirs: ['/watch/Methods'] });
 
     watchFolderMod = await import('../../content/watchFolder.mjs');
     service = new watchFolderMod.WatchFolderService();
@@ -3221,12 +3224,83 @@ describe('UT-608: _scan skips the folder-deletion notify when watch root is unav
 
     await service._scan();
 
-    expect(service._listSubdirectories).toHaveBeenCalledWith('/watch');
+    // onDiskAbsDirs is derived from scanTree's `dirs` (no separate _listSubdirectories walk).
+    expect(service._listSubdirectories).not.toHaveBeenCalled();
     expect(service._syncCoordinator.notifyScanCycle).toHaveBeenCalledTimes(1);
     const arg = service._syncCoordinator.notifyScanCycle.mock.calls[0][0];
     expect(arg.watchRoot).toBe('/watch');
     expect(arg.onDiskAbsDirs instanceof Set).toBe(true);
     expect(arg.onDiskAbsDirs.has('/watch')).toBe(true);
+    expect(arg.onDiskAbsDirs.has('/watch/Methods')).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UT-609 (MULTI): _scan iterates EVERY active mapping, not just the first.
+// Regression guard for the "only the first folder is watched" report — the
+// orchestrator loop must call _scanMapping once per mapping each cycle, each
+// with that mapping's own ctx (sourcePath + id).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('UT-609: _scan polls all configured mappings', () => {
+  let service;
+  let watchFolderMod;
+  let mappingsMod;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const utils = await import('../../content/utils.mjs');
+    utils.getPref.mockImplementation(() => undefined);
+
+    mappingsMod = await import('../../content/mappings.mjs');
+    watchFolderMod = await import('../../content/watchFolder.mjs');
+    service = new watchFolderMod.WatchFolderService();
+    service._trackingStore = { isDirty: false, save: vi.fn(async () => {}) };
+    globalThis.Zotero.debug = vi.fn();
+    globalThis.Zotero.logError = vi.fn();
+  });
+
+  afterEach(() => {
+    mappingsMod.__test_setActiveMappings(null);
+  });
+
+  it('calls _scanMapping once per mapping, with each mapping ctx', async () => {
+    const A = { id: 'aaaa1111', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' };
+    const B = { id: 'bbbb2222', sourcePath: '/watch/B', scopeMode: 'collection', syncRootCollectionKey: 'COLL1234', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' };
+    const C = { id: 'cccc3333', sourcePath: '/watch/C', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' };
+    mappingsMod.__test_setActiveMappings([A, B, C]);
+
+    const seen = [];
+    vi.spyOn(service, '_scanMapping').mockImplementation(async (ctx) => {
+      seen.push({ id: ctx.id, sourcePath: ctx.sourcePath });
+      return 0;
+    });
+
+    await service._scan();
+
+    expect(service._scanMapping).toHaveBeenCalledTimes(3);
+    expect(seen).toEqual([
+      { id: 'aaaa1111', sourcePath: '/watch/A' },
+      { id: 'bbbb2222', sourcePath: '/watch/B' },
+      { id: 'cccc3333', sourcePath: '/watch/C' },
+    ]);
+  });
+
+  it('one mapping throwing does not stop the others from being scanned', async () => {
+    const A = { id: 'aaaa1111', sourcePath: '/watch/A', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' };
+    const B = { id: 'bbbb2222', sourcePath: '/watch/B', scopeMode: 'library', syncRootCollectionKey: '', syncRootLibraryID: 1, mode: 'mode1', pdfStorageStrategy: 'stored' };
+    mappingsMod.__test_setActiveMappings([A, B]);
+
+    const seen = [];
+    vi.spyOn(service, '_scanMapping').mockImplementation(async (ctx) => {
+      seen.push(ctx.id);
+      if (ctx.id === 'aaaa1111') throw new Error('boom');
+      return 0;
+    });
+
+    await service._scan();
+
+    expect(seen).toEqual(['aaaa1111', 'bbbb2222']);
   });
 });
 

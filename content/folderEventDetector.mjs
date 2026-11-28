@@ -46,8 +46,13 @@ import {
  *   the watch root (already enumerated by the caller — see
  *   `watchFolder._listSubdirectories`).
  * @param {string} ctx.watchRoot - Absolute watch-folder root.
+ * @param {string} [ctx.mappingId] - Owning mapping id (multi-folder model).
+ *   When set, only THIS mapping's collection records participate, and emitted
+ *   actions are stamped with it so the executor resolves the right watch root.
+ * @param {import('./mappings.mjs').MappingContext} [ctx.mapping] - Owning
+ *   mapping ctx, used for per-mapping sync-root resolution.
  */
-export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRoot }) {
+export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRoot, mappingId, mapping }) {
   if (!trackingStore || !watchRoot) return;
 
   // SYNC-1: defense-in-depth — if the watch root is unreachable (transient
@@ -84,7 +89,13 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     return;
   }
 
-  const records = trackingStore.getAllOfType('collection');
+  // Multi-folder model: restrict the diff to THIS mapping's collection
+  // records, so a per-mapping scan never treats another folder's collections
+  // as deleted. Legacy single-root (no mappingId) considers all records.
+  const allCollectionRecords = trackingStore.getAllOfType('collection');
+  const records = mappingId
+    ? allCollectionRecords.filter((r) => (r && (r.mappingId || 'legacy')) === mappingId)
+    : allCollectionRecords;
 
   // ── Phase 1: collect every tracked collection that's gone from disk ─────
   const missing = [];
@@ -135,7 +146,7 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
     // accumulate such orphans. So only treat a suppressed-missing top-level
     // folder as a drip-eviction signal when its collection is still present.
     let libraryID = null;
-    try { const sr = await resolveSyncRoot(); libraryID = sr?.libraryID ?? null; } catch (_e) { libraryID = null; }
+    try { const sr = await resolveSyncRoot(mapping); libraryID = sr?.libraryID ?? null; } catch (_e) { libraryID = null; }
     if (libraryID == null) { try { libraryID = Zotero.Libraries.userLibraryID; } catch (_e) { libraryID = null; } }
     let suppressedTopLevelMissing = 0;
     for (const rec of records) {
@@ -204,6 +215,7 @@ export async function detectFolderEvents({ trackingStore, onDiskAbsDirs, watchRo
         payload: {
           collectionKey: rec.zoteroCollectionKey,
           oldRelativePath: rec.localPath,
+          mappingId: mappingId || undefined,
         },
       });
     } catch (e) {

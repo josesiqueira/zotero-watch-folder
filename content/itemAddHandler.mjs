@@ -22,6 +22,8 @@
 import { resolveSyncRoot, collectionKeyToRelativePath, getScopeMode } from './canonicalPath.mjs';
 import { getPref } from './utils.mjs';
 import * as baseline from './baseline.mjs';
+import { isMultiMappingActive } from './mappings.mjs';
+import { mappingForItem } from './mappingRouter.mjs';
 
 let _observerID = null;
 let _registered = false;
@@ -138,17 +140,22 @@ async function _processBatch(batch) {
   }
   if (idSet.size === 0) return;
 
-  // Per-batch overhead — resolved ONCE.
-  let syncRoot;
-  try { syncRoot = await resolveSyncRoot(); }
-  catch (e) {
-    Zotero.logError(`[WatchFolder] itemAddHandler resolveSyncRoot: ${e?.message ?? e}`);
-    return;
+  const multi = isMultiMappingActive();
+  // Legacy single-root: resolve the one global sync root + watch root ONCE.
+  // Multi-folder: an added attachment can belong to any watch folder, so the
+  // owning mapping (and its sync/watch roots) is resolved PER ITEM below.
+  let globalSyncRoot = null;
+  let globalWatchRoot = null;
+  if (!multi) {
+    try { globalSyncRoot = await resolveSyncRoot(); }
+    catch (e) {
+      Zotero.logError(`[WatchFolder] itemAddHandler resolveSyncRoot: ${e?.message ?? e}`);
+      return;
+    }
+    if (!globalSyncRoot) return;
+    globalWatchRoot = getPref('sourcePath');
+    if (!globalWatchRoot) return;
   }
-  if (!syncRoot) return;
-
-  const watchRoot = getPref('sourcePath');
-  if (!watchRoot) return;
 
   for (const id of idSet) {
     try {
@@ -170,8 +177,27 @@ async function _processBatch(batch) {
         const parent = Zotero.Items.get(item.parentItemID);
         if (parent) owningItem = parent;
       }
-      // Gate on the owning item having at least one sync-root membership.
-      if (!_itemInSyncRoot(owningItem)) continue;
+
+      // Resolve the owning mapping + its roots. Multi: mappingForItem returns
+      // null when no watch folder owns the item (the in-scope gate). Legacy:
+      // use the global sync root + the _itemInSyncRoot scope walk.
+      let ctx = null;
+      let syncRoot = globalSyncRoot;
+      let watchRoot = globalWatchRoot;
+      if (multi) {
+        ctx = mappingForItem(owningItem);
+        if (!ctx) continue;
+        try { syncRoot = await resolveSyncRoot(ctx); }
+        catch (e) {
+          Zotero.logError(`[WatchFolder] itemAddHandler resolveSyncRoot(${ctx.id}): ${e?.message ?? e}`);
+          continue;
+        }
+        if (!syncRoot) continue;
+        watchRoot = ctx.sourcePath;
+        if (!watchRoot) continue;
+      } else if (!_itemInSyncRoot(owningItem)) {
+        continue;
+      }
 
       await baseline.copyAttachmentToCanonical({
         attachment: item,
@@ -179,6 +205,7 @@ async function _processBatch(batch) {
         syncRoot,
         watchRoot,
         store: _store,
+        ctx: ctx || undefined,
       });
       try { await _store.save(); } catch (_e) { /* logged */ }
       Zotero.debug(`[WatchFolder] itemAddHandler: copied late-attached ${item.key}`);

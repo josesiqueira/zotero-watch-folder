@@ -29,6 +29,21 @@
     .wf-attention:hover { background: rgba(154,103,0,0.22); }
     .wf-attention-text { font-size: 0.9em; font-weight: 600; color: #9a6700; }
 
+    /* — Warnings list (Maintenance) — */
+    .wf-warnlist { margin-top: 6px; border: 1px solid rgba(127,127,127,0.28);
+                   border-radius: 6px; max-height: 260px; overflow-y: auto; }
+    .wf-warn-item { padding: 6px 10px; border-bottom: 1px solid rgba(127,127,127,0.16); }
+    .wf-warn-item:last-child { border-bottom: none; }
+    .wf-warn-cat { display: inline-block; font-size: 0.72em; font-weight: 700;
+                   text-transform: uppercase; letter-spacing: 0.04em; color: #9a6700;
+                   background: rgba(154,103,0,0.14); border-radius: 4px; padding: 1px 6px;
+                   margin-right: 8px; vertical-align: middle; }
+    .wf-warn-msg { font-size: 0.9em; }
+    .wf-warn-loc { font-size: 0.8em; opacity: 0.7; margin-top: 2px;
+                   word-break: break-all; font-family: ui-monospace, monospace; }
+    .wf-warn-ts { font-size: 0.75em; opacity: 0.55; margin-top: 1px; }
+    .wf-warn-empty { padding: 8px 10px; font-size: 0.9em; opacity: 0.7; }
+
     /* — Tab bar — */
     .wf-tabs { display: flex; gap: 2px; margin: 12px 0 0;
                border-bottom: 1px solid rgba(127,127,127,0.28); }
@@ -72,11 +87,36 @@
     /* — Button rows that may need to wrap (XUL hbox doesn't wrap by default;
          override display so a full row of buttons stays inside its card). — */
     .wf-btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+    /* — Watch-folder list (uniform rows: name → target, path, status chip) — */
+    .wf-flist { margin: 4px 0 10px; }
+    .wf-flist-empty { font-size: 0.92em; opacity: 0.7; font-style: italic; margin: 4px 0 10px; }
+    .wf-fitem { border: 1px solid rgba(127,127,127,0.30); border-radius: 6px;
+                padding: 8px 11px; margin: 6px 0; background: rgba(127,127,127,0.04); }
+    .wf-fitem-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .wf-fcap { font-size: 0.68em; text-transform: uppercase; letter-spacing: 0.06em;
+               opacity: 0.55; font-weight: 600; }
+    .wf-fitem-name { font-weight: 600; }
+    .wf-fitem-arrow { opacity: 0.55; margin: 0 2px; }
+    .wf-fitem-target { color: #4072b8; font-weight: 600; }
+    .wf-fitem-path { font-size: 0.85em; opacity: 0.62; margin-top: 3px;
+                     word-break: break-all; font-family: ui-monospace, Menlo, monospace; }
+    .wf-fchip { margin-left: 6px; font-size: 0.8em; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+    .wf-fchip.warn  { color: #9a6700; background: rgba(154,103,0,0.18); }
+    .wf-fremove { margin-left: auto; font-size: 0.82em; padding: 2px 10px; border-radius: 6px;
+                  border: 1px solid rgba(127,127,127,0.40); background: transparent;
+                  color: inherit; opacity: 0.75; cursor: pointer; }
+    .wf-fremove:hover { opacity: 1; border-color: #c0392b; color: #c0392b;
+                        background: rgba(192,57,43,0.08); }
   </html:style>
 
   <!-- ─── Persistent status header ───────────────────────────────── -->
   <vbox id="watch-folder-statusbar" class="wf-statusbar">
     <hbox align="center">
+      <checkbox id="watch-folder-enabled" label="Enable monitoring"
+                tooltiptext="Turns watching on or off for all watch folders"
+                preference="extensions.zotero.watchFolder.enabled"
+                style="margin-right: 10px;"/>
       <html:span id="watch-folder-status-pill" class="wf-pill is-unset"/>
       <html:span id="watch-folder-status-summary" class="wf-status-summary"/>
       <spacer flex="1"/>
@@ -90,9 +130,6 @@
         <html:a href="#" data-l10n-id="watch-folder-pref-docs-behavior"
                 onclick="WatchFolderPrefs.openDocs('test-cases'); return false;"/>
       </hbox>
-      <button id="watch-folder-setup-cta-btn" class="wf-cta"
-              data-l10n-id="watch-folder-pref-setup-cta"
-              oncommand="WatchFolderPrefs.runSetupWizard()"/>
     </hbox>
     <html:span id="watch-folder-status-detail" class="wf-status-detail"/>
     <hbox id="watch-folder-attention-strip" class="wf-attention" hidden="true"
@@ -127,33 +164,25 @@
   <vbox class="wf-tabpanel" id="wf-tabpanel-general" data-tab="general">
     <html:p data-l10n-id="watch-folder-pref-about-blurb" class="wf-lede"/>
 
+    <!-- Watch folders: the list of (folder → target) mappings. Each folder maps
+         to a specific collection or the whole library. -->
     <vbox class="wf-card">
-      <hbox align="center" class="wf-row">
-        <label data-l10n-id="watch-folder-pref-enabled" control="watch-folder-enabled"/>
-        <checkbox id="watch-folder-enabled"
-                  preference="extensions.zotero.watchFolder.enabled"/>
-      </hbox>
-
-      <hbox align="center" class="wf-row">
-        <label data-l10n-id="watch-folder-pref-source-path" control="watch-folder-source-path"/>
-        <html:input id="watch-folder-source-path" type="text" style="flex: 1;"
-                    preference="extensions.zotero.watchFolder.sourcePath"
-                    readonly="true"/>
-        <button id="watch-folder-browse-btn" data-l10n-id="watch-folder-pref-browse"
-                oncommand="WatchFolderPrefs.browseForFolder()"/>
-      </hbox>
-
-      <hbox align="center" class="wf-row">
-        <label data-l10n-id="watch-folder-pref-sync-root" control="watch-folder-sync-root-display"/>
-        <html:input id="watch-folder-sync-root-display" type="text" style="flex: 1;" readonly="true"/>
-        <button id="watch-folder-sync-root-btn" data-l10n-id="watch-folder-pref-sync-root-change"
-                oncommand="WatchFolderPrefs.pickSyncRoot()"/>
+      <html:h2 class="wf-h2">Watch folders</html:h2>
+      <html:p class="wf-desc">Each folder is imported into its own target — a specific collection or the whole library.
+        Add as many as you like. All folders share the sync mode and PDF-storage settings below.</html:p>
+      <html:div id="watch-folder-mappings-list" class="wf-flist"/>
+      <hbox align="center" class="wf-btnrow">
+        <button id="watch-folder-add-mapping-btn" label="＋ Add watch folder…"
+                oncommand="WatchFolderPrefs.addWatchFolder()"/>
       </hbox>
     </vbox>
 
-    <!-- ─── Live mode picker (click anywhere on a card to select) ── -->
+    <!-- Sync mode (GLOBAL — applies to every watch folder). Import only is the
+         only active mode today; Mirror / Mirror+delete are disabled placeholders
+         until per-folder mirror/delete lands. -->
     <vbox class="wf-card">
       <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-mode"/>
+      <html:p class="wf-desc" style="opacity: 0.85; margin: 0 0 4px 0;">Applies to all watch folders.</html:p>
       <radiogroup id="watch-folder-mode-radio">
         <vbox class="wf-opt" id="wf-mode-opt-mode1" onclick="WatchFolderPrefs.changeMode('mode1')">
           <hbox align="center">
@@ -165,24 +194,18 @@
         <vbox class="wf-opt" id="wf-mode-opt-mode2" onclick="WatchFolderPrefs.changeMode('mode2')">
           <hbox align="center">
             <radio value="mode2" data-l10n-id="watch-folder-pref-mode2-label"/>
-            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
           </hbox>
           <html:p data-l10n-id="watch-folder-pref-mode2-desc" class="wf-opt-desc"/>
         </vbox>
-        <vbox class="wf-opt" id="wf-mode-opt-mode3" onclick="WatchFolderPrefs.changeMode('mode3')">
+        <vbox class="wf-opt" id="wf-mode-opt-mode3" style="opacity: 0.5;">
           <hbox align="center">
-            <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label"/>
-            <html:span class="wf-opt-current" data-l10n-id="watch-folder-pref-current-badge"/>
+            <radio value="mode3" data-l10n-id="watch-folder-pref-mode3-label" disabled="true"/>
+            <html:span style="margin-left: 8px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.8;">Coming soon</html:span>
           </hbox>
           <html:p data-l10n-id="watch-folder-pref-mode3-desc" class="wf-opt-desc"/>
         </vbox>
       </radiogroup>
     </vbox>
-
-    <hbox align="center" class="wf-row">
-      <button id="watch-folder-rerun-wizard-btn" data-l10n-id="watch-folder-pref-rerun-wizard"
-              oncommand="WatchFolderPrefs.runSetupWizard()"/>
-    </hbox>
   </vbox>
 
   <!-- ════════════════════ STORAGE ════════════════════ -->
@@ -387,6 +410,10 @@
                 oncommand="WatchFolderPrefs.clearWarnings()"/>
       </hbox>
 
+      <!-- Inline list of recent warnings (newest first). Auto-shown when there
+           are warnings; the "View" button toggles it collapsed/expanded. -->
+      <html:div id="watch-folder-warnings-list" class="wf-warnlist" hidden="true"/>
+
       <hbox id="watch-folder-suppressed-row" align="center" hidden="true" class="wf-row">
         <label data-l10n-id="watch-folder-pref-suppressed" control="watch-folder-suppressed-count"/>
         <html:input id="watch-folder-suppressed-count" type="text" style="width: 160px;" readonly="true"/>
@@ -462,6 +489,7 @@
     <vbox class="wf-card">
       <html:h2 class="wf-h2" data-l10n-id="watch-folder-pref-section-advanced"/>
       <html:p data-l10n-id="watch-folder-pref-advanced-blurb" class="wf-desc"/>
+      <html:p class="wf-desc" style="opacity: 0.85;">These settings apply to <html:b>all</html:b> watch folders (poll interval, file types, and filename length are shared across every mapping).</html:p>
 
       <hbox align="center" class="wf-row">
         <label data-l10n-id="watch-folder-pref-poll-interval" control="watch-folder-poll-interval"/>
@@ -489,6 +517,15 @@
                     style="width: 80px;"/>
         <label data-l10n-id="watch-folder-pref-max-filename-suffix"/>
       </hbox>
+
+      <!-- Duplicate handling (GLOBAL). Dedup is by full-file content hash across
+           ALL watch folders — see docs. -->
+      <hbox align="center" class="wf-row" style="margin-top: 8px;">
+        <checkbox id="watch-folder-duplicate-check"
+                  label="Skip duplicate files (same content)"
+                  preference="extensions.zotero.watchFolder.duplicateCheck"/>
+      </hbox>
+      <html:p class="wf-desc" style="margin: 2px 0 6px 16px; opacity: 0.85;">When on, a PDF whose content already exists in Zotero is imported <html:b>once</html:b> — the same file in another watch folder is recognized and skipped (matched by content, not filename). Turn off to import every file even if identical.</html:p>
     </vbox>
   </vbox>
 
